@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>TrazoCAD</title>
+  <meta name="description" content="TrazoCAD: dibujo 2D de precisión inspirado en AutoCAD. Funciona sin conexión.">
+  <meta name="theme-color" content="#1b2027">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="app">
+    <header id="titlebar">
+      <div class="brand"><img src="icons/icon.svg" alt="" width="22" height="22"><b>Trazo</b>CAD</div>
+      <div id="qa" class="qa"></div>
+      <div class="doc-title"><span id="doc-name">Dibujo1</span></div>
+      <div id="tb-right" class="qa right"></div>
+    </header>
+    <nav id="ribbon-tabs"></nav>
+    <div id="ribbon"></div>
+    <main id="workspace">
+      <div id="viewport">
+        <canvas id="cv-base"></canvas>
+        <canvas id="cv-over"></canvas>
+        <div id="dyn" class="tip" hidden></div>
+        <div id="snaptip" class="tip snap" hidden></div>
+      </div>
+      <aside id="palette"></aside>
+    </main>
+    <section id="cmdline">
+      <div id="cmd-history"></div>
+      <div id="cmd-row">
+        <button id="cmd-hist-toggle" title="Historial de comandos (F2)">&#9650;</button>
+        <span id="cmd-prompt">Comando:</span>
+        <input id="cmd-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Línea de comandos" placeholder="Escriba un comando">
+      </div>
+      <div id="cmd-suggest" hidden></div>
+    </section>
+    <footer id="statusbar"></footer>
+  </div>
+  <div id="ctxmenu" hidden></div>
+  <div id="modal-root" hidden></div>
+  <noscript>TrazoCAD necesita JavaScript.</noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

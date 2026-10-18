@@ -1,0 +1,130 @@
+// Detección de contornos para SOMBREADO: grafo plano a partir de las entidades, trazado de caras e islas.
+import * as G from './geom.js';
+import { primsOf, ellPts, plPolygon } from './entities.js';
+const { P } = G;
+
+function primSegs(q, out) {
+  if (q.k === 's') { if (G.dist(q.a, q.b) > 1e-12) out.push([q.a, q.b]); return; }
+  const sw = G.sweep(q.a1, q.a2), n = Math.max(2, Math.ceil(sw / (G.TAU / 96)));
+  let prev = G.polar(q.c, q.a1, q.r);
+  for (let i = 1; i <= n; i++) { const p = G.polar(q.c, q.a1 + sw * i / n, q.r); out.push([prev, p]); prev = p; }
+}
+
+// Contornos cerrados de una entidad (para "Seleccionar objetos")
+export function loopsOfEntity(e) {
+  switch (e.type) {
+    case 'circle': return [Array.from({ length: 96 }, (_, i) => G.polar(e.c, i / 96 * G.TAU, e.r))];
+    case 'ellipse': return [ellPts(e, 96)];
+    case 'pline': return e.closed && e.pts.length > 2 ? [plPolygon(e)] : null;
+    case 'hatch': return e.loops.map(l => [...l]);
+  }
+  return null;
+}
+
+// Busca la región cerrada que contiene P. Devuelve [contorno, ...islas] o null.
+export function findBoundary(ents, Pt) {
+  const segs = [];
+  for (const e of ents) {
+    if (e.type === 'hatch' || e.type === 'text' || e.type === 'point' || e.type === 'dim') continue;
+    for (const q of primsOf(e)) primSegs(q, segs);
+  }
+  if (!segs.length) return null;
+  let bb = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+  for (const [a, b] of segs) for (const p of [a, b]) { bb.x1 = Math.min(bb.x1, p.x); bb.y1 = Math.min(bb.y1, p.y); bb.x2 = Math.max(bb.x2, p.x); bb.y2 = Math.max(bb.y2, p.y); }
+  const size = Math.max(bb.x2 - bb.x1, bb.y2 - bb.y1) || 1, tol = size * 1e-9;
+
+  // 1. Cortar segmentos en sus intersecciones (cubetas en rejilla)
+  const n = segs.length, cuts = segs.map(() => [0, 1]);
+  const GN = Math.max(1, Math.min(256, Math.ceil(Math.sqrt(n)))), cw = (bb.x2 - bb.x1) / GN || 1, ch = (bb.y2 - bb.y1) / GN || 1;
+  const cells = new Map();
+  segs.forEach(([a, b], i) => {
+    const cx1 = Math.min(GN - 1, Math.floor((Math.min(a.x, b.x) - bb.x1) / cw)), cx2 = Math.min(GN - 1, Math.floor((Math.max(a.x, b.x) - bb.x1) / cw));
+    const cy1 = Math.min(GN - 1, Math.floor((Math.min(a.y, b.y) - bb.y1) / ch)), cy2 = Math.min(GN - 1, Math.floor((Math.max(a.y, b.y) - bb.y1) / ch));
+    for (let x = cx1; x <= cx2; x++) for (let y = cy1; y <= cy2; y++) { const k = x * 1024 + y; let l = cells.get(k); if (!l) cells.set(k, l = []); l.push(i); }
+  });
+  const done = new Set();
+  for (const list of cells.values()) {
+    for (let x = 0; x < list.length; x++) for (let y = x + 1; y < list.length; y++) {
+      const i = list[x], j = list[y], key = i < j ? i * n + j : j * n + i;
+      if (done.has(key)) continue;
+      done.add(key);
+      const [a, b] = segs[i], [c, d] = segs[j];
+      const r = G.llInt(a, b, c, d);
+      if (r && r.t > -1e-9 && r.t < 1 + 1e-9 && r.u > -1e-9 && r.u < 1 + 1e-9) { cuts[i].push(r.t); cuts[j].push(r.u); }
+    }
+  }
+
+  // 2. Vértices fusionados y semiaristas
+  const V = [], vmap = new Map(), q = tol * 1000;
+  const vid = p => {
+    const k = `${Math.round(p.x / q)},${Math.round(p.y / q)}`;
+    let id = vmap.get(k);
+    if (id === undefined) { id = V.length; V.push({ p, out: [] }); vmap.set(k, id); }
+    return id;
+  };
+  const H = [], ekeys = new Set();
+  segs.forEach(([a, b], i) => {
+    const ts = [...new Set(cuts[i].map(t => Math.min(1, Math.max(0, t))))].sort((x, y) => x - y);
+    for (let k = 1; k < ts.length; k++) {
+      const u = vid(G.lerp(a, b, ts[k - 1])), v = vid(G.lerp(a, b, ts[k]));
+      if (u === v) continue;
+      const key = u < v ? `${u}_${v}` : `${v}_${u}`;
+      if (ekeys.has(key)) continue;
+      ekeys.add(key);
+      const h1 = H.length;
+      H.push({ from: u, to: v, twin: h1 + 1 }, { from: v, to: u, twin: h1 });
+      V[u].out.push(h1); V[v].out.push(h1 + 1);
+    }
+  });
+  for (const h of H) h.ang = G.ang(V[h.from].p, V[h.to].p);
+  for (const v of V) { v.out.sort((a, b) => H[a].ang - H[b].ang); v.out.forEach((h, i) => { H[h].idx = i; }); }
+  const next = h => { const v = V[H[h].to], tw = H[h].twin; return v.out[(H[tw].idx - 1 + v.out.length) % v.out.length]; };
+  const trace = h0 => {
+    const loop = [], vs = [];
+    let h = h0, guard = 0;
+    do { loop.push(V[H[h].from].p); vs.push(H[h].from); h = next(h); } while (h !== h0 && ++guard < 200000);
+    return { loop, vs };
+  };
+  // Rayo horizontal hacia +x: primera semiarista con el punto a su izquierda
+  const castRay = (O, allowed) => {
+    let best = Infinity, bh = -1;
+    for (let h = 0; h < H.length; h += 2) {
+      if (allowed && !allowed(H[h].from)) continue;
+      const a = V[H[h].from].p, b = V[H[h].to].p;
+      if ((a.y > O.y) === (b.y > O.y)) continue;
+      const x = a.x + (O.y - a.y) * (b.x - a.x) / (b.y - a.y);
+      if (x > O.x && x < best) { best = x; bh = G.cross(G.sub(b, a), G.sub(O, a)) > 0 ? h : h + 1; }
+    }
+    return bh;
+  };
+
+  const O = P(Pt.x, Pt.y + size * 1.2345e-7);
+  const h0 = castRay(O);
+  if (h0 < 0) return null;
+  const outer = trace(h0);
+  if (G.polyArea(outer.loop) <= 0 || !G.pointInPoly(O, outer.loop)) return null;
+
+  // 3. Islas: componentes conexas no unidas al contorno y situadas dentro de él
+  const comp = new Int32Array(V.length).fill(-1);
+  let nc = 0;
+  for (let s = 0; s < V.length; s++) {
+    if (comp[s] >= 0) continue;
+    const st = [s]; comp[s] = nc;
+    while (st.length) { const v = st.pop(); for (const h of V[v].out) { const w = H[h].to; if (comp[w] < 0) { comp[w] = nc; st.push(w); } } }
+    nc++;
+  }
+  const outerComp = new Set(outer.vs.map(v => comp[v]));
+  const loops = [outer.loop], seen = new Set();
+  for (let v = 0; v < V.length; v++) {
+    const c = comp[v];
+    if (outerComp.has(c) || seen.has(c)) continue;
+    seen.add(c);
+    if (!G.pointInPoly(V[v].p, outer.loop)) continue;
+    let left = v;
+    for (let w = 0; w < V.length; w++) if (comp[w] === c && V[w].p.x < V[left].p.x) left = w;
+    const Q = P(V[left].p.x - size * 1e-6, V[left].p.y + size * 1.2345e-7);
+    const hh = castRay(Q, x => comp[x] === c);
+    if (hh >= 0) loops.push(trace(hh).loop);
+  }
+  return loops;
+}
