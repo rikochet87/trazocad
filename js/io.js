@@ -1,6 +1,6 @@
 // Archivos: nuevo, abrir, guardar (.tcad), exportar DXF/SVG/PNG, imprimir y autoguardado.
 import * as G from './geom.js';
-import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, mtextGeom } from './entities.js';
+import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, mtextGeom, mleaderGeom, tableGeom } from './entities.js';
 import { splinePts } from './spline.js';
 import { writeDXF, readDXF } from './dxf.js';
 import { hatchSegments } from './patterns.js';
@@ -61,6 +61,23 @@ export class IO {
     this.app.print('Nuevo dibujo creado.');
   }
 
+  // Selector de archivo para leer (referencias externas). Devuelve {file, handle} o null.
+  async pickFile(desc = 'Dibujos', exts = ['.tcad', '.dxf']) {
+    if ('showOpenFilePicker' in window) {
+      try {
+        const [handle] = await window.showOpenFilePicker({ types: [{ description: desc, accept: { 'application/octet-stream': exts } }] });
+        return { file: await handle.getFile(), handle };
+      } catch { return null; }
+    }
+    const file = await new Promise(res => {
+      const inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = exts.join(',');
+      inp.onchange = () => res(inp.files[0] || null);
+      inp.click();
+    });
+    return file ? { file, handle: null } : null;
+  }
+
   async open() {
     if (!(await this.confirmDiscard())) return;
     let file, handle = null;
@@ -90,12 +107,15 @@ export class IO {
         doc.layers = r.layers;
         doc.blocks = r.blocks;
         for (const s of r.textStyles) if (!doc.textStyles.some(t => t.name === s.name)) doc.textStyles.push(s);
+        if (r.dimStyles?.length) { doc.dimStyles = r.dimStyles; doc.cur.dimStyle = (r.dimStyles.find(d => d.name !== 'Standard') || r.dimStyles[0]).name; }
+        if (r.insBase) doc.settings.insBase = r.insBase;
         for (const e of r.ents) doc.add(e);
         for (const l of r.layouts) {
           const lay = { name: l.name, paper: l.paper, w: l.w, h: l.h, ents: [] };
           doc.layouts.push(lay);
           for (const e of l.ents) doc.add(e, lay.ents);
         }
+        doc.syncAssoc();
         doc.undoS = []; doc.redoS = []; doc.touched.clear();
         doc.name = baseName(file.name);
         this.handle = null;
@@ -163,6 +183,20 @@ export class IO {
       const extra = `${st.width && st.width !== 1 ? ` scale(${st.width} 1)` : ''}${st.oblique ? ` skewX(${-st.oblique})` : ''}`;
       return `<text transform="translate(${n5(t.p.x)} ${n5(t.p.y)}) scale(1 -1) rotate(${n5(-G.deg(t.rot || 0))})${extra}" font-family="${esc(st.font)}, ${FONT}" font-size="${n5(t.h * TXT_K)}" text-anchor="${anchor}" fill="${col}">${esc(t.text ?? t.str)}</text>`;
     };
+    // Tramos con formato de un MTEXT (fuente, negrita, cursiva, color, decoraciones y fracciones apiladas)
+    const mtextEls = (e, col) => {
+      const st = doc.textStyle(e.style);
+      for (const ln of mtextGeom(e).lines) for (const fr of ln.frags) {
+        const f = fr.f, c = f.color ? printColor(f.color) : col, sx = (st.width || 1) * (f.w || 1), obl = (st.oblique || 0) + (f.q || 0);
+        const tf = `translate(${n5(fr.p.x)} ${n5(fr.p.y)}) scale(1 -1) rotate(${n5(-G.deg(ln.rot || 0))})${sx !== 1 ? ` scale(${n5(sx)} 1)` : ''}${obl ? ` skewX(${-obl})` : ''}`;
+        const font = (h, s) => `font-family="${esc(f.font || st.font)}, ${FONT}" font-size="${n5(h * TXT_K)}"${f.b ? ' font-weight="bold"' : ''}${f.i ? ' font-style="italic"' : ''} fill="${c}"${s}`;
+        const deco = [f.u && 'underline', f.o && 'overline', f.k && 'line-through'].filter(Boolean).join(' ');
+        if (fr.stk) {
+          const t = fr.stk, sm = f.h * 0.7, w = fr.w / sx;
+          out.push(`<g transform="${tf}"><text ${font(sm, ' text-anchor="middle"')} x="${n5(w / 2)}" y="${n5(-0.62 * f.h)}">${esc(t.a)}</text><text ${font(sm, ' text-anchor="middle"')} x="${n5(w / 2)}" y="${n5(0.32 * f.h)}">${esc(t.b)}</text>${t.k === '/' ? `<line x1="${n5(0.05 * w)}" y1="${n5(-0.47 * f.h)}" x2="${n5(0.95 * w)}" y2="${n5(-0.47 * f.h)}" stroke="${c}" stroke-width="${n5(0.06 * f.h)}"/>` : ''}</g>`);
+        } else out.push(`<text transform="${tf}" ${font(f.h, deco ? ` text-decoration="${deco}"` : '')} xml:space="preserve">${esc(fr.s)}</text>`);
+      }
+    };
     const plD = e => {
       let d = `M${n5(e.pts[0].x)} ${n5(e.pts[0].y)}`;
       for (const pc of plPieces(e)) {
@@ -185,7 +219,16 @@ export class IO {
         case 'point': out.push(`<circle cx="${n5(e.p.x)}" cy="${n5(e.p.y)}" r="${n5(lwScale ? 0.3 : 0.5)}" fill="${col}"/>`); break;
         case 'text': out.push(textEl(e, col)); break;
         case 'attdef': out.push(textEl({ ...e, text: e.tag }, col)); break;
-        case 'mtext': for (const ln of mtextGeom(e).lines) if (ln.str) out.push(textEl(ln, col)); break;
+        case 'mtext': mtextEls(e, col); break;
+        case 'mleader': case 'table': {
+          const g = e.type === 'mleader' ? mleaderGeom(e) : tableGeom(e);
+          out.push(`<path d="${g.lines.map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}" ${s}/>`);
+          for (const tri of g.arrows || []) out.push(`<polygon points="${pts(tri)}" fill="${col}"/>`);
+          for (const [c, r] of g.dots || []) out.push(`<circle cx="${n5(c.x)}" cy="${n5(c.y)}" r="${n5(r)}" fill="${col}"/>`);
+          if (g.circle) out.push(`<circle cx="${n5(g.circle[0].x)}" cy="${n5(g.circle[0].y)}" r="${n5(g.circle[1])}" ${s}/>`);
+          for (const t of g.texts || (g.text ? [g.text] : [])) mtextEls(t, col);
+          break;
+        }
         case 'spline': { const p = splinePts(e); out.push(`<path d="M${pts(p).replace(/ /g, ' L')}${e.closed ? ' Z' : ''}" ${s}/>`); break; }
         case 'hatch': {
           if (e.pattern === 'SOLID') { out.push(`<path d="${e.loops.map(l => `M${pts(l).replace(/ /g, ' L')} Z`).join(' ')}" fill="${col}" fill-rule="evenodd"/>`); break; }

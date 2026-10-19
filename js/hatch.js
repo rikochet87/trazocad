@@ -12,7 +12,7 @@ function primSegs(q, out, src) {
   let prev = G.polar(q.c, q.a1, q.r);
   for (let i = 1; i <= n; i++) { const p = G.polar(q.c, q.a1 + sw * i / n, q.r); out.push([prev, p, src]); prev = p; }
 }
-const NO_BOUNDARY = new Set(['hatch', 'text', 'mtext', 'attdef', 'point', 'dim']);
+const NO_BOUNDARY = new Set(['hatch', 'text', 'mtext', 'attdef', 'point', 'dim', 'mleader', 'table']);
 
 // Contornos cerrados de una entidad (para "Seleccionar objetos")
 export function loopsOfEntity(e) {

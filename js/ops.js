@@ -1,8 +1,8 @@
 // Operaciones de edición geométrica: recortar, alargar, partir, longitud, desfase, empalme, chaflán, descomponer, unir, estirar.
 import * as G from './geom.js';
-import { primsOf, dimParts, plPieces, pieceAt, pieceParam, plLength, cloneEnt, inWindow, xformEnt, blockEnts, mtextGeom } from './entities.js';
+import { primsOf, bboxOf, dimParts, plPieces, pieceAt, pieceParam, plLength, cloneEnt, inWindow, xformEnt, blockEnts, mtextGeom, mleaderGeom, tableGeom } from './entities.js';
 import { hatchSegments } from './patterns.js';
-import { splinePts, rebuild as rebuildSpline } from './spline.js';
+import { splinePts, rebuild as rebuildSpline, deBoor, domain, nearestParam, tangentAt, subSpline, joinSplines, reverseSpline, lineSpline, interpolate } from './spline.js';
 const { TAU } = G;
 
 const props = e => ({ layer: e.layer, color: e.color, ltype: e.ltype, lw: e.lw });
@@ -46,8 +46,38 @@ export function curveInfo(e) {
         },
       };
     }
+    case 'spline': { const [u0, u1] = domain(e); return { closed: !!e.closed, max: u1 - u0, param: p => nearestParam(e, p) - u0 }; }
   }
   return null;
+}
+
+// Punto de intersección refinado sobre la curva exacta de una spline (la intersección se busca en su teselado).
+// q: primitiva de la otra entidad (recta infinita si ext, o círculo)
+function onSpline(s, pt, q) {
+  const [u0, u1] = domain(s), h = (u1 - u0) * 1e-7;
+  const f = u => { const c = deBoor(s, u); return q.k === 's' ? G.cross(G.sub(q.b, q.a), G.sub(c, q.a)) / (G.dist(q.a, q.b) || 1) : G.dist(c, q.c) - q.r; };
+  let u = nearestParam(s, pt);
+  for (let k = 0; k < 16; k++) {
+    const fu = f(u);
+    if (Math.abs(fu) < 1e-13) break;
+    const d = (f(Math.min(u1, u + h)) - f(Math.max(u0, u - h))) / (Math.min(u1, u + h) - Math.max(u0, u - h));
+    if (!d) break;
+    const nu = Math.max(u0, Math.min(u1, u - fu / d));
+    if (Math.abs(nu - u) < 1e-15) break;
+    u = nu;
+  }
+  const p = deBoor(s, u), b = bboxOf(s);
+  return G.dist(p, pt) < Math.max(b.x2 - b.x1, b.y2 - b.y1) * 0.01 ? p : pt;
+}
+// Intersecciones entre dos entidades (exactas cuando una es spline y la otra no)
+export function entInts(e, o) {
+  const out = [];
+  if (!G.bbOverlap(bboxOf(e), bboxOf(o))) return out;
+  const po = primsOf(o), pe = primsOf(e);
+  for (const q of po) for (const p1 of pe) for (const pt of G.primInt(p1, q)) {
+    out.push(e.type === 'spline' && o.type !== 'spline' ? onSpline(e, pt, q) : o.type === 'spline' && e.type !== 'spline' ? onSpline(o, pt, p1) : pt);
+  }
+  return out;
 }
 
 export function subCurve(e, a, b) {
@@ -73,15 +103,24 @@ export function subCurve(e, a, b) {
       if (P2.length < 2) return null;
       return mkPoly(props(e), P2, B2);
     }
+    case 'spline': {
+      // a, b relativos al inicio del dominio; en las cerradas b puede pasar del final (tramo que cruza la costura)
+      const [u0, u1] = domain(e), U = u1 - u0;
+      const piece = (x, y) => (y - x > U * 1e-9 ? subSpline(e, u0 + x, u0 + y) : null);
+      let s;
+      if (b > U + 1e-9) { const A = piece(a, U), B = piece(0, b - U); s = A && B ? joinSplines(A, B) : A || B; }
+      else s = piece(a, Math.min(b, U));
+      return s ? { ...props(e), type: 'spline', ...s, closed: false } : null;
+    }
   }
   return null;
 }
 
 function cutParams(e, info, others) {
-  const own = primsOf(e), ts = [];
+  const ts = [];
   for (const o of others) {
     if (o.id === e.id) continue;
-    for (const q of primsOf(o)) for (const p1 of own) for (const pt of G.primInt(p1, q)) ts.push(info.param(pt));
+    for (const pt of entInts(e, o)) ts.push(info.param(pt));
   }
   ts.sort((a, b) => a - b);
   return ts.filter((t, i) => !i || t - ts[i - 1] > 1e-9);
@@ -133,8 +172,34 @@ export function breakEntity(e, p1, p2) {
 
 // Devuelve la entidad modificada (clon) o null
 export function extendEntity(e, pick, others) {
-  const bounds = [];
-  for (const o of others) if (o.id !== e.id) bounds.push(...primsOf(o));
+  const bounds = [], owner = [];
+  for (const o of others) if (o.id !== e.id) for (const q of primsOf(o)) { bounds.push(q); owner.push(o); }
+  // Intersecciones de la prolongación (recta o circunferencia `ray`) con los contornos, refinadas sobre splines
+  const hits = ray => {
+    const out = [];
+    bounds.forEach((q, k) => { for (const pt of G.primInt(ray, q, true, false)) out.push(owner[k].type === 'spline' ? onSpline(owner[k], pt, ray) : pt); });
+    return out;
+  };
+  if (e.type === 'spline') {
+    if (e.closed) return null;
+    const [u0, u1] = domain(e), s0 = deBoor(e, u0), s1 = deBoor(e, u1), atStart = G.dist(pick, s0) < G.dist(pick, s1);
+    const end = atStart ? s0 : s1, tan = atStart ? G.mul(tangentAt(e, u0), -1) : tangentAt(e, u1);
+    let best = Infinity, bp = null;
+    for (const pt of hits({ k: 's', a: G.sub(end, tan), b: end })) {
+      const t = G.dot(G.sub(pt, end), tan);
+      if (t > 1e-9 && t < best) { best = t; bp = pt; }
+    }
+    if (!bp) return null;
+    const c = cloneEnt(e);
+    if (e.fit) { c.fit = atStart ? [bp, ...e.fit] : [...e.fit, bp]; return rebuildSpline(c) ? c : null; }
+    // Vértices de control o geometría importada: se añade un tramo recto tangente (la curva existente no cambia)
+    let s = subSpline(e, u0, u1);
+    if (atStart) s = reverseSpline(s);
+    s = joinSplines(s, lineSpline(end, bp, s.deg));
+    if (atStart) s = reverseSpline(s);
+    delete c.cv; delete c.w;
+    return Object.assign(c, s);
+  }
   const lastLine = e.type === 'pline' && !e.closed && e.pts.length > 1;
   if (e.type === 'line' || lastLine) {
     let a, b, atStart;
@@ -148,7 +213,7 @@ export function extendEntity(e, pick, others) {
     const d = G.sub(b, a), l2 = G.dot(d, d);
     if (l2 < 1e-18) return null;
     let best = Infinity, bp = null;
-    for (const q of bounds) for (const pt of G.primInt({ k: 's', a, b }, q, true, false)) {
+    for (const pt of hits({ k: 's', a, b })) {
       const t = G.dot(G.sub(pt, a), d) / l2;
       if (t > 1 + 1e-9 && t < best) { best = t; bp = pt; }
     }
@@ -161,7 +226,7 @@ export function extendEntity(e, pick, others) {
     const s1 = G.polar(e.c, e.a1, e.r), s2 = G.polar(e.c, e.a2, e.r), atStart = G.dist(pick, s1) < G.dist(pick, s2);
     const gap = G.normAng(e.a1 - e.a2);
     let best = Infinity, ba = null;
-    for (const q of bounds) for (const pt of G.primInt({ k: 'a', c: e.c, r: e.r, a1: 0, a2: TAU }, q, true, false)) {
+    for (const pt of hits({ k: 'a', c: e.c, r: e.r, a1: 0, a2: TAU })) {
       const a = G.ang(e.c, pt), d = atStart ? G.normAng(e.a1 - a) : G.normAng(a - e.a2);
       if (d > 1e-9 && d < gap - 1e-9 && d < best) { best = d; ba = a; }
     }
@@ -180,6 +245,7 @@ export function lengthOf(e) {
     case 'arc': return e.r * G.sweep(e.a1, e.a2);
     case 'circle': return TAU * e.r;
     case 'pline': return plLength(e);
+    case 'spline': return G.polyLen(splinePts(e), e.closed);
   }
   return null;
 }
@@ -259,6 +325,19 @@ export function offsetEntity(e, d, side) {
       c.pts = pts;
       if (bul.some(x => x)) c.bulges = bul; else delete c.bulges;
       return c;
+    }
+    case 'spline': {
+      // Puntos desplazados según la normal y spline interpolada por ellos
+      const [u0, u1] = domain(e), u = nearestParam(e, side), q = deBoor(e, u);
+      const s = G.cross(tangentAt(e, u), G.sub(side, q)) > 0 ? 1 : -1;
+      const N = Math.max(32, Math.min(400, e.ctrl.length * 8)), pts = [];
+      for (let i = 0; i <= N; i++) {
+        if (e.closed && i === N) break;
+        const uu = u0 + (u1 - u0) * i / N;
+        pts.push(G.add(deBoor(e, uu), G.mul(G.perp(tangentAt(e, uu)), d * s)));
+      }
+      const r = interpolate(pts, !!e.closed);
+      return r ? { ...props(e), type: 'spline', ...r, closed: !!e.closed } : null;
     }
   }
   return null;
@@ -354,6 +433,15 @@ export function explodeEntity(e) {
   if (e.type === 'insert') return blockEnts(e).map(v => { const c = cloneEnt(v); delete c.id; return c; });
   if (e.type === 'mtext') return mtextGeom(e).lines.filter(l => l.str).map(l => ({ ...b, type: 'text', p: l.p, h: l.h, rot: l.rot, text: l.str, align: l.align, style: e.style }));
   if (e.type === 'spline') return [{ ...b, type: 'pline', pts: [...splinePts(e)], closed: !!e.closed }];
+  if (e.type === 'mleader' || e.type === 'table') {
+    const g = e.type === 'mleader' ? mleaderGeom(e) : tableGeom(e);
+    return [
+      ...g.lines.map(([p1, p2]) => ({ ...b, type: 'line', p1, p2 })),
+      ...(g.arrows || []).map(pts => ({ ...b, type: 'hatch', pattern: 'SOLID', scale: 1, angle: 0, loops: [pts] })),
+      ...[...(g.dots || []), ...(g.circle ? [g.circle] : [])].map(([c, r]) => ({ ...b, type: 'circle', c, r })),
+      ...(g.texts || (g.text ? [g.text] : [])).map(t => ({ ...b, ...cloneEnt(t) })),
+    ];
+  }
   if (e.type === 'hatch') {
     if (e.pattern === 'SOLID') return e.loops.map(l => ({ ...b, type: 'pline', pts: l, closed: true }));
     const bb = e.loops.flat().reduce((r, p) => ({ x1: Math.min(r.x1, p.x), y1: Math.min(r.y1, p.y), x2: Math.max(r.x2, p.x), y2: Math.max(r.y2, p.y) }), { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity });
@@ -422,7 +510,8 @@ export function stretchEntity(e, r, d) {
       return c;
     case 'hatch': c.loops = e.loops.map(l => l.map(mv)); if (c.seed) c.seed = mv(c.seed); c._xf = true; return c;
     case 'circle': case 'arc': case 'ellipse': return G.inRect(e.c, r) ? xformEnt(c, G.Mx.T(d.x, d.y)) : null;
-    case 'text': case 'mtext': case 'attdef': case 'point': case 'insert': return G.inRect(e.p, r) ? xformEnt(c, G.Mx.T(d.x, d.y)) : null;
+    case 'text': case 'mtext': case 'attdef': case 'point': case 'insert': case 'table': return G.inRect(e.p, r) ? xformEnt(c, G.Mx.T(d.x, d.y)) : null;
+    case 'mleader': c.pts = e.pts.map(mv); return c;
     case 'spline': {
       const k = e.fit ? 'fit' : e.cv ? 'cv' : 'ctrl';
       c[k] = e[k].map(mv);

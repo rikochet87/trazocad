@@ -1,11 +1,13 @@
 // Documento: capas, espacio modelo, presentaciones, bloques, estilos, deshacer/rehacer, sombreados asociativos y serialización.
-import { bboxOf, bbUnion, LTYPES, DEFAULT_DIMSTYLE } from './entities.js';
+import { bboxOf, bbUnion, cloneEnt, LTYPES, DEFAULT_DIMSTYLE } from './entities.js';
 import { assocLoops } from './hatch.js';
+import { updateDim, dropMissing, dimRefIds } from './assoc.js';
 
 export const DEFAULT_SETTINGS = {
   gridX: 10, snapX: 10, polarInc: 15, ltscale: 1, coordDec: 4,
   textH: 2.5, filletR: 0, chamferA: 0, chamferB: 0, offsetD: 10, lastRadius: 10, polySides: 4,
   hatchPat: 'ANSI31', hatchScale: 1, hatchAng: 0, hatchAssoc: true, iso: false, isoPlane: 'top', splineMethod: 'fit',
+  dimAssoc: true, mleaderContent: 'mtext', balloonNum: 0, insBase: { x: 0, y: 0 },
 };
 export const PAPERS = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841], Carta: [279.4, 215.9], Oficio: [355.6, 215.9] };
 
@@ -22,6 +24,7 @@ export class Doc {
     this.model = [];
     this.layouts = [];
     this.blocks = {};
+    this.bedit = null; // editor de bloques abierto: {name, base, ents}
     this.space = 'model';
     this.textStyles = [{ name: 'Standard', font: 'Arial', width: 1, oblique: 0 }];
     this.dimStyles = [{ ...DEFAULT_DIMSTYLE }];
@@ -38,19 +41,24 @@ export class Doc {
     this.emit('reset');
   }
 
-  // Entidades del espacio activo (modelo o papel de la presentación activa)
-  get ents() { return this.space === 'model' ? this.model : (this.layouts[this.space]?.ents || this.model); }
-  *allEnts() { yield* this.model; for (const l of this.layouts) yield* l.ents; }
-  layout() { return this.space === 'model' ? null : this.layouts[this.space]; }
+  // Entidades del espacio activo (modelo, papel de la presentación activa o editor de bloques)
+  get ents() {
+    if (this.space === 'bedit') return this.bedit?.ents || this.model;
+    return this.space === 'model' ? this.model : (this.layouts[this.space]?.ents || this.model);
+  }
+  *allEnts() { yield* this.model; for (const l of this.layouts) yield* l.ents; if (this.bedit) yield* this.bedit.ents; }
+  layout() { return this.space === 'model' || this.space === 'bedit' ? null : this.layouts[this.space]; }
 
   // ----- Deshacer / rehacer por instantáneas -----
   state() {
-    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, nextId: this.nextId, cur: this.cur });
+    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit });
   }
   loadState(s) {
     const o = JSON.parse(s);
-    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, nextId: o.nextId, cur: o.cur });
-    if (this.space !== 'model' && !this.layouts[this.space]) this.space = 'model';
+    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, nextId: o.nextId, cur: o.cur, bedit: o.bedit || null });
+    if (this.bedit) this.space = 'bedit';
+    else if (this.space === 'bedit') this.space = 'model';
+    else if (this.space !== 'model' && this.space !== 'bedit' && !this.layouts[this.space]) this.space = 'model';
     this.reindex();
   }
   reindex() { this.byId = new Map([...this.allEnts()].map(e => [e.id, e])); this.ver++; }
@@ -86,7 +94,7 @@ export class Doc {
     if (e.type === 'text') e.style ??= this.cur.textStyle;
     if (e.type === 'dim') e.style ??= this.cur.dimStyle;
     if (!this.layers.some(l => l.name === e.layer)) e.layer = '0';
-    if (e.type === 'mtext' || e.type === 'attdef') e.style ??= this.cur.textStyle;
+    if (['mtext', 'attdef', 'mleader', 'table'].includes(e.type)) e.style ??= this.cur.textStyle;
     target.push(e); this.byId.set(e.id, e);
     this.touched.add(e.id);
     this.changed();
@@ -96,7 +104,7 @@ export class Doc {
   remove(id) {
     const e = this.byId.get(id);
     if (!e) return;
-    for (const arr of [this.model, ...this.layouts.map(l => l.ents)]) {
+    for (const arr of this.lists()) {
       const i = arr.indexOf(e);
       if (i >= 0) { arr.splice(i, 1); break; }
     }
@@ -106,20 +114,32 @@ export class Doc {
   }
   modify(id, fn) { const e = this.byId.get(id); if (e) { fn(e); this.touched.add(id); this.changed(); } return e; }
 
-  // Sombreados asociativos: si cambió alguna entidad de su contorno se recalculan; si el contorno se borró,
-  // o el sombreado se movió sin su contorno, dejan de ser asociativos.
+  // Listas de entidades editables: modelo, presentaciones y, si está abierto, el editor de bloques
+  lists() { return [this.model, ...this.layouts.map(l => l.ents), ...(this.bedit ? [this.bedit.ents] : [])]; }
+
+  // Sombreados y cotas asociativos: si cambió alguna entidad de su geometría se recalculan; si la geometría
+  // se borró, o el objeto se movió sin ella, dejan de ser asociativos (las cotas pierden sólo los puntos afectados).
   syncAssoc() {
     const t = this.touched;
     this.touched = new Set();
     if (!t.size) return;
+    const get = id => this.byId.get(id);
     const drop = h => { delete h.assoc; delete h.seed; };
-    for (const arr of [this.model, ...this.layouts.map(l => l.ents)]) {
+    for (const arr of this.lists()) {
       for (const h of arr) {
-        if (h.type !== 'hatch') continue;
         const moved = h._xf;
-        delete h._xf;
+        if (moved) delete h._xf;
         if (!h.assoc) continue;
-        const srcs = h.assoc.map(id => this.byId.get(id));
+        if (h.type === 'dim') {
+          dropMissing(h, get);
+          const ids = dimRefIds(h);
+          if (!ids.length) continue;
+          if (!ids.some(id => t.has(id))) { if (moved) delete h.assoc; continue; }
+          if (!updateDim(h, get)) delete h.assoc;
+          continue;
+        }
+        if (h.type !== 'hatch') continue;
+        const srcs = h.assoc.map(get);
         if (srcs.some(x => !x)) { drop(h); continue; }
         if (!h.assoc.some(id => t.has(id))) { if (moved) drop(h); continue; }
         const r = assocLoops(h, srcs);
@@ -128,6 +148,22 @@ export class Doc {
         if (r.seed) h.seed = r.seed;
       }
     }
+  }
+  // Vista previa: cotas y sombreados asociados a las entidades `clones` (copias modificadas), ya recalculados
+  previewDeps(clones) {
+    const map = new Map(clones.map(e => [e.id, e])), get = id => map.get(id) || this.byId.get(id), out = [];
+    for (const h of this.ents) {
+      if (!h.assoc || map.has(h.id)) continue;
+      if (h.type === 'dim' && dimRefIds(h).some(id => map.has(id))) {
+        const n = cloneEnt(h);
+        if (updateDim(n, get)) out.push(n);
+      } else if (h.type === 'hatch' && h.assoc.some(id => map.has(id))) {
+        const srcs = h.assoc.map(get);
+        const r = !srcs.some(x => !x) && srcs.length <= 50 ? assocLoops(h, srcs) : null;
+        if (r) out.push({ ...h, loops: [...r.loops] });
+      }
+    }
+    return out;
   }
   changed() { this.ver++; this.dirty = true; this.emit('change'); }
 
@@ -161,7 +197,30 @@ export class Doc {
     }
     return false;
   }
-  blockInUse(name) { return this.refersTo([...this.allEnts()], name) || Object.values(this.blocks).some(b => b.name !== name && this.refersTo(b.ents, name)); }
+  // ----- Editor de bloques: se edita una copia de las entidades del bloque, con identificadores propios -----
+  openBedit(name) {
+    const b = this.blocks[name];
+    this.bedit = { name, base: { ...b.base }, ents: [], prev: this.space };
+    this.space = 'bedit';
+    for (const e of b.ents) { const c = cloneEnt(e); delete c.id; this.add(c, this.bedit.ents); }
+    this.changed();
+  }
+  beditContent() {
+    return this.bedit.ents.map(e => { const c = cloneEnt(e); for (const k of ['id', 'assoc', 'seed', '_xf']) delete c[k]; return c; });
+  }
+  beditChanged() {
+    const b = this.blocks[this.bedit.name];
+    return !b || JSON.stringify([this.bedit.base, this.beditContent()]) !== JSON.stringify([b.base, b.ents]);
+  }
+  saveBedit() { this.defineBlock(this.bedit.name, { ...this.bedit.base }, this.beditContent()); }
+  closeBedit() {
+    const prev = this.bedit.prev;
+    this.bedit = null;
+    this.space = prev === 'model' || this.layouts[prev] ? prev : 'model';
+    this.reindex();
+    this.changed();
+  }
+  blockInUse(name) { return this.bedit?.name === name || this.refersTo([...this.allEnts()], name) || Object.values(this.blocks).some(b => b.name !== name && this.refersTo(b.ents, name)); }
   style(e) {
     const L = this.layer(e.layer);
     const color = e.color === 'BYLAYER' || e.color === 'BYBLOCK' ? L.color : e.color;
@@ -188,7 +247,7 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 3, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      app: 'TrazoCAD', version: 4, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
       textStyles: this.textStyles, dimStyles: this.dimStyles, cur: this.cur, settings: this.settings, nextId: this.nextId,
     };
   }

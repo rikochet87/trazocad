@@ -84,6 +84,13 @@ const I = {
   dimang: '<path d="M4 20 20 20M4 20 15 5"/><path d="M14 20a10 10 0 0 0-3.6-7.7"/><path d="m14 20-1.6-2.8L16 17ZM10.4 12.3l3.2.4-1.7 2.6Z" fill="currentColor"/>',
   dimord: '<path d="M5 3v18M5 7h4l3 3h8M5 16h6l2-2h7"/><circle cx="5" cy="7" r="1.2" fill="currentColor"/><circle cx="5" cy="16" r="1.2" fill="currentColor"/>',
   freeze: '<path d="M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7"/><path d="m9 4 3 2 3-2M9 20l3-2 3 2M4 10.5l3.5-.5-1-3.3M20 13.5l-3.5.5 1 3.3M4 13.5l3.5.5-1 3.3M20 10.5l-3.5-.5 1-3.3"/>',
+  mleader: '<path d="M4 20 13 9h7"/><path d="m4 20 1-4.2 2.5 2.2Z" fill="currentColor"/><path d="M14 5h7M14 12.5h5"/>',
+  table: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 9h18M3 14.5h18M10 9v11"/>',
+  bedit: '<rect x="3" y="3" width="8" height="8"/><circle cx="17" cy="7" r="4"/><path d="m12 21 1.2-4 6-6 2.8 2.8-6 6z"/><path d="M3 21l4-7 3 5"/>',
+  xattach: '<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h5"/><path d="M14 3v5h5v4"/><path d="M15 17.5a2.5 2.5 0 0 1 2.5-2.5h2a2.5 2.5 0 0 1 0 5h-1M18 17.5a2.5 2.5 0 0 1-2.5 2.5h-2a2.5 2.5 0 0 1 0-5h1"/>',
+  xref: '<rect x="3" y="3" width="11" height="14" rx="1"/><path d="M10 7h11v14H10" stroke-dasharray="2 1.5"/><path d="M6 8h5M6 11h5"/>',
+  dimassoc: '<path d="M4 4v9M20 4v9M4 10h16"/><path d="m4 10 3-2v4ZM20 10l-3-2v4Z" fill="currentColor"/><path d="M9 18a2 2 0 0 1 2-2h2a2 2 0 0 1 0 4h-1M15 18a2 2 0 0 1-2 2"/>',
+  unlink: '<path d="M9 15l-2.5 2.5a3 3 0 0 1-4.2-4.2L5 10.6M15 9l2.5-2.5a3 3 0 0 1 4.2 4.2L19 13.4"/><path d="M4 4l3 3M20 20l-3-3M9 3v3M3 9h3M15 21v-3M21 15h-3"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
 };
 

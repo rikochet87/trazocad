@@ -4,6 +4,7 @@ import { TYPES, gripsOf, blockEnts } from './entities.js';
 
 export const BG = '#212830';
 const LAYOUT_BG = '#3a4049';
+const BEDIT_BG = '#2a2f37';
 const HL = 'rgba(47,140,255,0.45)';
 const SNAP_COLOR = '#d4e157';
 const TRACK_COLOR = '#58d68d';
@@ -41,7 +42,7 @@ export function paintEntity(c, e, R, st, sty, vis) {
   c.setLineDash(pat);
   c.lineCap = pat.length && st.pat.includes(0) ? 'round' : 'butt';
   const T = TYPES[e.type];
-  if (T.draw) T.draw(c, e, R);
+  if (T.draw) T.draw(c, e, R, st);
   else { c.beginPath(); T.path(c, e, R); c.stroke(); }
 }
 
@@ -120,9 +121,26 @@ export class Renderer {
       this.drawLayout(c, PR, lay, sty);
       return;
     }
+    if (app.doc.bedit) { // editor de bloques: fondo propio, entidades del bloque y punto base
+      c.fillStyle = BEDIT_BG; c.fillRect(0, 0, this.base.width, this.base.height);
+      if (app.T.grid) this.drawGrid(c, R);
+      setWorld(c, R);
+      this.paintList(c, R, app.idx().query(app.view.rect(), true), sty);
+      this.drawBasePoint(c, app.view.toScreen(app.doc.bedit.base));
+      this.drawUCS(c);
+      return;
+    }
     if (app.T.grid) this.drawGrid(c, R);
     this.drawModel(c, R, app.view.rect(), sty);
     this.drawUCS(c);
+  }
+
+  drawBasePoint(c, s) {
+    const d = this.dpr;
+    c.setTransform(d, 0, 0, d, 0, 0); c.setLineDash([]); c.lineWidth = 1.5;
+    c.strokeStyle = c.fillStyle = '#f0b429';
+    c.beginPath(); c.arc(s.x, s.y, 7, 0, G.TAU); c.moveTo(s.x - 12, s.y); c.lineTo(s.x + 12, s.y); c.moveTo(s.x, s.y - 12); c.lineTo(s.x, s.y + 12); c.stroke();
+    c.font = '11px sans-serif'; c.fillText('Punto base', s.x + 10, s.y - 10);
   }
 
   drawGrid(c, R) {
@@ -173,8 +191,8 @@ export class Renderer {
   }
 
   highlight(c, e, R, strong) {
-    paintEntity(c, e, R, { color: HL, px: strong ? 6 : 4, pat: [] });
-    paintEntity(c, e, R, { color: strong ? '#9ccbff' : '#cfe4ff', px: 1, pat: [] });
+    paintEntity(c, e, R, { color: HL, px: strong ? 6 : 4, pat: [], hl: true });
+    paintEntity(c, e, R, { color: strong ? '#9ccbff' : '#cfe4ff', px: 1, pat: [], hl: true });
   }
 
   drawOver() {

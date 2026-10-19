@@ -5,7 +5,7 @@ import { View, VpView } from './view.js';
 import { SpatialIndex } from './spatial.js';
 import { Renderer } from './render.js';
 import { Snapper } from './snap.js';
-import { ENV, hitDist, inWindow, crosses, gripsOf, STD_SCALES, scaleLabel, blockAttdefs } from './entities.js';
+import { ENV, hitDist, inWindow, crosses, gripsOf, STD_SCALES, scaleLabel, blockAttdefs, tableCellAt } from './entities.js';
 import { findCmd, suggest } from './commands.js';
 import { UI } from './ui.js';
 import { IO } from './io.js';
@@ -30,7 +30,7 @@ class App {
 
     this.sel = new Set(); this.hover = null; this.hoverGrip = null;
     this.req = null; this.cmd = null; this.cmdPromise = null; this.cancelFlag = false;
-    this.lastCmd = null; this.lastPt = G.P(0, 0); this.pickfirst = null; this.lastWindow = null; this.clipboard = null;
+    this.lastCmd = null; this.lastPt = G.P(0, 0); this.lastRef = null; this.pickfirst = null; this.lastWindow = null; this.clipboard = null;
     this.mouse = { sx: 0, sy: 0, w: G.P(0, 0), pt: G.P(0, 0), snap: null, track: null, polar: null, inside: false };
     this.win = null; this.acquired = []; this.acqTimer = null; this.acqCand = null;
     this.ptrs = new Map(); this.panning = null; this.pinch = null; this.tap = null; this.touchMode = false; this.lastMid = 0;
@@ -68,7 +68,7 @@ class App {
 
   // ---------- Estado ----------
   onDocChange(kind) {
-    if (kind === 'reset') { this.sel.clear(); if (this.tab !== 'model' || this.vpActive) { this.tab = 'model'; this.vpActive = null; this.doc.activeVp = null; this.view = this.modelView; } }
+    if (kind === 'reset') { this.sel.clear(); this.beditView = null; if (this.tab !== 'model' || this.vpActive || this.view !== this.modelView) { this.tab = 'model'; this.vpActive = null; this.doc.activeVp = null; this.view = this.modelView; } }
     for (const id of this.sel) if (!this.doc.get(id)) this.sel.delete(id);
     this.renderer.invalidate();
     this.ui.refresh();
@@ -94,11 +94,37 @@ class App {
   }
   setViewSize(w, h) {
     this.modelView.w = w; this.modelView.h = h;
+    if (this.beditView) { this.beditView.w = w; this.beditView.h = h; }
     if (this.layoutShown()) { const v = this.paperView; v.w = w; v.h = h; }
   }
 
   // ---------- Presentaciones y ventanas gráficas ----------
+  // ---------- Editor de bloques ----------
+  enterBedit(name) {
+    if (this.tab !== 'model') this.switchTab('model');
+    this.doc.openBedit(name);
+    this.syncBedit();
+    const b = this.doc.extents(this.doc.ents);
+    if (b) this.view.fit(G.normRect({ x: Math.min(b.x1, this.doc.bedit.base.x), y: Math.min(b.y1, this.doc.bedit.base.y) }, { x: Math.max(b.x2, this.doc.bedit.base.x), y: Math.max(b.y2, this.doc.bedit.base.y) }));
+    this.print(`Editor de bloques: "${name}". Edite los objetos con cualquier comando; BASE cambia el punto base, BSAVE guarda y BCLOSE cierra el editor.`);
+  }
+  // Ajusta la vista al estado del documento (al abrir/cerrar el editor o al deshacer)
+  syncBedit() {
+    const doc = this.doc;
+    if (doc.bedit && this.view !== this.beditView) {
+      this.beditView = new View(); this.beditView.w = this.modelView.w; this.beditView.h = this.modelView.h;
+      Object.assign(this.beditView, { cx: this.modelView.cx, cy: this.modelView.cy, scale: this.modelView.scale });
+      this.view = this.beditView; this.tab = 'model'; this.vpActive = null; doc.activeVp = null;
+    } else if (!doc.bedit && this.beditView) {
+      this.beditView = null;
+      this.view = this.tab === 'model' ? this.modelView : this.paperView;
+      if (doc.space !== 'model' && doc.layouts[doc.space]) { this.tab = doc.space; this.view = this.paperView; }
+    } else return;
+    this.sel.clear(); this.acquired = []; this.hover = null;
+    this.renderer.invalidate(); this.ui.refresh(); this.ui.updateStatus();
+  }
   switchTab(t) {
+    if (this.doc.bedit) { this.print('Cierre primero el editor de bloques (BCLOSE).'); return; }
     if (t !== 'model' && !this.doc.layouts[t]) t = 'model';
     if (this.cmdPromise) this.cancelCurrent();
     this.tab = t; this.vpActive = null; this.doc.activeVp = null;
@@ -200,6 +226,8 @@ class App {
     this.ui.updateStatus(); this.updateMouse(); this.renderer.invalidate();
   }
   afterUndo() {
+    this.syncBedit();
+    if (this.doc.bedit) { this.ui.updateStatus(); return; }
     this.doc.activeVp = this.vpActive;
     if (this.tab !== 'model' && !this.doc.layouts[this.tab]) this.switchTab('model');
     else if (this.vpActive && !this.doc.get(this.vpActive)) this.pspace();
@@ -395,8 +423,17 @@ class App {
       if (v === null || (ent.type === 'text' && !v)) return;
       edit(x => { x.text = v; });
     } else if (ent.type === 'mtext') {
-      const v = await this.ui.editMText(ent.text, 'Editar texto de líneas múltiples');
-      if (v) edit(x => { x.text = v; });
+      const v = await this.ui.editMText(ent, 'Editar texto de líneas múltiples');
+      if (v?.text) edit(x => { x.text = v.text; if (v.rich) x.rich = true; else delete x.rich; });
+    } else if (ent.type === 'mleader' && ent.content === 'mtext') {
+      const v = await this.ui.editMText(ent, 'Editar texto de la directriz');
+      if (v?.text) edit(x => { x.text = v.text; if (v.rich) x.rich = true; else delete x.rich; });
+    } else if (ent.type === 'mleader' && ent.content === 'block') {
+      const v = await this.ui.prompt('Globo', 'Texto del globo', ent.text || '');
+      if (v !== null) edit(x => { x.text = v; });
+    } else if (ent.type === 'table') {
+      const v = await this.ui.editTable(ent, tableCellAt(ent, this.mouse.w));
+      if (v) edit(x => Object.assign(x, v));
     } else if (ent.type === 'insert' && blockAttdefs(ent.name).length) {
       const v = await this.ui.editAttribs(ent);
       if (v) edit(x => { x.attribs = v; });
@@ -578,7 +615,7 @@ class App {
 
   resolvePointLike(pt) {
     const r = this.req;
-    if (r.kind === 'point') { this.lastPt = pt; r.resolve(pt); return; }
+    if (r.kind === 'point') { this.lastPt = pt; this.lastRef = this.mouse.snap?.ref || null; r.resolve(pt); return; }
     const base = r.opts.base || r.tmpBase;
     if (!base) {
       r.tmpBase = pt;
@@ -633,6 +670,8 @@ class App {
       getSelection: (p = 'Designe objetos', o = {}) => app.getSelection(p, o),
       print: m => app.print(m),
       add: e => app.doc.add(e),
+      // Referencia a objetos del último punto designado con el ratón (para cotas asociativas)
+      ref: () => (app.doc.settings.dimAssoc ? app.lastRef : null),
       setLast: p => { app.lastPt = p; },
     };
   }
@@ -702,6 +741,7 @@ class App {
     };
     switch (r.kind) {
       case 'point': {
+        this.lastRef = null;
         if (!text) return void empty();
         if (o.allowNumber) { const n = this.parseNum(text); if (n !== null && !text.includes(',')) return r.resolve(n, text); }
         const p = this.parsePoint(text, base);

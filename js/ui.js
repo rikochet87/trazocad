@@ -7,6 +7,8 @@ import { PATTERNS } from './patterns.js';
 import { PAPERS } from './document.js';
 import { makeRV, setWorld, paintEntity } from './render.js';
 import * as G from './geom.js';
+import { parseRich, buildRich, baseFmt } from './richtext.js';
+import { xrefNames, xrefRefs } from './xref.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
@@ -26,20 +28,22 @@ const RIBBON = [
   { tab: 'Inicio', groups: [
     { name: 'Dibujo', items: [['LINE', 'Línea', 'line'], ['PLINE', 'Polilínea', 'pline'], ['CIRCLE', 'Círculo', 'circle'], ['ARC', 'Arco', 'arc'], ['RECTANG', 'Rectángulo', 'rect'], ['POLYGON', 'Polígono', 'polygon'], ['ELLIPSE', 'Elipse', 'ellipse'], ['SPLINE', 'Spline', 'spline'], ['HATCH', 'Sombreado', 'hatch']] },
     { name: 'Modificar', items: [['MOVE', 'Desplazar', 'move'], ['COPY', 'Copiar', 'copy'], ['ROTATE', 'Girar', 'rotate'], ['SCALE', 'Escala', 'scale'], ['MIRROR', 'Simetría', 'mirror'], ['OFFSET', 'Desfase', 'offset'], ['TRIM', 'Recortar', 'trim'], ['EXTEND', 'Alargar', 'extend'], ['FILLET', 'Empalme', 'fillet'], ['CHAMFER', 'Chaflán', 'chamfer'], ['BREAK', 'Partir', 'break'], ['LENGTHEN', 'Longitud', 'lengthen'], ['STRETCH', 'Estirar', 'stretch'], ['ARRAYRECT', 'Matriz', 'arrayrect'], ['ARRAYPOLAR', 'M. polar', 'arraypolar'], ['EXPLODE', 'Descomp.', 'explode'], ['JOIN', 'Unir', 'join'], ['ERASE', 'Borrar', 'erase']] },
-    { name: 'Anotación', items: [['MTEXT', 'Texto', 'mtext'], ['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad']] },
-    { name: 'Bloque', items: [['BLOCK', 'Crear', 'block'], ['INSERT', 'Insertar', 'insert'], ['ATTDEF', 'Atributo', 'attdef']] },
+    { name: 'Anotación', items: [['MTEXT', 'Texto', 'mtext'], ['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table']] },
+    { name: 'Bloque', items: [['BLOCK', 'Crear', 'block'], ['INSERT', 'Insertar', 'insert'], ['BEDIT', 'Editar', 'bedit'], ['ATTDEF', 'Atributo', 'attdef']] },
     { name: 'Capas', custom: 'layers' },
     { name: 'Propiedades', custom: 'props' },
     { name: 'Utilidades', items: [['DIST', 'Distancia', 'dist'], ['AREA', 'Área', 'area'], ['LIST', 'Lista', 'list']] },
   ] },
   { tab: 'Insertar', groups: [
-    { name: 'Bloque', items: [['BLOCK', 'Crear bloque', 'block'], ['INSERT', 'Insertar', 'insert'], ['EXPLODE', 'Descomponer', 'explode'], ['PURGE', 'Limpiar', 'trash']] },
+    { name: 'Bloque', items: [['BLOCK', 'Crear bloque', 'block'], ['INSERT', 'Insertar', 'insert'], ['BEDIT', 'Editor de bloques', 'bedit'], ['EXPLODE', 'Descomponer', 'explode'], ['PURGE', 'Limpiar', 'trash']] },
+    { name: 'Referencia', items: [['XATTACH', 'Enlazar', 'xattach'], ['XREF', 'Referencias externas', 'xref']] },
     { name: 'Atributos', items: [['ATTDEF', 'Definir atributo', 'attdef'], ['ATTEDIT', 'Editar atributos', 'attedit']] },
     { name: 'Importar', items: [['OPEN', 'Abrir DXF', 'dxf'], ['PASTECLIP', 'Pegar', 'copy']] },
   ] },
   { tab: 'Anotar', groups: [
     { name: 'Texto', items: [['MTEXT', 'Líneas múltiples', 'mtext'], ['TEXT', 'Una línea', 'text'], ['STYLE', 'Estilo de texto', 'textstyle']] },
-    { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMORDINATE', 'Coordenada', 'dimord'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
+    { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMORDINATE', 'Coordenada', 'dimord'], ['DIMREASSOCIATE', 'Reasociar', 'dimassoc'], ['DIMDISASSOCIATE', 'Desasociar', 'unlink'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
+    { name: 'Directrices y tablas', items: [['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table']] },
     { name: 'Sombreado', items: [['HATCH', 'Sombreado', 'hatch']] },
   ] },
   { tab: 'Vista', groups: [
@@ -228,15 +232,24 @@ export class UI {
       h('button', { class: 'sb-tg icon', title: 'Parámetros de dibujo', html: icon('settings', 16), onclick: () => this.openSettings() }));
     // Pestañas Modelo / Presentaciones (abajo a la izquierda del área de dibujo)
     this.tabsEl = h('div', { id: 'layout-tabs' });
-    $('#viewport').append(this.tabsEl);
+    // Barra del editor de bloques
+    this.beditName = h('b');
+    this.beditBar = h('div', { id: 'bedit-bar', hidden: true }, 'Editor de bloques:', this.beditName,
+      h('button', { class: 'btn', title: 'Cambiar el punto base del bloque (BASE)', onclick: () => this.app.run('BASE') }, 'Punto base'),
+      h('button', { class: 'btn', title: 'Guardar el bloque sin cerrar el editor (BSAVE)', onclick: () => this.app.run('BSAVE') }, h('span', { html: icon('save', 16) }), 'Guardar'),
+      h('button', { class: 'btn primary', title: 'Cerrar el editor de bloques (BCLOSE)', onclick: () => this.app.run('BCLOSE') }, h('span', { html: icon('close', 16) }), 'Cerrar'));
+    $('#viewport').append(this.tabsEl, this.beditBar);
     this.updateStatus();
   }
   updateStatus() {
-    const app = this.app, S = app.doc.settings;
+    const app = this.app, S = app.doc.settings, be = app.doc.bedit;
     for (const k in this.toggleEls) this.toggleEls[k].classList.toggle('on', k === 'iso' ? !!S.iso : !!app.T[k]);
     this.toggleEls.iso.textContent = S.iso ? `ISO ${{ top: 'SUP', left: 'IZQ', right: 'DER' }[S.isoPlane]}` : 'ISO';
-    this.spaceEl.textContent = app.tab === 'model' ? 'MODELO' : app.vpActive ? 'MODELO (ventana)' : 'PAPEL';
+    this.spaceEl.textContent = be ? 'EDITOR DE BLOQUES' : app.tab === 'model' ? 'MODELO' : app.vpActive ? 'MODELO (ventana)' : 'PAPEL';
     this.spaceEl.classList.toggle('paper', app.tab !== 'model' && !app.vpActive);
+    this.beditBar.hidden = !be;
+    this.tabsEl.hidden = !!be;
+    if (be) this.beditName.textContent = be.name;
     this.renderLayoutTabs();
   }
   renderLayoutTabs() {
@@ -329,8 +342,10 @@ export class UI {
         const raw = pr.get(e);
         let input;
         if (pr.type === 'mtext') {
-          input = h('button', { class: 'btn prop-btn', title: raw, onclick: async () => { const v = await this.editMText(e.text, 'Editar texto de líneas múltiples'); if (v) this.setGeom(e.id, pr, v); } },
+          input = h('button', { class: 'btn prop-btn', title: raw, onclick: async () => { const v = await this.editMText(e, 'Editar texto de líneas múltiples'); if (v?.text) this.setGeom(e.id, pr, v); } },
             (String(raw).split('\n')[0] || '…').slice(0, 28) + (String(raw).length > 28 || String(raw).includes('\n') ? '…' : ''));
+        } else if (pr.type === 'table') {
+          input = h('button', { class: 'btn prop-btn', onclick: async () => { const v = await this.editTable(e); if (v) this.setGeom(e.id, { set: (x, val) => Object.assign(x, val) }, v); } }, `Editar celdas (${raw})…`);
         } else if (pr.ro) {
           const txt = pr.type === 'num' ? fmt(raw, 4) : pr.type === 'deg' ? fmt(raw, 2) + '°' : String(raw);
           input = h('span', { class: 'prop-ro' }, txt);
@@ -355,7 +370,7 @@ export class UI {
     }
     if (!sel.length) {
       body.append(h('div', { class: 'prop-sec' }, 'Dibujo'));
-      body.append(this.propRow(app.tab === 'model' ? 'Objetos (modelo)' : 'Objetos (papel)', h('span', { class: 'prop-ro' }, String(doc.ents.length))));
+      body.append(this.propRow(doc.bedit ? 'Objetos (bloque)' : app.tab === 'model' ? 'Objetos (modelo)' : 'Objetos (papel)', h('span', { class: 'prop-ro' }, String(doc.ents.length))));
       body.append(this.propRow('Bloques', h('span', { class: 'prop-ro' }, String(Object.keys(doc.blocks).length))));
       body.append(this.propRow('Estilo de texto', mkSel(doc.textStyles.map(t => h('option', { value: t.name }, t.name)), doc.cur.textStyle, v => { doc.cur.textStyle = v; })));
       body.append(this.propRow('Estilo de cota', mkSel(doc.dimStyles.map(t => h('option', { value: t.name }, t.name)), doc.cur.dimStyle, v => { doc.cur.dimStyle = v; })));
@@ -390,6 +405,7 @@ export class UI {
         const name = this.selLayer;
         if (!name) return app.print('Seleccione una capa de la lista.');
         if (name === '0') return app.print('La capa "0" no se puede eliminar.');
+        if (name.includes('|')) return app.print('Las capas de una referencia externa se eliminan al desenlazarla (XREF).');
         if (name === doc.cur.layer) return app.print('No se puede eliminar la capa actual.');
         if ([...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)].some(e => e.layer === name)) return app.print(`La capa "${name}" contiene objetos y no se puede eliminar.`);
         tx(() => { doc.layers = doc.layers.filter(l => l.name !== name); this.selLayer = null; });
@@ -412,6 +428,7 @@ export class UI {
           oncontextmenu: async ev => {
             ev.preventDefault();
             if (l.name === '0') return app.print('La capa "0" no se puede renombrar.');
+            if (l.name.includes('|')) return app.print('Las capas de una referencia externa no se pueden renombrar.');
             const n = await this.prompt('Renombrar capa', 'Nuevo nombre', l.name);
             if (!n || n === l.name) return;
             if (doc.layers.some(x => x.name.toLowerCase() === n.toLowerCase())) return app.print(`La capa "${n}" ya existe.`);
@@ -557,14 +574,207 @@ export class UI {
     return this.modal(title, h('label', { class: 'fld' }, label, inp), [{ label: 'Cancelar', value: null }, { label: 'Aceptar', value: () => inp.value.trim(), primary: true }]);
   }
 
-  // Editor de texto de líneas múltiples. Devuelve el texto (sin espacios finales) o null.
-  editMText(text = '', title = 'Texto de líneas múltiples') {
-    const ta = h('textarea', { class: 'mtext-edit', rows: 8, spellcheck: 'true' });
-    ta.value = text;
-    ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ta.closest('.modal').querySelector('.btn.primary').click(); } });
-    const box = h('div', {}, ta, h('p', { class: 'hint' }, 'Intro: nueva línea · Ctrl+Intro: aceptar. Las líneas se ajustan a la anchura del texto.'));
-    setTimeout(() => ta.focus(), 40);
-    return this.modal(title, box, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', value: () => ta.value.replace(/\s+$/, ''), primary: true }]);
+  // Editor de texto de líneas múltiples con formato. src: texto plano o {text, rich, h, style}.
+  // Devuelve {text, rich} (sin espacios ni saltos finales) o null.
+  editMText(src = '', title = 'Texto de líneas múltiples') {
+    const doc = this.app.doc, o = typeof src === 'string' ? { text: src } : src;
+    const h0 = o.h || doc.settings.textH, st = doc.textStyle(o.style || doc.cur.textStyle);
+    const ed = h('div', { class: 'mtext-edit rich', contenteditable: 'true', spellcheck: 'true' });
+    ed.style.fontFamily = `"${st.font}", Arial`;
+    const base = baseFmt(h0);
+    // ---- modelo: piezas {t:'s', s, f} | {t:'nl'} | {t:'stk', a, b, k, f} ----
+    const css = f => [`font-size:${+(f.h / h0).toFixed(4)}em`, f.font ? `font-family:"${f.font}",Arial` : '', f.b ? 'font-weight:bold' : '', f.i ? 'font-style:italic' : '',
+      f.color ? `color:${f.color}` : '', (f.u || f.o || f.k) ? `text-decoration:${[f.u && 'underline', f.o && 'overline', f.k && 'line-through'].filter(Boolean).join(' ')}` : ''].filter(Boolean).join(';');
+    const write = pieces => {
+      ed.replaceChildren(...pieces.map(p => {
+        if (p.t === 'nl') return h('br');
+        if (p.t === 'stk') return h('span', { class: 'stk', contenteditable: 'false', 'data-p': JSON.stringify(p), style: css(p.f), html: `<sup>${esc(p.a)}</sup>${p.k === '^' ? '' : p.k === '#' ? '/' : '<i class="bar"></i>'}<sub>${esc(p.b)}</sub>` });
+        return h('span', { class: 'r', 'data-f': JSON.stringify(p.f), style: css(p.f) }, p.s);
+      }));
+      if (pieces.length && pieces[pieces.length - 1].t === 'nl') ed.append(h('br')); // el último salto necesita otro <br> para verse
+    };
+    const read = () => {
+      const out = [];
+      const walk = (n, f) => {
+        for (const c of n.childNodes) {
+          if (c.nodeType === 3) { if (c.data) out.push({ t: 's', s: c.data.replace(/​/g, ''), f }); continue; }
+          if (c.nodeType !== 1) continue;
+          if (c.tagName === 'BR') { out.push({ t: 'nl' }); continue; }
+          if (c.classList.contains('stk')) { out.push(JSON.parse(c.dataset.p)); continue; }
+          const block = c.tagName === 'DIV' || c.tagName === 'P';
+          if (block && out.length && out[out.length - 1].t !== 'nl') out.push({ t: 'nl' });
+          walk(c, c.dataset.f ? JSON.parse(c.dataset.f) : f);
+        }
+      };
+      walk(ed, base);
+      while (out.length && out[out.length - 1].t === 'nl') out.pop(); // <br> final de relleno
+      return out;
+    };
+    const plen = p => (p.t === 's' ? p.s.length : 1);
+    // Posición de la selección en caracteres del modelo
+    const offsetOf = (node, off) => {
+      let n = 0, found = null;
+      const walk = el => {
+        for (const c of el.childNodes) {
+          if (found !== null) return;
+          if (c === node && c.nodeType === 3) { found = n + off; return; }
+          if (c.nodeType === 3) { n += c.data.length; continue; }
+          if (c.nodeType !== 1) continue;
+          if (node === el && [...el.childNodes].indexOf(c) === off) { found = n; return; }
+          if (c.tagName === 'BR' || c.classList.contains('stk')) { n += 1; continue; }
+          walk(c);
+        }
+        if (node === el && found === null && off >= el.childNodes.length) found = n;
+      };
+      walk(ed);
+      return found ?? n;
+    };
+    const getSel = () => {
+      const s = getSelection();
+      if (!s.rangeCount || !ed.contains(s.anchorNode)) return null;
+      const r = s.getRangeAt(0), a = offsetOf(r.startContainer, r.startOffset), b = offsetOf(r.endContainer, r.endOffset);
+      return [Math.min(a, b), Math.max(a, b)];
+    };
+    const setSel = (a, b = a) => {
+      const pos = k => {
+        let n = 0;
+        for (const c of ed.childNodes) {
+          const len = c.nodeType === 3 ? c.data.length : c.tagName === 'SPAN' && c.classList.contains('r') ? c.textContent.length : 1;
+          if (k <= n + len && (c.nodeType === 3 || c.classList?.contains('r'))) { const t = c.nodeType === 3 ? c : c.firstChild || c; return [t, Math.min(k - n, t.data?.length ?? 0)]; }
+          if (k <= n) return [ed, [...ed.childNodes].indexOf(c)];
+          n += len;
+        }
+        return [ed, ed.childNodes.length];
+      };
+      const r = document.createRange(), [sn, so] = pos(a), [en, eo] = pos(b);
+      r.setStart(sn, so); r.setEnd(en, eo);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    };
+    // Divide las piezas en los desplazamientos a y b; devuelve [antes, dentro, después]
+    const cut = (pieces, a, b) => {
+      const pre = [], mid = [], post = [];
+      let n = 0;
+      for (const p of pieces) {
+        const L = plen(p), s = n, e = n + L;
+        n = e;
+        if (e <= a) { pre.push(p); continue; }
+        if (s >= b) { post.push(p); continue; }
+        if (p.t !== 's') { mid.push(p); continue; }
+        const i0 = Math.max(0, a - s), i1 = Math.min(L, b - s);
+        if (i0 > 0) pre.push({ ...p, s: p.s.slice(0, i0) });
+        mid.push({ ...p, s: p.s.slice(i0, i1) });
+        if (i1 < L) post.push({ ...p, s: p.s.slice(i1) });
+      }
+      return [pre, mid, post];
+    };
+    const apply = fn => {
+      const sel = getSel();
+      if (!sel || sel[0] === sel[1]) return ed.focus();
+      const [pre, mid, post] = cut(read(), sel[0], sel[1]);
+      fn(mid);
+      write([...pre, ...mid, ...post]);
+      ed.focus(); setSel(sel[0], sel[0] + mid.reduce((s, p) => s + plen(p), 0));
+    };
+    const setF = (key, val) => apply(mid => { for (const p of mid) if (p.f) p.f = { ...p.f, [key]: val }; });
+    const toggle = key => apply(mid => { const on = !mid.filter(p => p.f).every(p => p.f[key]); for (const p of mid) if (p.f) p.f = { ...p.f, [key]: on }; });
+    const stack = () => apply(mid => {
+      if (mid.length === 1 && mid[0].t === 'stk') { const p = mid[0]; mid.splice(0, 1, { t: 's', s: `${p.a}${p.k}${p.b}`, f: p.f }); return; }
+      const txt = mid.map(p => (p.t === 's' ? p.s : '')).join(''), m = txt.match(/^(.*?)([/#^])(.*)$/s);
+      if (!m) return this.app.print('Para apilar, seleccione un texto con / (fracción), # (diagonal) o ^ (tolerancia), p. ej. 1/2.');
+      mid.splice(0, mid.length, { t: 'stk', a: m[1].trim(), b: m[3].trim(), k: m[2], f: mid.find(p => p.f)?.f || base });
+    });
+    ed.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ed.closest('.modal').querySelector('.btn.primary').click(); return; }
+      if (e.key === 'Enter') { // salto de línea en el modelo (sin <div> del navegador)
+        e.preventDefault();
+        const sel = getSel() || [0, 0], [pre, , post] = cut(read(), sel[0], sel[1]);
+        write([...pre, { t: 'nl' }, ...post]); setSel(sel[0] + 1);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && 'biu'.includes(e.key.toLowerCase())) { e.preventDefault(); toggle({ b: 'b', i: 'i', u: 'u' }[e.key.toLowerCase()]); }
+    });
+    ed.addEventListener('paste', e => { e.preventDefault(); document.execCommand('insertText', false, e.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n')); });
+    // ---- barra de herramientas ----
+    const tb = (label, title, fn, cls = '') => h('button', { class: 'tb-btn ' + cls, title, onmousedown: e => e.preventDefault(), onclick: fn }, label);
+    const fontSel = h('select', { title: 'Fuente de la selección', onmousedown: () => { saved = getSel(); }, onchange: e => { restore(); setF('font', e.target.value || null); e.target.value = ''; } },
+      h('option', { value: '' }, `Fuente (${st.font})`), ...FONTS.map(f => h('option', { value: f }, f)));
+    const hInp = h('input', { type: 'number', step: 'any', min: 0, value: h0, title: 'Altura de la selección (Intro para aplicar)', class: 'tb-h',
+      onmousedown: () => { saved = getSel(); },
+      onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); const v = parseFloat(e.target.value); if (v > 0) { restore(); setF('h', v); } } } });
+    const colSel = h('select', { title: 'Color de la selección', onmousedown: () => { saved = getSel(); }, onchange: async e => {
+      let v = e.target.value; e.target.value = '';
+      if (v === '__custom') v = await this.pickColor('#ffffff');
+      if (v === null || v === undefined) return;
+      restore(); setF('color', v === 'BYLAYER' ? null : v);
+    } }, h('option', { value: '' }, 'Color'), ...this.colorOptions(null));
+    let saved = null;
+    const restore = () => { ed.focus(); if (saved) setSel(saved[0], saved[1]); };
+    const sym = ch => tb(ch, `Insertar ${ch}`, () => { ed.focus(); document.execCommand('insertText', false, ch); });
+    const bar = h('div', { class: 'mt-toolbar' }, fontSel, hInp,
+      tb('B', 'Negrita (Ctrl+B)', () => toggle('b'), 'b'), tb('I', 'Cursiva (Ctrl+I)', () => toggle('i'), 'i'), tb('U', 'Subrayado (Ctrl+U)', () => toggle('u'), 'u'),
+      tb('O', 'Sobrerrayado', () => toggle('o'), 'o'), tb('S', 'Tachado', () => toggle('k'), 'k'), colSel,
+      tb('a/b', 'Apilar o desapilar la selección (1/2, 1#2, +0.1^-0.1)', stack), sym('°'), sym('±'), sym('Ø'),
+      tb('Quitar formato', 'Quita el formato de la selección', () => apply(mid => { for (const p of mid) if (p.f) p.f = base; })));
+    write(o.rich ? parseRich(o.text, h0) : String(o.text ?? '').split('\n').flatMap((s, i) => (i ? [{ t: 'nl' }] : []).concat(s ? [{ t: 's', s, f: base }] : [])));
+    const box = h('div', {}, bar, ed, h('p', { class: 'hint' }, 'Intro: nueva línea · Ctrl+Intro: aceptar. Seleccione texto y use la barra para darle formato. Las líneas se ajustan a la anchura del texto.'));
+    setTimeout(() => { ed.focus(); setSel(read().reduce((s, p) => s + plen(p), 0)); }, 40);
+    return this.modal(title, box, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', primary: true, value: () => {
+      const pieces = read();
+      while (pieces.length && pieces[pieces.length - 1].t === 'nl') pieces.pop();
+      const last = pieces[pieces.length - 1];
+      if (last?.t === 's') last.s = last.s.replace(/\s+$/, '');
+      return buildRich(pieces, h0, st.font);
+    } }]);
+  }
+
+  // Editor de las celdas de una tabla. focus: [fila, columna] inicial. Devuelve {cells, cols, rows, title, header} o null.
+  editTable(e, focus = null) {
+    const cells = e.cells.map(r => [...r]), cols = [...e.cols], rows = [...e.rows];
+    let title = !!e.title, header = !!e.header, sel = focus || [0, 0];
+    const fit = () => { while (cells.length < rows.length) cells.push([]); cells.length = rows.length; for (const r of cells) { while (r.length < cols.length) r.push(''); r.length = cols.length; } };
+    const grid = h('div', { class: 'table-grid' });
+    // Pegar texto con tabuladores o saltos de línea (hoja de cálculo): se reparte por las celdas
+    const paste = (ev, r0, c0) => {
+      const t = ev.clipboardData.getData('text/plain');
+      if (!/[\t\n]/.test(t.replace(/\r?\n$/, ''))) return;
+      ev.preventDefault();
+      const data = t.replace(/\r/g, '').replace(/\n$/, '').split('\n').map(l => l.split('\t'));
+      while (rows.length < r0 + data.length) rows.push(rows[rows.length - 1]);
+      const wmax = Math.max(...data.map(l => l.length));
+      while (cols.length < c0 + wmax) cols.push(cols[cols.length - 1]);
+      fit();
+      data.forEach((l, i) => l.forEach((v, j) => { cells[r0 + i][c0 + j] = v; }));
+      render();
+    };
+    const render = () => {
+      fit();
+      const nc = cols.length, letters = i => String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : '');
+      const tbl = h('table', {}, h('tr', {}, h('th', {}, ''), ...cols.map((_, c) => h('th', {}, letters(c)))));
+      rows.forEach((_, r) => {
+        const isTitle = title && r === 0, tr = h('tr', {}, h('th', {}, String(r + 1)));
+        const cell = (c, span) => {
+          const ta = h('textarea', { rows: 1, 'data-rc': `${r},${c}`, onfocus: () => { sel = [r, c]; }, oninput: ev => { cells[r][c] = ev.target.value; }, onpaste: ev => paste(ev, r, c) });
+          ta.value = cells[r][c] ?? '';
+          ta.addEventListener('keydown', ev => { if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); grid.closest('.modal').querySelector('.btn.primary').click(); } });
+          return h('td', { class: isTitle ? 'title' : '', colspan: span > 1 ? span : false }, ta);
+        };
+        if (isTitle) tr.append(cell(0, nc)); else cols.forEach((__, c) => tr.append(cell(c, 1)));
+        tbl.append(tr);
+      });
+      grid.replaceChildren(tbl);
+      setTimeout(() => grid.querySelector(`[data-rc="${sel[0]},${title && sel[0] === 0 ? 0 : sel[1]}"]`)?.focus(), 0);
+    };
+    const btn = (label, fn) => h('button', { class: 'btn', onclick: () => { fn(); render(); } }, label);
+    const chk = (label, get, set) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: get(), onchange: ev => { set(ev.target.checked); render(); } }), label);
+    const bar = h('div', { class: 'lay-bar' },
+      btn('+ Fila', () => { rows.splice(sel[0] + 1, 0, rows[sel[0]]); cells.splice(sel[0] + 1, 0, cols.map(() => '')); sel = [sel[0] + 1, sel[1]]; }),
+      btn('− Fila', () => { if (rows.length > 1) { rows.splice(sel[0], 1); cells.splice(sel[0], 1); sel = [Math.min(sel[0], rows.length - 1), sel[1]]; } }),
+      btn('+ Columna', () => { cols.splice(sel[1] + 1, 0, cols[sel[1]]); for (const r of cells) r.splice(sel[1] + 1, 0, ''); sel = [sel[0], sel[1] + 1]; }),
+      btn('− Columna', () => { if (cols.length > 1) { cols.splice(sel[1], 1); for (const r of cells) r.splice(sel[1], 1); sel = [sel[0], Math.min(sel[1], cols.length - 1)]; } }),
+      chk('Fila de título', () => title, v => { title = v; }), chk('Encabezados', () => header, v => { header = v; }));
+    render();
+    const box = h('div', {}, bar, grid, h('p', { class: 'hint' }, 'Escriba en las celdas (Intro: nueva línea dentro de la celda · Ctrl+Intro: aceptar). Puede pegar un rango copiado de una hoja de cálculo.'));
+    return this.modal(`Tabla (${rows.length} × ${cols.length})`, box, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', primary: true, value: () => { fit(); return { cells, cols, rows, title, header }; } }]);
   }
 
   // Valores de los atributos de una referencia a bloque. Devuelve {ETIQUETA: valor} o null.
@@ -600,14 +810,16 @@ export class UI {
     const plane = h('select', { 'data-plane': '1' }, ...Object.entries(ISO_NAMES).map(([k, v]) => h('option', { value: k }, `Plano ${v}`)));
     plane.value = S.isoPlane;
     sec('Dibujo isométrico', h('div', { class: 'grid2' }, h('label', { class: 'chk' }, isoChk, 'Rejilla y forzado isométricos'), h('label', { class: 'fld' }, 'Plano isométrico (F5)', plane)));
-    sec('Otros', h('div', { class: 'grid2' }, field('Altura de texto por defecto', 'textH'), field('Escala de tipo de línea', 'ltscale'), field('Decimales de coordenadas', 'coordDec', 1)));
+    const assocChk = h('input', { type: 'checkbox', checked: !!S.dimAssoc });
+    sec('Otros', h('div', { class: 'grid2' }, field('Altura de texto por defecto', 'textH'), field('Escala de tipo de línea', 'ltscale'), field('Decimales de coordenadas', 'coordDec', 1),
+      h('label', { class: 'chk', title: 'Las cotas nuevas se asocian a la geometría designada con referencia a objetos (DIMASSOC)' }, assocChk, 'Cotas asociativas')));
     this.modal('Parámetros de dibujo', box, [{ label: 'Cancelar', value: false }, { label: 'Aceptar', value: true, primary: true }]).then(ok => {
       if (!ok) return;
       box.querySelectorAll('[data-key]').forEach(inp => {
         const v = parseFloat(inp.value);
         if (Number.isFinite(v) && v >= 0) S[inp.dataset.key] = inp.dataset.key.endsWith('Dec') ? Math.min(8, Math.round(v)) : v;
       });
-      S.iso = isoChk.checked; S.isoPlane = plane.value;
+      S.iso = isoChk.checked; S.isoPlane = plane.value; S.dimAssoc = assocChk.checked;
       app.ui.updateStatus();
       box.querySelectorAll('[data-osnap]').forEach(inp => { app.osnapModes[inp.dataset.osnap] = inp.checked; });
       app.savePrefs();
@@ -647,9 +859,29 @@ export class UI {
     return this.modal('Patrón de sombreado', grid, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', value: () => chosen, primary: true }]);
   }
 
+  // Administrador de referencias externas. Devuelve {action: 'attach'|'reload'|'detach'|'bind', name} o null.
+  xrefManager() {
+    const doc = this.app.doc, names = xrefNames(doc).sort();
+    let sel = names[0];
+    const tbody = h('tbody');
+    for (const n of names) {
+      const b = doc.blocks[n], d = new Date(b.xref.loaded);
+      const tr = h('tr', { class: n === sel ? 'sel' : '', onclick: () => { sel = n; tbody.querySelectorAll('tr').forEach(x => x.classList.toggle('sel', x === tr)); } },
+        h('td', {}, h('b', {}, n)), h('td', {}, b.xref.file), h('td', {}, String(xrefRefs(doc, n))), h('td', {}, String(b.ents.length)),
+        h('td', {}, Number.isNaN(+d) ? '—' : d.toLocaleString('es')));
+      tbody.append(tr);
+    }
+    const box = h('div', {},
+      h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...['Nombre', 'Archivo', 'Inserciones', 'Objetos', 'Cargada'].map(t => h('th', {}, t)))), tbody),
+      h('p', { class: 'hint' }, 'El contenido de cada referencia se guarda en caché dentro del dibujo. «Recargar» vuelve a leer el archivo; «Unir» la convierte en un bloque normal; «Desenlazar» la elimina.'));
+    const act = a => () => ({ action: a, name: sel });
+    return this.modal('Referencias externas', box, [{ label: 'Cerrar', value: null }, { label: 'Enlazar…', value: act('attach') }, { label: 'Desenlazar', value: act('detach') },
+      { label: 'Unir', value: act('bind') }, { label: 'Recargar', value: act('reload'), primary: true }]);
+  }
+
   // Selector de bloque con vista previa. Devuelve el nombre o null.
   pickBlock() {
-    const doc = this.app.doc, names = Object.keys(doc.blocks).filter(n => !n.startsWith('*')).sort();
+    const doc = this.app.doc, names = Object.keys(doc.blocks).filter(n => !n.startsWith('*') && !doc.blocks[n].xrefDep).sort();
     let chosen = names[0];
     const grid = h('div', { class: 'swatches blocks' });
     for (const name of names) {
@@ -704,7 +936,7 @@ export class UI {
     doc.begin();
     doc[listKey] = work;
     doc.cur[curKey] = current;
-    const typs = listKey === 'textStyles' ? ['text', 'mtext', 'attdef'] : ['dim'];
+    const typs = listKey === 'textStyles' ? ['text', 'mtext', 'attdef', 'mleader', 'table'] : ['dim'];
     for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (typs.includes(e.type) && !names.has(e.style)) e.style = work[0].name;
     if (listKey === 'textStyles') for (const d of doc.dimStyles) if (!names.has(d.textStyle)) d.textStyle = work[0].name;
     for (const b of Object.values(doc.blocks)) b.ver = (b.ver || 0) + 1;
@@ -792,6 +1024,16 @@ export class UI {
         <li>Pestañas <b>Modelo / Presentación</b> abajo a la izquierda; <b>+</b> crea una presentación con marco, cajetín y una ventana gráfica a escala estándar.</li>
         <li>Doble clic dentro de una ventana gráfica: trabaja en el modelo a través de ella (zoom y encuadre cambian su vista). Doble clic fuera: vuelve al papel.</li>
         <li>La escala de la ventana se cambia en la paleta de Propiedades. Imprimir, SVG y PNG de una presentación salen a escala real en milímetros.</li>
+      </ul>
+      <h4>Novedades de la v0.4</h4>
+      <ul>
+        <li><b>Cotas asociativas</b>: los puntos designados con referencia a objetos quedan unidos a la geometría; al modificarla, la cota se actualiza (también en la vista previa de los pinzamientos). INTRO en la primera solicitud de DIMLINEAR/DIMALIGNED acota una línea, un arco o un tramo de polilínea. DIMDISASSOCIATE y DIMREASSOCIATE quitan o restablecen la asociación.</li>
+        <li><b>MLEADER</b> (<code>LE</code>): directriz con texto con formato, globo numerado o sin contenido. Flecha y altura del estilo de cota actual.</li>
+        <li><b>TABLE</b> (<code>TB</code>): tablas con título, encabezados y celdas que se ajustan al texto. Doble clic para editar; se puede pegar un rango de una hoja de cálculo.</li>
+        <li><b>Formato en MTEXT</b>: negrita, cursiva, subrayado, color, fuente, altura y fracciones apiladas desde la barra del editor.</li>
+        <li><b>Splines</b>: recortar, alargar, desfasar y partir, con intersecciones exactas.</li>
+        <li><b>BEDIT</b>: editor de bloques; BASE, BSAVE y BCLOSE. <b>XATTACH / XREF</b>: referencias externas a otros dibujos .tcad o .dxf (recargar, desenlazar, unir).</li>
+        <li><b>DXF</b>: las cotas se exportan como entidades DIMENSION, con sus estilos de cota; se importan DIMENSION, LEADER, MULTILEADER y tablas.</li>
       </ul>
       <h4>Novedades de la v0.3</h4>
       <ul>

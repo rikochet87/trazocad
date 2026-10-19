@@ -3,6 +3,8 @@ import * as G from './geom.js';
 import { TYPES, cloneEnt, xformEnt, bboxOf, describe, fmt, dimParts, plArea, plLength, hatchArea, blockAttdefs } from './entities.js';
 import { findBoundary, loopsOfEntity } from './hatch.js';
 import { rebuild as rebuildSpline, splinePts } from './spline.js';
+import { angBase, remapDim, updateDim } from './assoc.js';
+import { parseSource, defineXref, detachXref, bindXref, xrefNames, xrefRefs, cleanXrefName } from './xref.js';
 import * as OPS from './ops.js';
 const { P, Mx } = G;
 
@@ -38,10 +40,11 @@ function applyX(c, ids, m, copy) {
   }
   remapAssoc(made, map);
 }
-// Un sombreado copiado junto con su contorno queda asociado a las copias; copiado solo, deja de ser asociativo
+// Un sombreado o una cota copiados junto con su geometría quedan asociados a las copias; copiados solos, dejan de ser asociativos
 function remapAssoc(ents, map) {
   for (const n of ents) {
     if (!n.assoc) continue;
+    if (n.type === 'dim') { remapDim(n, map); continue; }
     if (n.assoc.every(id => map.has(id))) n.assoc = n.assoc.map(id => map.get(id));
     else { delete n.assoc; delete n.seed; }
   }
@@ -352,14 +355,40 @@ def('MTEXT', ['T', 'MT', 'TEXTOM'], 'Crea un párrafo de texto de líneas múlti
     p = G.add(a, G.rot(P(lx, ly), rot)); w = x1 - x0;
     break;
   }
-  const text = await c.app.ui.editMText('', 'Texto de líneas múltiples');
-  if (!text) return;
-  c.add({ type: 'mtext', p, w: w > 1e-9 ? w : 0, h, rot, attach, text });
+  const r = await c.app.ui.editMText({ text: '', h, style: c.doc.cur.textStyle }, 'Texto de líneas múltiples');
+  if (!r?.text) return;
+  c.add({ type: 'mtext', p, w: w > 1e-9 ? w : 0, h, rot, attach, text: r.text, ...(r.rich ? { rich: true } : {}) });
 }, { group: 'Anotación' });
 
+// Asociatividad de una cota nueva a partir de las referencias de sus puntos ({p1: ref, …}; se omiten las nulas)
+const withAssoc = (c, e, refs) => {
+  const a = Object.fromEntries(Object.entries(refs).filter(([, r]) => r != null));
+  if (Object.keys(a).length && c.settings.dimAssoc) e.assoc = a;
+  return e;
+};
+
+// Puntos de una línea, arco o tramo de polilínea designados para acotarlos (INTRO en la primera solicitud)
+function dimObjectPoints(o) {
+  const e = o.e;
+  if (e.type === 'line') return { p1: e.p1, p2: e.p2, r1: { id: e.id, snap: 'end', i: 0 }, r2: { id: e.id, snap: 'end', i: 1 } };
+  if (e.type === 'arc') { const s = TYPES.arc.snaps(e).end; return { p1: s[0], p2: s[1], r1: { id: e.id, snap: 'end', i: 0 }, r2: { id: e.id, snap: 'end', i: 1 } }; }
+  if (e.type === 'pline') {
+    const n = e.pts.length, k = Math.min(Math.floor(OPS.curveInfo(e).param(OPS.nearestOn(e, o.pt))), (e.closed ? n : n - 1) - 1), j = (k + 1) % n;
+    return { p1: e.pts[k], p2: e.pts[j], r1: { id: e.id, snap: 'end', i: k }, r2: { id: e.id, snap: 'end', i: j } };
+  }
+  return null;
+}
+
 async function dimAsk(c, kind) {
-  const p1 = await c.getPoint('Precise origen de la primera línea de referencia');
-  const p2 = await c.getPoint('Precise origen de la segunda línea de referencia', { base: p1 });
+  let p1, p2, r1, r2;
+  const first = await c.getPoint('Precise origen de la primera línea de referencia o <designar objeto>', { allowEnter: true });
+  if (first === null) {
+    const o = await c.getEntity('Designe objeto que desea acotar', { filter: e => ['line', 'arc', 'pline'].includes(e.type) });
+    ({ p1, p2, r1, r2 } = dimObjectPoints(o));
+  } else {
+    p1 = first; r1 = c.ref();
+    p2 = await c.getPoint('Precise origen de la segunda línea de referencia', { base: p1 }); r2 = c.ref();
+  }
   let text = '';
   const mk = p3 => {
     let rot = 0;
@@ -373,8 +402,8 @@ async function dimAsk(c, kind) {
   for (;;) {
     const p3 = await c.getPoint('Precise ubicación de línea de cota', { options: ['Texto'], preview: p => [mk(p)], rubber: false });
     if (p3 === 'Texto') { text = await c.getString('Indique texto de cota (<> = medida)', { spaces: true, def: '<>' }); continue; }
-    const e = c.add(mk(p3));
-    c.print(`Texto de cota = ${dimParts(e).text.str}`);
+    const e = c.add(withAssoc(c, mk(p3), { p1: r1, p2: r2 }));
+    c.print(`Texto de cota = ${dimParts(e).text.str}${e.assoc ? ' (asociativa)' : ''}`);
     return;
   }
 }
@@ -386,31 +415,33 @@ async function dimCircle(c, kind) {
   const { c: cen, r } = o.e;
   const mk = p => ({ type: 'dim', kind, p1: cen, p2: G.polar(cen, G.ang(cen, p), r), p3: p, style: c.doc.cur.dimStyle });
   const p = await c.getPoint('Precise ubicación de línea de cota', { preview: q => [mk(q)], rubber: false });
-  const e = c.add(mk(p));
+  const e = c.add(withAssoc(c, mk(p), { obj: o.e.id }));
   c.print(`Texto de cota = ${dimParts(e).text.str}`);
 }
 def('DIMRADIUS', ['DRA', 'COTARADIO', 'ACORADIO'], 'Cota de radio', c => dimCircle(c, 'rad'), { group: 'Anotación' });
 def('DIMDIAMETER', ['DDI', 'COTADIAMETRO', 'ACODIAMETRO'], 'Cota de diámetro', c => dimCircle(c, 'dia'), { group: 'Anotación' });
 def('DIMANGULAR', ['DAN', 'COTAANGULAR', 'ACOANGULO'], 'Cota angular entre dos líneas, de un arco o por tres puntos', async c => {
   const o = await c.getEntity('Designe arco, círculo o línea, o INTRO para precisar vértice', { allowEnter: true, filter: e => ['line', 'arc', 'circle'].includes(e.type) });
-  let base;
+  let base, refs = {};
   if (!o) {
-    const cen = await c.getPoint('Precise vértice del ángulo');
-    const p1 = await c.getPoint('Precise primer punto final del ángulo', { base: cen });
+    const cen = await c.getPoint('Precise vértice del ángulo'), rc = c.ref();
+    const p1 = await c.getPoint('Precise primer punto final del ángulo', { base: cen }), r1 = c.ref();
     const p2 = await c.getPoint('Precise segundo punto final del ángulo', { base: cen });
     base = { c: cen, p1, p2 };
+    refs = { c: rc, p1: r1, p2: c.ref() };
   } else if (o.e.type === 'arc') {
     const e = o.e;
     base = { c: e.c, p1: G.polar(e.c, e.a1, e.r), p2: G.polar(e.c, e.a2, e.r) };
+    refs = { obj: e.id };
   } else if (o.e.type === 'circle') {
     const e = o.e, p2 = await c.getPoint('Precise segundo punto final del ángulo', { base: e.c });
     base = { c: e.c, p1: G.polar(e.c, G.ang(e.c, o.pt), e.r), p2 };
+    refs = { obj: e.id, p2: c.ref() };
   } else {
     const o2 = await c.getEntity('Designe segunda línea', { filter: e => e.type === 'line' && e.id !== o.e.id });
-    const l1 = [o.e.p1, o.e.p2], l2 = [o2.e.p1, o2.e.p2], X = G.llInt(l1[0], l1[1], l2[0], l2[1]);
-    if (!X) return c.print('Las líneas son paralelas.');
-    const far = l => (G.dist(l[0], X.p) > G.dist(l[1], X.p) ? l[0] : l[1]);
-    base = { c: X.p, p1: far(l1), p2: far(l2), l1, l2 };
+    base = angBase(o.e, o2.e);
+    if (!base) return c.print('Las líneas son paralelas.');
+    refs = { l1: o.e.id, l2: o2.e.id };
   }
   if (G.dist(base.c, base.p1) < 1e-12 || G.dist(base.c, base.p2) < 1e-12) return c.print('Ángulo no válido.');
   let text = '';
@@ -418,14 +449,14 @@ def('DIMANGULAR', ['DAN', 'COTAANGULAR', 'ACOANGULO'], 'Cota angular entre dos l
   for (;;) {
     const p3 = await c.getPoint('Precise ubicación del arco de cota', { options: ['Texto'], preview: p => [mk(p)], rubber: false });
     if (p3 === 'Texto') { text = await c.getString('Indique texto de cota (<> = medida)', { spaces: true, def: '<>' }); continue; }
-    const e = c.add(mk(p3));
+    const e = c.add(withAssoc(c, mk(p3), refs));
     c.print(`Texto de cota = ${dimParts(e).text.str}`);
     return;
   }
 }, { group: 'Anotación' });
 
 def('DIMORDINATE', ['DOR', 'COTACOORD', 'ACOCOORDENADA'], 'Cota de la coordenada X o Y de un punto', async c => {
-  const f = await c.getPoint('Precise ubicación de punto');
+  const f = await c.getPoint('Precise ubicación de punto'), rf = c.ref();
   let axis = null, text = '';
   const mk = q => ({ type: 'dim', kind: 'ord', p1: f, p2: f, p3: q, ...(axis ? { axis } : {}), text, style: c.doc.cur.dimStyle });
   for (;;) {
@@ -433,13 +464,111 @@ def('DIMORDINATE', ['DOR', 'COTACOORD', 'ACOCOORDENADA'], 'Cota de la coordenada
     if (q === 'Xdato') { axis = 'x'; continue; }
     if (q === 'Ydato') { axis = 'y'; continue; }
     if (q === 'Texto') { text = await c.getString('Indique texto de cota (<> = medida)', { spaces: true, def: '<>' }); continue; }
-    const n = mk(q);
+    const n = withAssoc(c, mk(q), { p1: rf });
     n.axis = dimParts(n).axis;
     const e = c.add(n);
     c.print(`Texto de cota = ${dimParts(e).text.str}`);
     return;
   }
 }, { group: 'Anotación' });
+
+// Valores de directriz a partir del estilo de cota actual (flecha y altura) y del estilo de texto actual
+function leaderDefaults(c) {
+  const ds = c.doc.dimStyle(c.doc.cur.dimStyle), k = ds.scale || 1, h = ds.txt * k;
+  return { h, asz: ds.asz * k, arrow: ds.arrow === 'tick' ? 'closed' : ds.arrow, land: 2 * h, gap: ds.gap * k, w: 0, style: c.doc.cur.textStyle };
+}
+const ML_KW = { Mtexto: 'mtext', Globo: 'block', Ninguno: 'none' };
+def('MLEADER', ['MLD', 'LE', 'DIRECTRIZM', 'DIRECTRIZ', 'QLEADER'], 'Directriz múltiple con texto, globo numerado o sin contenido', async c => {
+  const S = c.settings, base = leaderDefaults(c);
+  let content = S.mleaderContent || 'mtext', first;
+  const names = { mtext: 'texto', block: 'globo', none: 'ninguno' };
+  for (;;) {
+    const r = await c.getPoint(`Precise ubicación de la punta de flecha (contenido: ${names[content]})`, { options: ['Contenido'] });
+    if (r !== 'Contenido') { first = r; break; }
+    const k = await c.getKeyword('Indique tipo de contenido', Object.keys(ML_KW), Object.keys(ML_KW).find(x => ML_KW[x] === content));
+    content = S.mleaderContent = ML_KW[k];
+  }
+  const pts = [first], sample = content === 'block' ? String((S.balloonNum || 0) + 1) : content === 'mtext' ? 'Texto' : '';
+  const mk = (list, text = sample) => ({ type: 'mleader', ...base, pts: list, content, text });
+  for (;;) {
+    const r = await c.getPoint(pts.length < 2 ? 'Precise ubicación del rellano' : 'Precise punto siguiente o INTRO para terminar', {
+      base: pts[pts.length - 1], allowEnter: pts.length >= 2, rubber: false, preview: p => [mk([...pts, p])],
+    });
+    if (r === null) break;
+    if (!G.eqPt(r, pts[pts.length - 1], 1e-9)) pts.push(r);
+    if (pts.length >= 12) break;
+  }
+  let text = '', rich = false;
+  if (content === 'mtext') {
+    const v = await c.app.ui.editMText({ text: '', h: base.h, style: base.style }, 'Texto de la directriz');
+    if (!v?.text) return c.print('Directriz cancelada: no hay texto.');
+    ({ text, rich } = v);
+  } else if (content === 'block') {
+    text = (await c.getString('Indique el texto del globo', { def: sample })).trim();
+    if (/^\d+$/.test(text)) S.balloonNum = +text;
+  }
+  c.add({ ...mk(pts, text), ...(rich ? { rich: true } : {}) });
+}, { group: 'Anotación' });
+
+def('TABLE', ['TB', 'TABLA'], 'Crea una tabla con título, encabezados y celdas de texto', async c => {
+  const S = c.settings;
+  let nc = S.tableCols || 3, nr = S.tableRows || 4, th = S.textH;
+  const mk = p => {
+    const cw = th * 14, rh = th * 2.2, n = nr + 2;
+    const cells = Array.from({ length: n }, (_, r) => Array.from({ length: nc }, (_, k) => (r === 0 && k === 0 ? 'Título' : r === 1 ? `Encabezado ${k + 1}` : '')));
+    return { type: 'table', p, rot: 0, cols: Array(nc).fill(cw), rows: Array(n).fill(rh), cells, th, title: true, header: true };
+  };
+  let p;
+  for (;;) {
+    const r = await c.getPoint(`Precise punto de inserción (${nc} columnas, ${nr} filas de datos, altura de texto ${fmt(th, 4)})`, { options: ['Columnas', 'Filas', 'Altura'], preview: q => [mk(q)] });
+    if (r === 'Columnas') { nc = S.tableCols = await c.getNumber('Indique número de columnas', { def: nc, int: true, min: 1, max: 50 }); continue; }
+    if (r === 'Filas') { nr = S.tableRows = await c.getNumber('Indique número de filas de datos', { def: nr, int: true, min: 1, max: 500 }); continue; }
+    if (r === 'Altura') { const v = await c.getDistance('Precise altura de texto', { def: th }); if (v > 0) th = S.textH = v; continue; }
+    p = r; break;
+  }
+  const e = c.add(mk(p));
+  const v = await c.app.ui.editTable(e, [1, 0]);
+  if (v) c.doc.modify(e.id, x => Object.assign(x, v));
+}, { group: 'Anotación' });
+
+def('DIMDISASSOCIATE',['DDA', 'DESASOCIARCOTA'], 'Elimina la asociatividad de las cotas designadas', async c => {
+  const ids = (await c.getSelection('Designe cotas')).filter(id => c.doc.get(id)?.assoc && c.doc.get(id).type === 'dim');
+  for (const id of ids) c.doc.modify(id, e => { delete e.assoc; });
+  c.print(`${ids.length} cota(s) desasociada(s).`);
+}, { group: 'Anotación', sel: true });
+
+def('DIMREASSOCIATE', ['DRE', 'REASOCIARCOTA'], 'Asocia los puntos de las cotas a la geometría', async c => {
+  const ids = (await c.getSelection('Designe cotas')).filter(id => c.doc.get(id)?.type === 'dim');
+  const get = id => c.doc.get(id);
+  for (const id of ids) {
+    const e = get(id), refs = { ...e.assoc };
+    c.app.sel.clear(); c.app.sel.add(id); c.app.selChanged();
+    if (e.kind === 'rad' || e.kind === 'dia' || (e.kind === 'ang' && !e.l1 && G.dist(e.c, e.p1) > 1e-9 && Math.abs(G.dist(e.c, e.p1) - G.dist(e.c, e.p2)) < 1e-9)) {
+      const o = await c.getEntity('Designe arco o círculo, o INTRO para omitir', { allowEnter: true, filter: x => x.type === 'circle' || x.type === 'arc' });
+      if (o) { refs.obj = o.e.id; delete refs.c; delete refs.p1; }
+    } else if (e.kind === 'ang' && e.l1) {
+      const a = await c.getEntity('Designe primera línea, o INTRO para omitir', { allowEnter: true, filter: x => x.type === 'line' });
+      if (a) {
+        const b = await c.getEntity('Designe segunda línea', { filter: x => x.type === 'line' && x.id !== a.e.id });
+        Object.assign(refs, { l1: a.e.id, l2: b.e.id });
+      }
+    } else {
+      const keys = e.kind === 'ord' ? [['p1', 'ubicación del punto']] : e.kind === 'ang' ? [['c', 'vértice'], ['p1', 'primer punto final'], ['p2', 'segundo punto final']] : [['p1', 'primer origen de línea de referencia'], ['p2', 'segundo origen de línea de referencia']];
+      for (const [k, label] of keys) {
+        const p = await c.getPoint(`Precise ${label} o INTRO para mantenerlo`, { allowEnter: true });
+        if (!p) continue;
+        if (c.app.lastRef) refs[k] = c.app.lastRef; else c.print('El punto no está sobre un objeto: no se asocia.');
+      }
+    }
+    c.doc.modify(id, x => {
+      if (!Object.keys(refs).length) return;
+      x.assoc = refs;
+      if (!updateDim(x, get)) delete x.assoc;
+    });
+  }
+  c.app.clearSel();
+  c.print(`${ids.filter(id => get(id)?.assoc).length} de ${ids.length} cota(s) asociada(s).`);
+}, { group: 'Anotación', sel: true });
 
 def('STYLE', ['ST', 'ESTILO'], 'Administra los estilos de texto', async c => { await c.app.ui.textStyleManager(); }, { group: 'Anotación' });
 def('DIMSTYLE', ['D', 'DST', 'ACOESTIL', 'ESTILOCOTA'], 'Administra los estilos de cota', async c => { await c.app.ui.dimStyleManager(); }, { group: 'Anotación' });
@@ -493,9 +622,14 @@ def('ATTEDIT', ['ATE', 'EATTEDIT', 'EDITATR'], 'Edita los valores de los atribut
 }, { group: 'Bloques' });
 
 def('INSERT', ['I', 'INSERTAR', 'DDINSERT'], 'Inserta una referencia a un bloque', async (c, arg) => {
-  if (!Object.keys(c.doc.blocks).some(n => !n.startsWith('*'))) return c.print('No hay bloques definidos. Cree uno con BLOQUE.');
+  if (!Object.keys(c.doc.blocks).some(n => !n.startsWith('*') && !c.doc.blocks[n].xrefDep)) return c.print('No hay bloques definidos. Cree uno con BLOQUE.');
   const name = arg || await c.app.ui.pickBlock();
   if (!name || !c.doc.blocks[name]) return;
+  await placeInsert(c, name);
+}, { group: 'Bloques' });
+
+// Pide punto de inserción, escala y rotación (y los atributos) y añade la referencia al bloque
+async function placeInsert(c, name) {
   let s = 1, rot = 0;
   const cur = c.doc.cur;
   const mk = p => ({ type: 'insert', name, p, sx: s, sy: s, rot, layer: cur.layer, color: cur.color, ltype: cur.ltype, lw: cur.lw });
@@ -508,9 +642,110 @@ def('INSERT', ['I', 'INSERTAR', 'DDINSERT'], 'Inserta una referencia a un bloque
       ins.attribs = {};
       for (const a of defs) ins.attribs[a.tag] = await c.getString(a.prompt || `Indique valor de ${a.tag}`, { spaces: true, def: a.def || '' });
     }
-    c.add(ins);
-    return;
+    return c.add(ins);
   }
+}
+
+// ---- Referencias externas ----
+async function readXrefFile(c, name, hint) {
+  const app = c.app, h = app.xrefHandles?.[name];
+  let picked = null;
+  if (h) { try { picked = { file: await h.getFile(), handle: h }; } catch { picked = null; } }
+  if (!picked) {
+    if (hint) c.print(`Seleccione el archivo de la referencia "${name}" (${hint}).`);
+    picked = await app.io.pickFile('Dibujos de referencia');
+  }
+  if (!picked) return null;
+  (app.xrefHandles ||= {})[name] = picked.handle;
+  return { src: parseSource(await picked.file.text(), picked.file.name), file: picked.file.name };
+}
+def('XATTACH', ['XA', 'ENLAZARX', 'REFXENLAZAR'], 'Enlaza otro dibujo (.tcad o .dxf) como referencia externa', async c => {
+  const doc = c.doc;
+  if (doc.bedit) return c.print('No se pueden enlazar referencias dentro del editor de bloques.');
+  const picked = await c.app.io.pickFile('Dibujos de referencia');
+  if (!picked) return;
+  let name = cleanXrefName(picked.file.name);
+  if (doc.blocks[name] && !doc.blocks[name].xref) name = (await c.getString(`Ya existe un bloque "${name}". Indique otro nombre para la referencia`, { spaces: true, def: `${name}_ref` })).trim();
+  if (!name || (doc.blocks[name] && !doc.blocks[name].xref)) return c.print('Nombre no válido o ya usado por un bloque.');
+  if (!doc.blocks[name]) {
+    let src;
+    try { src = parseSource(await picked.file.text(), picked.file.name); } catch (err) { return c.print(`No se puede leer la referencia: ${err.message}`); }
+    const n = defineXref(doc, name, src, picked.file.name);
+    (c.app.xrefHandles ||= {})[name] = picked.handle;
+    c.print(`Referencia externa "${name}" enlazada: ${n} objeto(s) de ${picked.file.name}.`);
+  }
+  await placeInsert(c, name);
+}, { group: 'Insertar' });
+
+def('XREF', ['XR', 'REFEXTERNAS', 'REFX'], 'Administra las referencias externas: recargar, desenlazar o unir', async c => {
+  const doc = c.doc;
+  for (;;) {
+    if (!xrefNames(doc).length) return c.print('No hay referencias externas. Enlace una con XATTACH.');
+    const r = await c.app.ui.xrefManager();
+    if (!r) return;
+    const { action, name } = r;
+    if (action === 'attach') { c.app.run('XATTACH'); return; }
+    if (action === 'reload') {
+      const got = await readXrefFile(c, name, doc.blocks[name].xref.file);
+      if (!got) continue;
+      try { defineXref(doc, name, got.src, got.file); c.print(`Referencia "${name}" recargada desde ${got.file}.`); } catch (err) { c.print(`No se puede recargar: ${err.message}`); }
+    } else if (action === 'detach') {
+      const n = xrefRefs(doc, name);
+      detachXref(doc, name);
+      c.print(`Referencia "${name}" desenlazada (${n} inserción(es) eliminada(s)).`);
+    } else if (action === 'bind') {
+      bindXref(doc, name);
+      c.print(`Referencia "${name}" unida al dibujo: ahora es un bloque normal; sus capas se llaman "${name}$0$…".`);
+    }
+  }
+}, { group: 'Insertar' });
+
+def('BEDIT', ['BE', 'EDITORBLOQUES', 'EDITARBLOQUE'], 'Abre el editor de bloques para modificar la definición de un bloque', async (c, arg) => {
+  const app = c.app, doc = c.doc;
+  if (doc.bedit) return c.print(`Ya está editando el bloque "${doc.bedit.name}". Ciérrelo con BCLOSE.`);
+  const picked = (app.pickfirst || []).map(id => doc.get(id)).find(e => e?.type === 'insert');
+  const name = arg || picked?.name || (Object.keys(doc.blocks).some(n => !n.startsWith('*')) ? await app.ui.pickBlock() : null);
+  if (!name) return c.print('No hay bloques definidos. Cree uno con BLOQUE.');
+  const b = doc.blocks[name];
+  if (!b) return;
+  if (b.xref) return c.print(`"${name}" es una referencia externa: no se puede editar como bloque. Ábrala como dibujo o únala con XREF.`);
+  app.enterBedit(name);
+}, { group: 'Bloques', sel: true });
+
+def('BSAVE', ['BGUARDAR', 'GUARDARBLOQUE'], 'Guarda el bloque abierto en el editor de bloques', async c => {
+  const doc = c.doc;
+  if (!doc.bedit) return c.print('El editor de bloques no está abierto (BEDIT).');
+  const ents = doc.beditContent();
+  if (!ents.length) return c.print('El bloque no puede quedar vacío.');
+  if (doc.refersTo(ents, doc.bedit.name)) return c.print('Un bloque no puede contenerse a sí mismo.');
+  doc.saveBedit();
+  c.print(`Bloque "${doc.bedit.name}" guardado (${ents.length} objeto(s)). Las referencias se han actualizado.`);
+}, { group: 'Bloques' });
+
+def('BCLOSE', ['BC', 'CERRARBLOQUE'], 'Cierra el editor de bloques', async c => {
+  const doc = c.doc;
+  if (!doc.bedit) return c.print('El editor de bloques no está abierto.');
+  if (doc.beditChanged()) {
+    const k = await c.getKeyword(`¿Guardar los cambios en el bloque "${doc.bedit.name}"?`, ['Sí', 'No'], 'Sí');
+    if (k === 'Sí') {
+      const ents = doc.beditContent();
+      if (!ents.length) return c.print('El bloque no puede quedar vacío: deshaga los cambios o añada objetos.');
+      if (doc.refersTo(ents, doc.bedit.name)) return c.print('Un bloque no puede contenerse a sí mismo.');
+      doc.saveBedit();
+    }
+  }
+  const name = doc.bedit.name;
+  doc.closeBedit();
+  c.app.syncBedit();
+  c.print(`Editor de bloques cerrado ("${name}").`);
+}, { group: 'Bloques' });
+
+def('BASE', ['PUNTOBASE', 'INSBASE'], 'Punto base del bloque en edición, o punto de inserción del dibujo (para referencias externas)', async c => {
+  const doc = c.doc, cur = doc.bedit ? doc.bedit.base : doc.settings.insBase;
+  const p = await c.getPoint(`Precise punto base <${fmt(cur.x, 4)},${fmt(cur.y, 4)}>`, { allowEnter: true });
+  if (!p) return;
+  if (doc.bedit) { doc.bedit.base = { x: p.x, y: p.y }; doc.changed(); c.print('Punto base del bloque cambiado. Guarde el bloque para aplicarlo.'); }
+  else { doc.settings.insBase = { x: p.x, y: p.y }; doc.dirty = true; c.print('Punto base del dibujo cambiado: se usará al insertarlo como referencia externa.'); }
 }, { group: 'Bloques' });
 
 // ================= MODIFICAR =================
@@ -598,7 +833,7 @@ def('OFFSET', ['O', 'DESFASE', 'EQDIST'], 'Crea objetos paralelos a una distanci
   for (;;) {
     const o = await c.getEntity('Designe objeto a desplazar', { options: ['Salir'], allowEnter: true });
     if (!o || o === 'Salir') break;
-    if (!['line', 'circle', 'arc', 'pline'].includes(o.e.type)) { c.print('No se puede desfasar ese objeto.'); continue; }
+    if (!['line', 'circle', 'arc', 'pline', 'spline'].includes(o.e.type)) { c.print('No se puede desfasar ese objeto.'); continue; }
     const p = await c.getPoint(through ? 'Precise punto a atravesar' : 'Precise punto en lado de desfase', { preview: q => { const n = compute(o.e, q); return n ? [n] : []; }, rubber: false });
     const n = compute(o.e, p);
     if (n) c.doc.add(n); else c.print('Distancia no válida para ese objeto.');
@@ -689,7 +924,7 @@ def('CHAMFER', ['CHA', 'CHAFLAN'], 'Bisela la esquina entre dos líneas o en una
   }
 }, { group: 'Modificar' });
 
-const breakable = e => ['line', 'arc', 'circle', 'pline'].includes(e.type);
+const breakable = e => ['line', 'arc', 'circle', 'pline', 'spline'].includes(e.type);
 def('BREAK', ['BR', 'PARTE'], 'Parte un objeto eliminando el tramo entre dos puntos', async c => {
   const o = await c.getEntity('Designe objeto', { filter: breakable });
   let p1 = OPS.nearestOn(o.e, o.pt);
@@ -792,12 +1027,16 @@ def('ARRAYPOLAR', ['ARP', 'MATRIZPOLAR'], 'Matriz polar de objetos alrededor de 
 def('EXPLODE', ['X', 'DESCOMP'], 'Descompone polilíneas, cotas, bloques y sombreados', async c => {
   const ids = await c.getSelection();
   let n = 0;
+  let xr = 0;
   for (const id of ids) {
-    const parts = OPS.explodeEntity(c.doc.get(id));
+    const src = c.doc.get(id);
+    if (src.type === 'insert' && c.doc.blocks[src.name]?.xref) { xr++; continue; }
+    const parts = OPS.explodeEntity(src);
     if (!parts) continue;
     c.doc.remove(id); parts.forEach(p => c.doc.add(p)); n++;
   }
   c.print(n ? `${n} objeto(s) descompuesto(s).` : 'Ningún objeto se puede descomponer.');
+  if (xr) c.print(`${xr} referencia(s) externa(s) no se pueden descomponer (únalas antes con XREF).`);
 }, { group: 'Modificar', sel: true });
 
 def('JOIN', ['J', 'JUNTA', 'UNIR'], 'Une líneas, arcos y polilíneas con extremos coincidentes', async c => {
@@ -814,7 +1053,7 @@ def('MATCHPROP', ['MA', 'IGUALARPROP'], 'Copia las propiedades de un objeto a ot
   const ids = await c.getSelection('Designe objetos de destino', { noPickfirst: true });
   for (const id of ids) c.doc.modify(id, e => {
     Object.assign(e, { layer, color, ltype, lw });
-    if (e.type === o.e.type && ['text', 'mtext', 'attdef', 'dim'].includes(e.type) && o.e.style) e.style = o.e.style;
+    if (e.type === o.e.type && ['text', 'mtext', 'attdef', 'dim', 'mleader', 'table'].includes(e.type) && o.e.style) e.style = o.e.style;
     if (e.type === 'hatch' && o.e.type === 'hatch') Object.assign(e, { pattern: o.e.pattern, scale: o.e.scale, angle: o.e.angle });
   });
 }, { group: 'Propiedades' });
@@ -867,7 +1106,7 @@ def('PURGE', ['PU', 'LIMPIA'], 'Elimina bloques, capas y estilos no utilizados',
   let nb = 0;
   for (let changed = true; changed;) {
     changed = false;
-    for (const name of Object.keys(doc.blocks)) if (!doc.blockInUse(name)) { delete doc.blocks[name]; nb++; changed = true; }
+    for (const name of Object.keys(doc.blocks)) if (!doc.blocks[name].xref && !doc.blocks[name].xrefDep && !doc.blockInUse(name)) { delete doc.blocks[name]; nb++; changed = true; }
   }
   const all = [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)];
   const usedL = new Set(['0', doc.cur.layer, ...all.map(e => e.layer)]);
@@ -876,7 +1115,7 @@ def('PURGE', ['PU', 'LIMPIA'], 'Elimina bloques, capas y estilos no utilizados',
   const usedD = new Set([doc.cur.dimStyle, ...all.filter(e => e.type === 'dim').map(e => e.style)]);
   const nd = doc.dimStyles.length;
   doc.dimStyles = doc.dimStyles.filter((s, i) => !i || usedD.has(s.name));
-  const usedT = new Set(['Standard', doc.cur.textStyle, ...all.filter(e => ['text', 'mtext', 'attdef'].includes(e.type)).map(e => e.style), ...doc.dimStyles.map(s => s.textStyle)]);
+  const usedT = new Set(['Standard', doc.cur.textStyle, ...all.filter(e => ['text', 'mtext', 'attdef', 'mleader', 'table'].includes(e.type)).map(e => e.style), ...doc.dimStyles.map(s => s.textStyle)]);
   const nt = doc.textStyles.length;
   doc.textStyles = doc.textStyles.filter(s => usedT.has(s.name));
   doc.changed();
@@ -1080,7 +1319,11 @@ def('PLOT', ['PRINT', 'IMPRIMIR', 'TRAZAR'], 'Imprime el modelo o la presentaci�
 
 // ================= INTERNOS =================
 def('_GRIP', [], 'Edición por pinzamientos', async (c, g) => {
-  const prev = p => g.refs.map(({ id, i }) => { const e = cloneEnt(c.doc.get(id)); TYPES[e.type].moveGrip(e, i, p); return e; });
+  // Vista previa de los objetos estirados y de las cotas y sombreados asociados a ellos
+  const prev = p => {
+    const moved = g.refs.map(({ id, i }) => { const e = cloneEnt(c.doc.get(id)); TYPES[e.type].moveGrip(e, i, p); return e; });
+    return [...moved, ...c.doc.previewDeps(moved)];
+  };
   const pt = await c.getPoint('** ESTIRAR ** Precise punto de estiramiento', { base: g.pt, hot: g.pt, gripCmd: true, preview: prev });
   for (const { id, i } of g.refs) c.doc.modify(id, e => TYPES[e.type].moveGrip(e, i, pt));
 }, { hidden: true, keepSel: true });

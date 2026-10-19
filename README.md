@@ -1,4 +1,4 @@
-# TrazoCAD — v0.3
+# TrazoCAD — v0.4
 
 Software de dibujo técnico 2D inspirado en AutoCAD, hecho desde cero como **PWA** (aplicación web instalable y sin conexión). JavaScript puro con módulos ES: sin dependencias ni compilación.
 
@@ -11,6 +11,22 @@ node serve.mjs          # http://localhost:8080
 ```
 
 Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta tal cual a cualquier hosting estático con HTTPS (GitHub Pages, Netlify, Hostinger…). En Chrome/Edge aparece el botón **Instalar**.
+
+## Novedades de la v0.4
+
+![Anotación: cotas asociativas, directrices, tabla y texto con formato](docs/anotacion.png)
+
+| Función | Detalle |
+|---|---|
+| **Cotas asociativas** | Los puntos de una cota designados con referencia a objetos (punto final, medio, centro, cuadrante, intersección…) quedan unidos a la geometría. Al modificarla con pinzamientos, desplazar, girar o estirar, la cota se recalcula; la vista previa de los pinzamientos ya muestra la cota (y los sombreados asociativos) actualizados. Las cotas de radio, diámetro y angulares se asocian al círculo, arco o par de líneas. Copiar geometría y cota juntas mantiene la asociación; mover la cota sola o borrar la geometría la quita, como en AutoCAD. INTRO en la primera solicitud de `DIMLINEAR`/`DIMALIGNED` acota directamente una línea, un arco o un tramo de polilínea. `DIMDISASSOCIATE` y `DIMREASSOCIATE`; casilla «Cotas asociativas» en Parámetros de dibujo |
+| **Directrices múltiples** (`MLEADER`, `LE`) | Punta de flecha, vértices y rellano horizontal; contenido de texto con formato, globo numerado (se autoincrementa) o ninguno. Flecha y altura tomadas del estilo de cota actual. Pinzamientos en los vértices y en el rellano, simetría con el texto legible, propiedades editables |
+| **Tablas** (`TABLE`, `TB`) | Fila de título, fila de encabezados y celdas cuyo texto se ajusta a la anchura de la columna (la fila crece). Editor de celdas con filas y columnas añadibles; admite pegar un rango copiado de una hoja de cálculo. Números alineados a la derecha. Pinzamientos para el ancho de columnas y el alto de filas; doble clic sobre una celda para editarla |
+| **Formato dentro de MTEXT** | Editor visual con barra: fuente, altura, negrita, cursiva, subrayado, sobrerrayado, tachado, color, fracciones apiladas (`1/2`, `1#2`, tolerancias `^`) y símbolos ° ± Ø. Se guarda con los códigos de AutoCAD (`\f`, `\H`, `\C`, `\L`, `\S`…), así que el formato pasa intacto por DXF |
+| **Recortar, alargar, desfasar y partir splines** | Las splines se recortan y parten con su geometría exacta (inserción de nudos); se alargan en la dirección de su tangente (las de ajuste añaden un punto); se desfasan; y las intersecciones con líneas, arcos y círculos se refinan sobre la curva exacta, no sobre su teselado. También sirven de contorno para recortar y alargar otros objetos |
+| **Editor de bloques** (`BEDIT`, `BSAVE`, `BCLOSE`, `BASE`) | Edita la definición de un bloque con todos los comandos, en un espacio propio con el punto base marcado y una barra Guardar/Cerrar. Al guardar se actualizan todas las referencias. Deshacer funciona dentro del editor y puede volver a abrirlo |
+| **Referencias externas** (`XATTACH`, `XREF`) | Enlaza otro dibujo `.tcad` o `.dxf` como referencia: capas, bloques y estilos con el prefijo `NOMBRE\|`, contenido en caché dentro del dibujo, no descomponible ni editable como bloque. El administrador permite recargar (conserva el estado de las capas), desenlazar o unir (pasa a bloque normal con capas `NOMBRE$0$…`). `BASE` fija el punto de inserción del dibujo |
+| **DXF** | Las cotas se exportan como entidades `DIMENSION` con su bloque anónimo (`*D1`…) y la tabla `DIMSTYLE` completa; las directrices como `LEADER` con su MTEXT enlazado; MTEXT conserva el formato; nombres con `\|` se escriben como `$0$`. Al importar se leen `DIMENSION` (todas las clases), `DIMSTYLE`, `LEADER`, `MULTILEADER`, `ACAD_TABLE`, `$INSBASE` y los códigos `%%d`, `%%p`, `%%c` |
+| **Otros** | Archivos `.tcad` versión 4 (los anteriores se siguen abriendo) |
 
 ## Novedades de la v0.3
 
@@ -43,7 +59,7 @@ Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta ta
 
 ## Base de la v0.1
 
-Línea de comandos con alias y opciones, entrada de coordenadas (`x,y`, `@dx,dy`, `@d<a`, distancia directa), referencias a objetos (punto final, medio, centro, cuadrante, intersección, perpendicular, cercano), ORTO, POLAR, RASTREO, FORZC, entrada dinámica, selección por ventana o captura, pinzamientos, capas, paleta de propiedades, cotas, deshacer ilimitado y autoguardado. Pulsa **F1** en la app para ver los 78 comandos.
+Línea de comandos con alias y opciones, entrada de coordenadas (`x,y`, `@dx,dy`, `@d<a`, distancia directa), referencias a objetos (punto final, medio, centro, cuadrante, intersección, perpendicular, cercano), ORTO, POLAR, RASTREO, FORZC, entrada dinámica, selección por ventana o captura, pinzamientos, capas, paleta de propiedades, cotas, deshacer ilimitado y autoguardado. Pulsa **F1** en la app para ver los 87 comandos.
 
 ## Estructura
 
@@ -51,9 +67,13 @@ Línea de comandos con alias y opciones, entrada de coordenadas (`x,y`, `@dx,dy`
 index.html, manifest.webmanifest, sw.js   PWA
 css/app.css                               Interfaz
 js/geom.js       Vectores, matrices, intersecciones, curvaturas
-js/spline.js     B-splines: De Boor, interpolación por puntos de ajuste, teselado
-js/entities.js   Tipos de entidad (línea … spline, texto múltiple, atributo, sombreado, bloque, ventana)
-js/document.js   Capas, modelo, presentaciones, bloques, estilos, deshacer, sombreado asociativo
+js/colors.js     Colores ACI ↔ RGB
+js/spline.js     B-splines: De Boor, interpolación, teselado, inserción de nudos, tramos y uniones
+js/richtext.js   Códigos de formato de MTEXT: análisis y escritura
+js/entities.js   Tipos de entidad (línea … spline, texto con formato, directriz, tabla, atributo, sombreado, bloque, ventana)
+js/assoc.js      Cotas asociativas: referencias a la geometría y recálculo
+js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, deshacer, asociatividad
+js/xref.js       Referencias externas: lectura, prefijos, recarga, desenlace y unión
 js/patterns.js   Patrones de sombreado y recorte de líneas de patrón
 js/hatch.js      Detección de contornos (grafo plano, caras e islas) y recálculo asociativo
 js/spatial.js    Índice espacial
@@ -70,13 +90,14 @@ js/app.js        Núcleo: entrada, motor de comandos, presentaciones
 
 ## Limitaciones conocidas
 
-- Las cotas se exportan a DXF descompuestas (líneas, arcos, sólidos y texto), no como entidades DIMENSION.
-- El sombreado asociativo no se exporta como asociativo a DXF (AutoCAD lo abre como sombreado normal). Durante el arrastre de un pinzamiento el sombreado se actualiza al soltar, no en la vista previa.
-- Las splines cerradas se escriben en DXF como splines abiertas con los vértices repetidos (geometría idéntica). Recortar, alargar y desfasar no admiten splines.
-- MTEXT no admite formato dentro del texto (negrita, colores, fracciones apiladas); al importar se conserva el texto y se descarta el formato.
+- La asociatividad de cotas y sombreados no se exporta a DXF: AutoCAD los abre como cotas y sombreados normales (las cotas sí como entidades DIMENSION editables). Una cota asociada a un punto de una polilínea sigue al vértice por su número; si se recorta o parte el objeto, la cota pierde la asociación.
+- Las directrices se exportan como LEADER + MTEXT (el formato DXF 2000 no tiene MULTILEADER) y los globos como círculo y texto; las tablas se exportan descompuestas en líneas y MTEXT. No hay estilos de directriz ni de tabla: las directrices toman flecha y altura del estilo de cota actual.
+- En las fracciones apiladas y los colores de MTEXT se admite el subconjunto de códigos indicado; los códigos de párrafo (tabulaciones, sangrías, columnas) se descartan al importar.
+- Las referencias externas se leen con el selector de archivos del navegador (una web no puede abrir rutas por sí sola): «Recargar» pide de nuevo el archivo salvo en la misma sesión. En DXF se exportan unidas (como bloques normales).
+- Las splines cerradas se escriben en DXF como splines abiertas con los vértices repetidos (geometría idéntica). Al recortar o alargar una spline por vértices de control se convierte en una spline sin puntos de ajuste.
 - Los atributos de una referencia no se pueden desplazar por separado: siguen la posición definida en el bloque. Al descomponer la referencia se convierten en textos con su valor.
-- La exportación R12 sigue siendo sólo del espacio modelo. En la importación, las referencias con escala no uniforme se descomponen.
+- La exportación R12 sigue siendo sólo del espacio modelo y escribe las cotas, directrices y tablas descompuestas. En la importación, las referencias con escala no uniforme se descomponen.
 
-## Hoja de ruta (v0.4+)
+## Hoja de ruta (v0.5+)
 
-Cotas asociativas y entidades DIMENSION en DXF, directrices múltiples (MLEADER), tablas, formato dentro de MTEXT, recortar/alargar con splines, editor de bloques (BEDIT) y referencias externas.
+Cotas continuas y de línea base (DIMCONTINUE, DIMBASELINE, QDIM), estilos de directriz y de tabla, campos en textos (fecha, área, atributos), restricciones paramétricas geométricas y de cota, bloques dinámicos, exportación a PDF vectorial y sombreados degradados.

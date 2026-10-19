@@ -2,6 +2,7 @@
 import * as G from './geom.js';
 import { snapsOf, primsOf } from './entities.js';
 import { ISO_AXES } from './render.js';
+import { NO_ASSOC } from './assoc.js';
 
 export const OSNAP_MODES = {
   end: 'Punto final', mid: 'Punto medio', cen: 'Centro', qua: 'Cuadrante', int: 'Intersección',
@@ -19,23 +20,26 @@ export class Snapper {
     const near = app.idx().query({ x1: w.x - tol, y1: w.y - tol, x2: w.x + tol, y2: w.y + tol }).filter(e => doc.visible(e));
     if (!near.length) return null;
     let best = null;
-    const consider = (pt, mode, bias = 0) => {
+    // ref: entidad y punto de referencia (para las cotas asociativas)
+    const consider = (pt, mode, bias = 0, ref = null) => {
       const d = G.dist(pt, w);
       if (d > tol) return;
       const score = d + bias * tol;
-      if (!best || score < best.score) best = { pt, mode, score };
+      if (!best || score < best.score) best = { pt, mode, score, ref };
     };
     for (const e of near) {
-      const s = snapsOf(e);
-      for (const k in s) if (modes[k]) for (const p of s[k]) consider(p, k, k === 'mid' || k === 'qua' ? 0.05 : 0);
+      const s = snapsOf(e), assoc = !NO_ASSOC.has(e.type);
+      for (const k in s) if (modes[k]) s[k].forEach((p, i) => consider(p, k, k === 'mid' || k === 'qua' ? 0.05 : 0, assoc ? { id: e.id, snap: k, i } : null));
     }
     if (modes.int || modes.per || modes.nea) {
-      const prs = [];
-      for (const e of near) for (const q of primsOf(e)) if (G.bbNear(G.primBB(q), w, tol)) prs.push(q);
+      const prs = [], own = [];
+      for (const e of near) for (const q of primsOf(e)) if (G.bbNear(G.primBB(q), w, tol)) { prs.push(q); own.push(NO_ASSOC.has(e.type) ? null : e.id); }
       if (modes.int && prs.length < 400) {
         for (let i = 0; i < prs.length; i++)
-          for (let j = i + 1; j < prs.length; j++)
-            for (const p of G.primInt(prs[i], prs[j])) consider(p, 'int', 0.02);
+          for (let j = i + 1; j < prs.length; j++) {
+            const ref = own[i] != null && own[j] != null ? { ids: [own[i], own[j]], snap: 'int' } : null;
+            for (const p of G.primInt(prs[i], prs[j])) consider(p, 'int', 0.02, ref);
+          }
       }
       if (modes.per && base) {
         for (const q of prs) {
@@ -56,7 +60,7 @@ export class Snapper {
         if (bp && bd <= tol) best = { pt: bp, mode: 'nea' };
       }
     }
-    return best ? { pt: best.pt, mode: best.mode } : null;
+    return best ? { pt: best.pt, mode: best.mode, ref: best.ref || null } : null;
   }
 
   track(m) {

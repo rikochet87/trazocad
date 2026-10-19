@@ -1,6 +1,8 @@
 // Lectura y escritura de DXF ASCII. Escribe DXF 2000 (AC1015), con presentaciones y ventanas gráficas, o R12 (AC1009, sólo modelo).
 import * as G from './geom.js';
-import { LTYPES, aciToHex, hexToAci, dimParts, ellPts, mtextGeom, insertAttribs, xformEnt } from './entities.js';
+import { LTYPES, aciToHex, hexToAci, dimParts, ellPts, mtextGeom, mleaderGeom, insertAttribs, xformEnt, textBox, DEFAULT_DIMSTYLE } from './entities.js';
+import { explodeEntity } from './ops.js';
+import { hasCodes, richPlain } from './richtext.js';
 import { PATTERNS, famsOf, hatchSegments } from './patterns.js';
 import { splinePts, interpolate, rebuild as rebuildSpline } from './spline.js';
 const { P } = G;
@@ -8,6 +10,8 @@ const { P } = G;
 const num = v => (Math.abs(v) < 1e-12 ? 0 : +(+v).toFixed(10));
 const lwCode = lw => (lw === 'BYLAYER' ? -1 : lw === 'BYBLOCK' ? -2 : lw === 'DEFAULT' ? -3 : Math.round(lw * 100));
 const tcolor = hex => parseInt(hex.slice(1), 16);
+// Nombres con | (dependientes de referencias externas) no son válidos fuera de una referencia: se escriben como al unirla
+const nm = s => String(s ?? '').split('|').join('$0$');
 
 // ================= EXPORTAR =================
 const MT_ATT = ['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br'];
@@ -29,15 +33,21 @@ export function writeDXF(doc, version = '2000') {
   const psName = i => (i ? `*Paper_Space${i - 1}` : '*Paper_Space');
   const layDict = H(), layModel = H(), layH = layouts.map(() => H());
   const layerH = Object.fromEntries(doc.layers.map(l => [l.name, H()]));
+  const styleH = Object.fromEntries(doc.textStyles.map(st => [st.name, H()]));
+  const dimBlocks = new Map(); // cota → [nombre del bloque anónimo, identificador del registro]
+  if (!R12) {
+    let nd = 0;
+    for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if (e.type === 'dim') dimBlocks.set(e, [`*D${++nd}`, H()]);
+  }
   const lastVp = [];
   let ps = false; // escribiendo entidades del espacio papel
 
-  const common = (type, e, owner, subclass) => {
+  const common = (type, e, owner, subclass, fh) => {
     g(0, type);
     let h = null;
-    if (!R12) { h = H(); g(5, h); g(330, owner); g(100, 'AcDbEntity'); }
+    if (!R12) { h = fh || H(); g(5, h); g(330, owner); g(100, 'AcDbEntity'); }
     if (ps) g(67, 1);
-    g(8, e.layer || '0');
+    g(8, nm(e.layer || '0'));
     if (e.ltype && e.ltype !== 'BYLAYER') g(6, e.ltype === 'BYBLOCK' ? 'ByBlock' : e.ltype);
     if (e.color === 'BYBLOCK') g(62, 0);
     else if (e.color && e.color !== 'BYLAYER') { g(62, hexToAci(e.color)); if (!R12) g(420, tcolor(e.color)); }
@@ -50,8 +60,8 @@ export function writeDXF(doc, version = '2000') {
   const poly = (e, pts, closed, bulges, ow) => {
     if (R12) {
       common('POLYLINE', e, ow); g(66, 1); xy(0, P(0, 0)); g(70, closed ? 1 : 0);
-      pts.forEach((p, i) => { g(0, 'VERTEX'); g(8, e.layer); xy(0, p); if (bulges?.[i]) g(42, num(bulges[i])); });
-      g(0, 'SEQEND'); g(8, e.layer);
+      pts.forEach((p, i) => { g(0, 'VERTEX'); g(8, nm(e.layer)); xy(0, p); if (bulges?.[i]) g(42, num(bulges[i])); });
+      g(0, 'SEQEND'); g(8, nm(e.layer));
       return;
     }
     common('LWPOLYLINE', e, ow, 'AcDbPolyline'); g(90, pts.length); g(70, closed ? 1 : 0); g(43, 0);
@@ -64,7 +74,7 @@ export function writeDXF(doc, version = '2000') {
     if (t.rot) g(50, num(G.deg(t.rot)));
     if (st.width && st.width !== 1) g(41, st.width);
     if (st.oblique) g(51, st.oblique);
-    g(7, st.name);
+    g(7, nm(st.name));
     const j = { c: 1, r: 2 }[t.align];
     if (j) { g(72, j); xy(1, t.p); }
   };
@@ -74,13 +84,13 @@ export function writeDXF(doc, version = '2000') {
     if (!R12) g(100, 'AcDbAttributeDefinition');
     g(3, e.prompt || e.tag); g(2, e.tag); g(70, e.invisible ? 1 : 0);
   };
-  const mtext = (e, ow) => {
+  const mtext = (e, ow, fh) => {
     if (R12) { for (const ln of mtextGeom(e).lines) if (ln.str) text(e, ln, ow); return; }
-    common('MTEXT', e, ow, 'AcDbMText');
+    common('MTEXT', e, ow, 'AcDbMText', fh);
     xy(0, e.p); g(40, num(e.h)); g(41, num(e.w || 0)); g(71, MT_ATT.indexOf(e.attach || 'tl') + 1); g(72, 1);
-    let str = mtextEsc(e.text);
+    let str = e.rich ? String(e.text).split('\n').join('\\P') : mtextEsc(e.text);
     while (str.length > 250) { g(3, str.slice(0, 250)); str = str.slice(250); }
-    g(1, str); g(7, doc.textStyle(e.style).name);
+    g(1, str); g(7, nm(doc.textStyle(e.style).name));
     g(11, num(Math.cos(e.rot || 0))); g(21, num(Math.sin(e.rot || 0))); g(31, 0);
     g(73, 1); g(44, num(e.ls || 1));
   };
@@ -131,7 +141,7 @@ export function writeDXF(doc, version = '2000') {
     const atts = insertAttribs(e);
     common('INSERT', e, ow, 'AcDbBlockReference');
     if (atts.length) g(66, 1);
-    g(2, e.name); xy(0, e.p);
+    g(2, nm(e.name)); xy(0, e.p);
     g(41, num(e.sx ?? 1)); g(42, num(e.sy ?? 1)); g(43, 1);
     if (e.rot) g(50, num(G.deg(e.rot)));
     if (!atts.length) return;
@@ -143,7 +153,7 @@ export function writeDXF(doc, version = '2000') {
     g(0, 'SEQEND');
     if (!R12) { g(5, H()); g(330, ow); g(100, 'AcDbEntity'); }
     if (ps) g(67, 1);
-    g(8, e.layer);
+    g(8, nm(e.layer));
   };
   // VIEWPORT: v = {cx, cy, w, h (papel), vcx, vcy, vh (modelo), id, status, frozen}
   const viewport = (e, ow, v) => {
@@ -159,8 +169,58 @@ export function writeDXF(doc, version = '2000') {
     return h;
   };
 
+  // Geometría de la cota (contenido de su bloque anónimo): capa 0 y PorBloque, como hace AutoCAD
+  const dimGeometry = (e, ow) => {
+    const d = dimParts(e), b = { layer: '0', color: 'BYBLOCK', ltype: 'BYBLOCK', lw: 'BYBLOCK', style: e.style };
+    for (const [a, q] of d.lines) line(b, a, q, ow);
+    for (const [c, r, a1, a2] of d.arcs) arc(b, c, r, a1, a2, ow);
+    for (const tri of d.arrows) solid(b, tri, ow);
+    for (const [c, r] of d.dots) { common('CIRCLE', b, ow, 'AcDbCircle'); xy(0, c); g(40, num(r)); }
+    text(b, d.text, ow);
+  };
+  const DIM_TYPE = { lin: 0, ali: 1, dia: 3, rad: 4, ord: 6 };
+  const dimension = (e, ow) => {
+    const d = dimParts(e), [bname] = dimBlocks.get(e), box = textBox(d.text), tm = G.mid(box[0], box[2]);
+    const ang2 = e.kind === 'ang' && e.l1, type = e.kind === 'ang' ? (ang2 ? 2 : 5) : DIM_TYPE[e.kind];
+    const dir = e.kind === 'rad' || e.kind === 'dia' ? G.norm(G.sub(e.p3, e.p1)) : null, r = dir ? G.dist(e.p1, e.p2) : 0;
+    const def = { lin: d.d2, ali: d.d2, rad: e.p1, dia: dir && G.sub(e.p1, G.mul(dir, r)), ord: P(0, 0), ang: ang2 ? e.l2[1] : e.p3 }[e.kind];
+    common('DIMENSION', e, ow, 'AcDbDimension');
+    g(2, bname); xy(0, def || e.p3); xy(1, tm);
+    g(70, type | 32 | 128 | (e.kind === 'ord' && (d.axis === 'x') ? 64 : 0));
+    g(71, 5);
+    if (e.text) g(1, e.text);
+    g(42, num(e.kind === 'ang' ? G.rad(d.val) : d.val));
+    g(3, nm(doc.dimStyle(e.style).name));
+    switch (e.kind) {
+      case 'lin': g(100, 'AcDbAlignedDimension'); xy(3, e.p1); xy(4, e.p2); g(50, num(G.deg(e.rot || 0))); g(100, 'AcDbRotatedDimension'); break;
+      case 'ali': g(100, 'AcDbAlignedDimension'); xy(3, e.p1); xy(4, e.p2); break;
+      case 'rad': g(100, 'AcDbRadialDimension'); xy(5, G.add(e.p1, G.mul(dir, r))); g(40, 0); break;
+      case 'dia': g(100, 'AcDbDiametricDimension'); xy(5, G.add(e.p1, G.mul(dir, r))); g(40, 0); break;
+      case 'ord': g(100, 'AcDbOrdinateDimension'); xy(3, e.p1); xy(4, e.p3); break;
+      case 'ang':
+        if (ang2) { g(100, 'AcDb2LineAngularDimension'); xy(3, e.l1[0]); xy(4, e.l1[1]); xy(5, e.l2[0]); xy(6, e.p3); }
+        else { g(100, 'AcDb3PointAngularDimension'); xy(3, e.p1); xy(4, e.p2); xy(5, e.c); }
+        break;
+    }
+  };
+  // Directriz múltiple: LEADER (con la flecha del estilo de cota actual) + MTEXT enlazado, o globo (círculo + texto)
+  const leader = (e, ow) => {
+    const gm = mleaderGeom(e);
+    if (R12) { for (const x of explodeEntity(e)) writeEnt(x, ow); return; }
+    const linked = gm.text && e.content === 'mtext', th = linked ? H() : null;
+    const verts = [...e.pts, ...(G.eqPt(gm.L, e.pts[e.pts.length - 1]) ? [] : [gm.L])];
+    common('LEADER', e, ow, 'AcDbLeader');
+    g(3, nm(doc.dimStyle(doc.cur.dimStyle).name)); g(71, e.arrow === 'none' ? 0 : 1); g(72, 0); g(73, linked ? 0 : 3); g(74, 0); g(75, 0);
+    g(40, num(e.h)); g(41, 0); g(76, verts.length);
+    for (const p of verts) xy(0, p);
+    if (linked) g(340, th);
+    if (gm.circle) { common('CIRCLE', e, ow, 'AcDbCircle'); xy(0, gm.circle[0]); g(40, num(gm.circle[1])); }
+    if (gm.text) mtext({ ...e, ...gm.text }, ow, th);
+  };
   const writeEnt = (e, ow) => {
     switch (e.type) {
+      case 'mleader': leader(e, ow); break;
+      case 'table': for (const x of explodeEntity(e)) writeEnt(x, ow); break;
       case 'line': line(e, e.p1, e.p2, ow); break;
       case 'circle': common('CIRCLE', e, ow, 'AcDbCircle'); xy(0, e.c); g(40, num(e.r)); break;
       case 'arc': arc(e, e.c, e.r, e.a1, e.a2, ow); break;
@@ -182,6 +242,7 @@ export function writeDXF(doc, version = '2000') {
       case 'hatch': hatch(e, ow); break;
       case 'insert': insert(e, ow); break;
       case 'dim': {
+        if (!R12) { dimension(e, ow); break; }
         const d = dimParts(e);
         for (const [a, b] of d.lines) line(e, a, b, ow);
         for (const [c, r, a1, a2] of d.arcs) arc(e, c, r, a1, a2, ow);
@@ -211,6 +272,9 @@ export function writeDXF(doc, version = '2000') {
   g(9, '$ACADVER'); g(1, R12 ? 'AC1009' : 'AC1015');
   if (!R12) { g(9, '$DWGCODEPAGE'); g(3, 'ANSI_1252'); g(9, '$INSUNITS'); g(70, 4); g(9, '$MEASUREMENT'); g(70, 1); g(9, '$TILEMODE'); g(70, 1); }
   g(9, '$LTSCALE'); g(40, doc.settings.ltscale);
+  const ib = doc.settings.insBase || P(0, 0);
+  g(9, '$INSBASE'); xy(0, ib);
+  if (!R12) { g(9, '$DIMSTYLE'); g(2, nm(doc.dimStyle(doc.cur.dimStyle).name)); }
   const ext = doc.extents(doc.model);
   if (ext) { g(9, '$EXTMIN'); xy(0, P(ext.x1, ext.y1)); g(9, '$EXTMAX'); xy(0, P(ext.x2, ext.y2)); }
   const seedAt = o.length;
@@ -252,42 +316,54 @@ export function writeDXF(doc, version = '2000') {
     for (const l of doc.layers) {
       const aci = hexToAci(l.color);
       rec('LAYER', th, 'AcDbLayerTableRecord', 5, layerH[l.name]);
-      g(2, l.name); g(70, l.lock ? 4 : 0); g(62, l.on ? aci : -aci);
+      g(2, nm(l.name)); g(70, l.lock ? 4 : 0); g(62, l.on ? aci : -aci);
       g(6, l.ltype === 'CONTINUOUS' ? 'Continuous' : l.ltype);
       if (!R12) g(370, lwCode(l.lw));
     }
   });
   table('STYLE', doc.textStyles.length, th => {
     for (const s of doc.textStyles) {
-      rec('STYLE', th, 'AcDbTextStyleTableRecord');
-      g(2, s.name); g(70, 0); g(40, 0); g(41, s.width || 1); g(50, s.oblique || 0); g(71, 0); g(42, 2.5);
+      rec('STYLE', th, 'AcDbTextStyleTableRecord', 5, styleH[s.name]);
+      g(2, nm(s.name)); g(70, 0); g(40, 0); g(41, s.width || 1); g(50, s.oblique || 0); g(71, 0); g(42, 2.5);
       g(3, `${s.font.toLowerCase().replace(/\s+/g, '')}.ttf`); g(4, '');
     }
   });
   table('VIEW', 0, () => {});
   table('UCS', 0, () => {});
   table('APPID', 1, th => { rec('APPID', th, 'AcDbRegAppTableRecord'); g(2, 'ACAD'); g(70, 0); });
-  table('DIMSTYLE', 1, th => { rec('DIMSTYLE', th, 'AcDbDimStyleTableRecord', 105); g(2, 'Standard'); g(70, 0); }, 'AcDbDimStyleTable');
+  const dstyles = doc.dimStyles;
+  table('DIMSTYLE', dstyles.length, th => {
+    for (const d of dstyles) {
+      rec('DIMSTYLE', th, 'AcDbDimStyleTableRecord', 105);
+      g(2, nm(d.name)); g(70, 0);
+      if (d.suffix) g(3, '<>' + d.suffix);
+      g(40, num(d.scale || 1)); g(41, num(d.asz)); g(42, num(d.exo)); g(44, num(d.exe));
+      if (d.arrow === 'tick') g(142, num(d.asz / 2));
+      g(73, 0); g(74, 0); g(77, 1); g(140, num(d.txt)); g(147, num(d.gap)); g(179, d.adec ?? 0); g(271, d.dec ?? 2);
+      if (!R12 && styleH[doc.textStyle(d.textStyle).name]) g(340, styleH[doc.textStyle(d.textStyle).name]);
+    }
+  }, 'AcDbDimStyleTable');
   if (!R12) {
-    table('BLOCK_RECORD', 2 + Math.max(0, layouts.length - 1) + userBlocks.length, th => {
+    table('BLOCK_RECORD', 2 + Math.max(0, layouts.length - 1) + userBlocks.length + dimBlocks.size, th => {
       const br = (h, name, lay) => { g(0, 'BLOCK_RECORD'); g(5, h); g(330, th); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbBlockTableRecord'); g(2, name); if (lay) g(340, lay); };
       br(brMS, '*Model_Space', layouts.length ? layModel : null);
       br(brPS, '*Paper_Space', layH[0]);
       for (let i = 1; i < layouts.length; i++) br(brLay[i], psName(i), layH[i]);
-      for (const b of userBlocks) br(brUser[b.name], b.name);
+      for (const b of userBlocks) br(brUser[b.name], nm(b.name));
+      for (const [name, h] of dimBlocks.values()) br(h, name);
     });
   }
   g(0, 'ENDSEC');
 
   // ---- BLOCKS ----
   g(0, 'SECTION'); g(2, 'BLOCKS');
-  const block = (name, base, brh, body, paper = false) => {
+  const block = (name, base, brh, body, paper = false, flags = 0) => {
     g(0, 'BLOCK');
     if (!R12) { g(5, H()); g(330, brh); g(100, 'AcDbEntity'); }
     if (paper) g(67, 1);
     g(8, '0');
     if (!R12) g(100, 'AcDbBlockBegin');
-    g(2, name); g(70, 0); xy(0, base); g(3, name); g(1, '');
+    g(2, name); g(70, flags); xy(0, base); g(3, name); g(1, '');
     body();
     g(0, 'ENDBLK');
     if (!R12) { g(5, H()); g(330, brh); g(100, 'AcDbEntity'); }
@@ -301,7 +377,9 @@ export function writeDXF(doc, version = '2000') {
     // La primera presentación va en ENTITIES; las demás, dentro de su bloque *Paper_SpaceN
     for (let i = 1; i < layouts.length; i++) block(psName(i), P(0, 0), brLay[i], () => writePaper(layouts[i], i, brLay[i]), true);
   }
-  for (const b of userBlocks) block(b.name, b.base, brUser[b.name], () => { for (const e of b.ents) writeEnt(e, brUser[b.name]); });
+  for (const b of userBlocks) block(nm(b.name), b.base, brUser[b.name], () => { for (const e of b.ents) writeEnt(e, brUser[b.name]); });
+  // Bloques anónimos con la geometría de cada cota (*D1, *D2…)
+  for (const [e, [name, h]] of dimBlocks) block(name, P(0, 0), h, () => dimGeometry(e, h), false, 1);
   g(0, 'ENDSEC');
 
   // ---- ENTITIES ----
@@ -419,6 +497,16 @@ function hatchLoops(gr) {
   return loops;
 }
 
+// Códigos especiales %%d (°), %%p (±), %%c (Ø), %%% (%) y caracteres \U+XXXX
+const specials = s => String(s).replace(/%%([dpc%])/gi, (m, k) => ({ d: '°', p: '±', c: 'Ø', '%': '%' }[k.toLowerCase()]))
+  .replace(/\\U\+([0-9a-f]{4})/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));
+// MTEXT de AutoCAD → texto interno: con formato (rich) si tiene códigos admitidos; los no admitidos se eliminan
+function mtextIn(raw) {
+  const s = specials(raw).replace(/\\[Aa]\d;/g, '').replace(/\\p[^;]*;/g, '').replace(/\\[Tt][\d.]+x?;/g, '').replace(/\\X/g, '').replace(/\\N/g, '\\P');
+  if (!hasCodes(s.replace(/\\P/g, ''))) return { text: mtextPlain(s), rich: false };
+  return { text: s.split('\\P').join('\n'), rich: true };
+}
+
 // Texto plano de un MTEXT: \P = nueva línea; se eliminan los códigos de formato
 function mtextPlain(s) {
   s = s.split('\\\\').join('\u0001').split('\\{').join('\u0002').split('\\}').join('\u0003');
@@ -447,9 +535,11 @@ export function readDXF(text) {
     }
   }
 
-  const layers = new Map(), textStyles = [], layerByHandle = new Map(), brName = new Map();
+  const layers = new Map(), textStyles = [], layerByHandle = new Map(), brName = new Map(), styleByHandle = new Map(), dimStyles = [];
+  const dimRaw = [];
   for (const gr of sections.TABLES || []) {
     if (gr.type === 'BLOCK_RECORD') brName.set(val(gr, 5), val(gr, 2, ''));
+    if (gr.type === 'DIMSTYLE') dimRaw.push(gr);
     if (gr.type === 'LAYER') {
       const name = val(gr, 2, '0'), aci = parseInt(val(gr, 62, '7'), 10), flags = parseInt(val(gr, 70, '0'), 10), tc = val(gr, 420);
       if (val(gr, 5)) layerByHandle.set(val(gr, 5), name);
@@ -465,8 +555,20 @@ export function readDXF(text) {
       const file = (val(gr, 3, '') || '').toLowerCase();
       const font = file.includes('times') ? 'Times New Roman' : file.includes('cour') ? 'Courier New' : file.includes('verdana') ? 'Verdana' : 'Arial';
       textStyles.push({ name, font, width: numv(gr, 41, 1) || 1, oblique: numv(gr, 50, 0) });
+      if (val(gr, 5)) styleByHandle.set(val(gr, 5), name);
     }
   }
+  // Estilos de cota (DIMSTYLE): variables principales
+  for (const gr of dimRaw) {
+    const name = val(gr, 2, '');
+    if (!name) continue;
+    const D = DEFAULT_DIMSTYLE, post = val(gr, 3, '') || '';
+    dimStyles.push({ ...D, name, txt: numv(gr, 140, D.txt), asz: numv(gr, 41, D.asz), exo: numv(gr, 42, D.exo), exe: numv(gr, 44, D.exe), gap: Math.abs(numv(gr, 147, D.gap)),
+      dec: parseInt(val(gr, 271, String(D.dec)), 10), adec: parseInt(val(gr, 179, '0'), 10), scale: numv(gr, 40, 1) || 1,
+      arrow: numv(gr, 142, 0) > 0 ? 'tick' : 'closed', textStyle: styleByHandle.get(val(gr, 340)) || 'Standard', suffix: post.includes('<>') ? post.split('<>')[1] : '' });
+  }
+  const dimStyleName = n => (dimStyles.some(d => d.name === n) ? n : dimStyles[0]?.name || 'ISO-25');
+
   if (!layers.has('0')) layers.set('0', { name: '0', color: '#ffffff', ltype: 'CONTINUOUS', lw: 'DEFAULT', on: true, lock: false });
   const ensureLayer = name => { if (!layers.has(name)) layers.set(name, { name, color: '#ffffff', ltype: 'CONTINUOUS', lw: 'DEFAULT', on: true, lock: false }); };
 
@@ -549,15 +651,17 @@ export function readDXF(text) {
           const h = numv(gr, 40, 2.5) * s, j = parseInt(val(gr, 72, '0'), 10);
           const p = j && val(gr, 11) !== undefined ? pt(1) : pt(0);
           const r = G.rad(numv(gr, 50)), v = G.Mx.apV(M, P(Math.cos(r), Math.sin(r)));
-          push({ type: 'text', p, h, rot: Math.atan2(v.y, v.x), text: val(gr, 1, ''), align: j === 1 || j === 4 ? 'c' : j === 2 ? 'r' : 'l', style: val(gr, 7, 'Standard') });
+          push({ type: 'text', p, h, rot: Math.atan2(v.y, v.x), text: specials(val(gr, 1, '')), align: j === 1 || j === 4 ? 'c' : j === 2 ? 'r' : 'l', style: val(gr, 7, 'Standard') });
           break;
         }
         case 'MTEXT': {
+          if (ctx.used?.has(val(gr, 5))) break; // texto de una directriz ya importada
           const raw = gr.d.filter(x => x[0] === 3).map(x => x[1]).join('') + val(gr, 1, '');
+          const mt = mtextIn(raw);
           let r = G.rad(numv(gr, 50));
           if (val(gr, 11) !== undefined) r = Math.atan2(numv(gr, 21), numv(gr, 11));
           const e = { type: 'mtext', p: P(numv(gr, 10), numv(gr, 20)), h: numv(gr, 40, 2.5), w: Math.max(0, numv(gr, 41, 0)), rot: r,
-            attach: MT_ATT[(parseInt(val(gr, 71, '1'), 10) || 1) - 1] || 'tl', text: mtextPlain(raw), style: val(gr, 7, 'Standard') };
+            attach: MT_ATT[(parseInt(val(gr, 71, '1'), 10) || 1) - 1] || 'tl', text: mt.text, style: val(gr, 7, 'Standard'), ...(mt.rich ? { rich: true } : {}) };
           const ls = numv(gr, 44, 1);
           if (ls > 0 && Math.abs(ls - 1) > 1e-9) e.ls = ls;
           push(xformEnt(e, M));
@@ -567,7 +671,7 @@ export function readDXF(text) {
           if (!ctx.attdef) break;
           const j = parseInt(val(gr, 72, '0'), 10), r = G.rad(numv(gr, 50));
           const a = { type: 'attdef', p: P(numv(gr, j && val(gr, 11) !== undefined ? 11 : 10), numv(gr, j && val(gr, 11) !== undefined ? 21 : 20)), h: numv(gr, 40, 2.5), rot: r,
-            align: j === 1 || j === 4 ? 'c' : j === 2 ? 'r' : 'l', style: val(gr, 7, 'Standard'), tag: (val(gr, 2, '') || 'ATRIBUTO').toUpperCase(), prompt: val(gr, 3, ''), def: val(gr, 1, '') };
+            align: j === 1 || j === 4 ? 'c' : j === 2 ? 'r' : 'l', style: val(gr, 7, 'Standard'), tag: (val(gr, 2, '') || 'ATRIBUTO').toUpperCase(), prompt: specials(val(gr, 3, '')), def: specials(val(gr, 1, '')) };
           if (parseInt(val(gr, 70, '0'), 10) & 1) a.invisible = true;
           push(xformEnt(a, M));
           break;
@@ -615,7 +719,43 @@ export function readDXF(text) {
           if (e) push(xformEnt(e, M)); else skipped++;
           break;
         }
-        case 'INSERT': case 'DIMENSION': {
+        case 'DIMENSION': {
+          const dm = dimFrom(gr);
+          if (dm) { dm.style = dimStyleName(val(gr, 3, '')); push(xformEnt(dm, M)); break; }
+          const b = rawBlocks.get(val(gr, 2, '')); // tipo no admitido: se descompone su bloque
+          if (b && depth <= 8) convert(b.items, M, depth + 1, layer, out); else skipped++;
+          break;
+        }
+        case 'LEADER': {
+          const verts = [];
+          for (const [c, v] of gr.d) { if (c === 10) verts.push(P(parseFloat(v), 0)); else if (c === 20 && verts.length) verts[verts.length - 1].y = parseFloat(v); }
+          if (verts.length < 2) { skipped++; break; }
+          const ds = dimStyles.find(d => d.name === val(gr, 3, '')) || dimStyles[0] || DEFAULT_DIMSTYLE, k = ds.scale || 1;
+          const e = { type: 'mleader', pts: verts, content: 'none', text: '', h: numv(gr, 40, ds.txt * k) || ds.txt * k, asz: ds.asz * k, arrow: val(gr, 71, '1') === '0' ? 'none' : 'closed', land: 0, gap: 0, w: 0, style: 'Standard' };
+          const tg = ctx.mtexts?.get(val(gr, 340));
+          if (tg) { // MTEXT enlazado: pasa a ser el contenido de la directriz
+            ctx.used.add(val(gr, 340));
+            const raw = tg.d.filter(x => x[0] === 3).map(x => x[1]).join('') + val(tg, 1, ''), mt = mtextIn(raw);
+            const last = verts[verts.length - 1], tp = P(numv(tg, 10), numv(tg, 20));
+            Object.assign(e, { content: 'mtext', text: mt.text, h: numv(tg, 40, e.h), w: numv(tg, 41, 0), gap: Math.abs(tp.x - last.x), style: val(tg, 7, 'Standard'), ...(mt.rich ? { rich: true } : {}) });
+          }
+          push(xformEnt(e, M));
+          break;
+        }
+        case 'MULTILEADER': {
+          const e = mleaderFrom(gr);
+          if (e) push(xformEnt(e, M)); else skipped++;
+          break;
+        }
+        case 'ACAD_TABLE': {
+          const b = rawBlocks.get(val(gr, 2, ''));
+          if (!b || depth > 8) { skipped++; break; }
+          const ins = P(numv(gr, 10), numv(gr, 20)), r = Math.atan2(numv(gr, 21, 0), numv(gr, 11, 1));
+          const L = G.Mx.mul(G.Mx.T(ins.x, ins.y), G.Mx.mul(G.Mx.R(r), G.Mx.T(-b.base.x, -b.base.y)));
+          convert(b.items, G.Mx.mul(M, L), depth + 1, layer, out);
+          break;
+        }
+        case 'INSERT': {
           const atts = [];
           if (gr.type === 'INSERT') { // ATTRIB … SEQEND tras la referencia
             let j = i + 1;
@@ -651,6 +791,55 @@ export function readDXF(text) {
       }
     }
   };
+  // Cota DIMENSION → entidad de cota (null si el tipo no se admite)
+  function dimFrom(gr) {
+    const pt = k => (val(gr, 10 + k) === undefined ? null : P(numv(gr, 10 + k), numv(gr, 20 + k)));
+    const f = parseInt(val(gr, 70, '0'), 10), type = f & 7, raw = val(gr, 1, '');
+    const text = raw && raw !== '<>' && raw.trim() !== '' ? mtextPlain(specials(raw)) : '';
+    const base = { type: 'dim', ...(text ? { text } : {}) };
+    const p10 = pt(0), p11 = pt(1), p13 = pt(3), p14 = pt(4), p15 = pt(5), p16 = pt(6);
+    switch (type) {
+      case 0: return p13 && p14 && p10 ? { ...base, kind: 'lin', p1: p13, p2: p14, p3: p10, rot: G.rad(numv(gr, 50, 0)) } : null;
+      case 1: return p13 && p14 && p10 ? { ...base, kind: 'ali', p1: p13, p2: p14, p3: p10, rot: 0 } : null;
+      case 3: return p10 && p15 ? { ...base, kind: 'dia', p1: G.mid(p10, p15), p2: p15, p3: p11 || p15 } : null;
+      case 4: return p10 && p15 ? { ...base, kind: 'rad', p1: p10, p2: p15, p3: p11 || p15 } : null;
+      case 5: return p15 && p13 && p14 && p10 ? { ...base, kind: 'ang', c: p15, p1: p13, p2: p14, p3: p10 } : null;
+      case 2: {
+        if (!(p13 && p14 && p15 && p10 && p16)) return null;
+        const X = G.llInt(p13, p14, p15, p10);
+        if (!X) return null;
+        const far = (a, b) => (G.dist(a, X.p) > G.dist(b, X.p) ? a : b);
+        return { ...base, kind: 'ang', c: X.p, p1: far(p13, p14), p2: far(p15, p10), p3: p16, l1: [p13, p14], l2: [p15, p10] };
+      }
+      case 6: return p13 && p14 ? { ...base, kind: 'ord', p1: p13, p2: p13, p3: p14, axis: f & 64 ? 'x' : 'y' } : null;
+    }
+    return null;
+  }
+  // MULTILEADER (AutoCAD 2008+): texto, altura, flecha, vértices de la primera línea de directriz y rellano
+  function mleaderFrom(gr) {
+    const d = gr.d, line = [];
+    let text = '', h = 2.5, asz = 2.5, land = 0, last = null, inLeader = false, inLine = false, gotLine = false, block = false;
+    for (let i = 0; i < d.length; i++) {
+      const [c, v] = d[i];
+      const xyAt = () => { const x = parseFloat(v), y = d[i + 1]?.[0] === c + 10 ? parseFloat(d[i + 1][1]) : 0; return P(x, y); };
+      if (c === 302 && String(v).startsWith('LEADER{')) { inLeader = true; continue; }
+      if (c === 303) { inLeader = false; continue; }
+      if (c === 304 && String(v).startsWith('LEADER_LINE{')) { inLine = !gotLine; continue; }
+      if (c === 305) { if (inLine) gotLine = true; inLine = false; continue; }
+      if (inLine && c === 10) { line.push(xyAt()); continue; }
+      if (inLeader && !inLine && c === 10 && !last) { last = xyAt(); continue; }
+      if (inLeader && !inLine && c === 40) { land = parseFloat(v) || 0; continue; }
+      if (!inLeader && c === 304) { text = String(v); continue; }
+      if (!inLeader && c === 41 && h === 2.5) { h = parseFloat(v) || h; continue; }
+      if (!inLeader && c === 140) { asz = parseFloat(v) || asz; continue; }
+      if (!inLeader && c === 296 && v === '1') block = true;
+    }
+    const pts = [...line, ...(last ? [last] : [])];
+    if (pts.length < 2) return null;
+    const mt = mtextIn(text);
+    return { type: 'mleader', pts, content: block ? 'block' : mt.text ? 'mtext' : 'none', text: block ? richPlain(mt.text) : mt.text, ...(mt.rich && !block ? { rich: true } : {}),
+      h, asz, arrow: 'closed', land, gap: h * 0.5, w: 0, style: 'Standard' };
+  }
   const defining = new Set();
   function defineBlock(name) {
     if (outBlocks[name] || defining.has(name)) return;
@@ -659,7 +848,7 @@ export function readDXF(text) {
     // Dentro de un bloque las referencias anidadas uniformes también se conservan
     const conv = list => {
       let run = [];
-      const flush = () => { if (run.length) convert(run, G.Mx.I(), 1, null, ents, { attdef: true }); run = []; };
+      const flush = () => { if (run.length) convert(run, G.Mx.I(), 1, null, ents, linkCtx(run, { attdef: true })); run = []; };
       for (let i = 0; i < list.length; i++) {
         const gr = list[i];
         if (gr.type === 'INSERT') {
@@ -696,8 +885,10 @@ export function readDXF(text) {
     (paper ? paperG : modelG).push(gr);
     lastPaper = paper;
   }
+  // Las directrices LEADER enlazan su MTEXT por identificador: se indexan los MTEXT de cada lista
+  const linkCtx = (list, ctx = {}) => ({ ...ctx, used: new Set(), mtexts: new Map(list.filter(x => x.type === 'MTEXT' && val(x, 5)).map(x => [val(x, 5), x])) });
   const ents = [];
-  convert(modelG, G.Mx.I(), 0, null, ents);
+  convert(modelG, G.Mx.I(), 0, null, ents, linkCtx(modelG));
 
   // Presentaciones (objetos LAYOUT): nombre, orden, tamaño de papel y bloque *Paper_Space correspondiente
   const layouts = [];
@@ -724,17 +915,24 @@ export function readDXF(text) {
     seen.add(l.name);
     const src = l.block.toLowerCase() === '*paper_space' ? paperG : rawBlocks.get(l.block)?.items || [];
     const le = [];
-    convert(src, G.Mx.I(), 0, null, le, { paper: true });
+    convert(src, G.Mx.I(), 0, null, le, linkCtx(src, { paper: true }));
     const paper = Object.entries(PAPERS_MM).find(([, [a, b]]) => Math.abs(Math.max(a, b) - Math.max(l.w, l.h)) < 1 && Math.abs(Math.min(a, b) - Math.min(l.w, l.h)) < 1)?.[0] || 'A4';
     outLayouts.push({ name: l.name, paper, w: l.w, h: l.h, ents: le });
   }
-  return { layers: [...layers.values()], ents, blocks: outBlocks, textStyles, layouts: outLayouts, skipped };
+  return { layers: [...layers.values()], ents, blocks: outBlocks, textStyles, dimStyles, layouts: outLayouts, insBase: headerPoint(pairs, '$INSBASE') || P(0, 0), skipped };
+}
+
+// Punto de una variable de cabecera (código 9 seguido de 10/20)
+function headerPoint(pairs, name) {
+  const i = pairs.findIndex(p => p[0] === 9 && p[1] === name);
+  if (i < 0 || pairs[i + 1]?.[0] !== 10) return null;
+  return P(parseFloat(pairs[i + 1][1]) || 0, pairs[i + 2]?.[0] === 20 ? parseFloat(pairs[i + 2][1]) || 0 : 0);
 }
 
 // Valores de atributos {ETIQUETA: valor} de una lista de ATTRIB
 function attribValues(atts) {
   const out = {};
-  for (const a of atts) { const tag = (val(a, 2, '') || '').toUpperCase(); if (tag) out[tag] = val(a, 1, ''); }
+  for (const a of atts) { const tag = (val(a, 2, '') || '').toUpperCase(); if (tag) out[tag] = specials(val(a, 1, '')); }
   return Object.keys(out).length ? out : null;
 }
 

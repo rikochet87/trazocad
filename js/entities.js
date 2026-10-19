@@ -2,6 +2,7 @@
 import * as G from './geom.js';
 import { PATTERNS, famsOf, famLines } from './patterns.js';
 import { splinePts, rebuild as rebuildSpline } from './spline.js';
+import { parseRich, baseFmt, richPlain } from './richtext.js';
 const { P, Mx, TAU } = G;
 
 export const ENV = { doc: null };
@@ -32,30 +33,7 @@ export const LWEIGHTS = [0, 0.05, 0.09, 0.13, 0.15, 0.18, 0.2, 0.25, 0.3, 0.35, 
 export const STD_SCALES = [['1:1', 1], ['1:2', 0.5], ['1:5', 0.2], ['1:10', 0.1], ['1:20', 0.05], ['1:25', 0.04], ['1:50', 0.02], ['1:100', 0.01], ['1:200', 0.005], ['1:500', 0.002], ['1:1000', 0.001], ['2:1', 2], ['5:1', 5], ['10:1', 10]];
 export const ARROWS = { closed: 'Cerrada rellena', open: 'Abierta', tick: 'Trazo oblicuo', dot: 'Punto', none: 'Ninguna' };
 
-// ---------- Colores ACI (AutoCAD Color Index) ----------
-const ACI_BASIC = { 1: [255, 0, 0], 2: [255, 255, 0], 3: [0, 255, 0], 4: [0, 255, 255], 5: [0, 0, 255], 6: [255, 0, 255], 7: [255, 255, 255], 8: [128, 128, 128], 9: [192, 192, 192] };
-function aciRGB(i) {
-  if (ACI_BASIC[i]) return ACI_BASIC[i];
-  if (i >= 250) { const g = [51, 91, 132, 173, 214, 255][i - 250]; return [g, g, g]; }
-  const h = (Math.floor(i / 10) - 1) * 15, k = i % 10;
-  const v = [1, 1, 0.8, 0.8, 0.6, 0.6, 0.5, 0.5, 0.3, 0.3][k], s = k % 2 ? 0.5 : 1;
-  const f = n => { const kk = (n + h / 60) % 6; return Math.round(255 * (v - v * s * Math.max(0, Math.min(kk, 4 - kk, 1)))); };
-  return [f(5), f(3), f(1)];
-}
-const hex2 = n => n.toString(16).padStart(2, '0');
-const rgbHex = ([r, g, b]) => `#${hex2(r)}${hex2(g)}${hex2(b)}`;
-const ACI_TABLE = Array.from({ length: 256 }, (_, i) => (i ? aciRGB(i) : [0, 0, 0]));
-export const aciToHex = i => rgbHex(ACI_TABLE[Math.max(1, Math.min(255, i))]);
-export function hexToAci(hex) {
-  if (!/^#[0-9a-f]{6}$/i.test(hex)) return 7;
-  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
-  let best = 7, bd = Infinity;
-  for (let i = 1; i < 256; i++) {
-    const [R, Gr, B] = ACI_TABLE[i], d = (R - r) ** 2 + (Gr - g) ** 2 + (B - b) ** 2;
-    if (d < bd) { bd = d; best = i; }
-  }
-  return best;
-}
+export { aciToHex, hexToAci } from './colors.js';
 export const COLORS = [
   ['#ff0000', 'Rojo'], ['#ffff00', 'Amarillo'], ['#00ff00', 'Verde'], ['#00ffff', 'Cian'],
   ['#0000ff', 'Azul'], ['#ff00ff', 'Magenta'], ['#ffffff', 'Blanco'], ['#808080', 'Gris'], ['#c0c0c0', 'Gris claro'],
@@ -158,20 +136,23 @@ export function drawText(c, R, t) {
 export const DEFAULT_DIMSTYLE = { name: 'ISO-25', txt: 2.5, asz: 2.5, exo: 0.625, exe: 1.25, gap: 0.625, dec: 2, adec: 0, scale: 1, arrow: 'closed', textStyle: 'Standard', suffix: '' };
 const dimStyleOf = e => (D()?.dimStyle ? D().dimStyle(e.style) : DEFAULT_DIMSTYLE);
 
+// Punta de flecha en tip, apuntando hacia fuera de dirIn (vector unitario hacia el interior de la línea)
+export function arrowHead(kind, tip, dirIn, asz, lines, arrows, dots) {
+  const b = G.add(tip, G.mul(dirIn, asz)), pn = G.perp(dirIn), w = asz / 6;
+  switch (kind) {
+    case 'open': lines.push([tip, G.add(b, G.mul(pn, asz / 3))], [tip, G.add(b, G.mul(pn, -asz / 3))]); break;
+    case 'tick': { const v = G.mul(G.rot(dirIn, Math.PI / 4), asz / 2); lines.push([G.sub(tip, v), G.add(tip, v)]); break; }
+    case 'dot': dots.push([tip, asz / 4]); break;
+    case 'none': break;
+    default: arrows.push([tip, G.add(b, G.mul(pn, w)), G.add(b, G.mul(pn, -w))]);
+  }
+}
+
 export function dimParts(e) {
   const ds = dimStyleOf(e), k = ds.scale || 1;
   const asz = ds.asz * k, h = ds.txt * k, gap = ds.gap * k, exo = ds.exo * k, exe = ds.exe * k;
   const lines = [], arrows = [], dots = [], arcs = [];
-  const arrow = (tip, dirIn) => {
-    const b = G.add(tip, G.mul(dirIn, asz)), pn = G.perp(dirIn), w = asz / 6;
-    switch (ds.arrow) {
-      case 'open': lines.push([tip, G.add(b, G.mul(pn, asz / 3))], [tip, G.add(b, G.mul(pn, -asz / 3))]); break;
-      case 'tick': { const v = G.mul(G.rot(dirIn, Math.PI / 4), asz / 2); lines.push([G.sub(tip, v), G.add(tip, v)]); break; }
-      case 'dot': dots.push([tip, asz / 4]); break;
-      case 'none': break;
-      default: arrows.push([tip, G.add(b, G.mul(pn, w)), G.add(b, G.mul(pn, -w))]);
-    }
-  };
+  const arrow = (tip, dirIn) => arrowHead(ds.arrow, tip, dirIn, asz, lines, arrows, dots);
   const num = v => fmt(v, ds.dec) + (ds.suffix || '');
   const label = v => (e.text ? e.text.replace('<>', v) : v);
   if (e.kind === 'ang') {
@@ -470,7 +451,7 @@ TYPES.spline = {
     if (e.closed) c.closePath();
   },
   props: e => [
-    ro('Método', x => (x.fit ? 'Ajuste' : x.cv ? 'Vértices de control' : 'Importada'), 'text'),
+    ro('Método', x => (x.fit ? 'Ajuste' : x.cv ? 'Vértices de control' : 'Control (sin puntos de ajuste)'), 'text'),
     e.fit || e.cv
       ? { label: 'Cerrada', type: 'bool', get: x => !!x.closed, set: (x, v) => { const old = !!x.closed; x.closed = v; if (!rebuildSpline(x)) x.closed = old; } }
       : ro('Cerrada', x => (x.closed ? 'Sí' : 'No'), 'text'),
@@ -530,41 +511,126 @@ TYPES.text = {
 
 // ---------- Texto de líneas múltiples ----------
 export const MT_ATTACH = [['tl', 'Superior izquierda'], ['tc', 'Superior centro'], ['tr', 'Superior derecha'], ['ml', 'Centro izquierda'], ['mc', 'Centro'], ['mr', 'Centro derecha'], ['bl', 'Inferior izquierda'], ['bc', 'Inferior centro'], ['br', 'Inferior derecha']];
-const MT_PITCH = 5 / 3; // interlineado por defecto de AutoCAD: 5/3 de la altura
+const MT_PITCH = 5 / 3; // interlineado por defecto de AutoCAD: 5/3 de la altura (de la letra más alta de cada línea)
+const STK = 0.7;        // tamaño de las fracciones apiladas
+const fmtFont = (f, st, px) => `${f.i ? 'italic ' : ''}${f.b ? 'bold ' : ''}${px}px "${f.font || st.font}", ${FONT}`;
+function runWidth(str, f, st, h = f.h) {
+  mctx.font = fmtFont(f, st, 100);
+  return mctx.measureText(str).width / 100 * h * TXT_K * (st.width || 1) * (f.w || 1);
+}
+const stkWidth = (t, st) => (t.k === '#' ? runWidth(t.a, t.f, st, t.f.h * STK) + runWidth('/', t.f, st) + runWidth(t.b, t.f, st, t.f.h * STK)
+  : Math.max(runWidth(t.a, t.f, st, t.f.h * STK), runWidth(t.b, t.f, st, t.f.h * STK)) + 0.2 * t.f.h);
 const mlcache = new WeakMap();
-// Líneas tras el ajuste de palabras a la anchura e.w (0 = sin ajuste; \n separa párrafos)
+// Líneas tras el ajuste de palabras a la anchura e.w (0 = sin ajuste). Cada línea: {frags:[{s|stk, f, x, w}], w, h, str}
 export function mtextLayout(e) {
-  const st = styleOf(e.style), key = `${e.text}|${e.h}|${e.w}|${e.style}|${st.font}|${st.width}`;
+  const st = styleOf(e.style), key = `${e.rich ? 1 : 0}|${e.text}|${e.h}|${e.w}|${e.style}|${st.font}|${st.width}`;
   let lay = mlcache.get(e);
   if (lay && lay.key === key) return lay;
+  const base = baseFmt(e.h);
+  const toks = e.rich ? parseRich(e.text, e.h) : String(e.text ?? '').split('\n').flatMap((s, i) => (i ? [{ t: 'nl' }] : []).concat([{ t: 's', s, f: base }]));
   const lines = [];
-  for (const para of String(e.text ?? '').split('\n')) {
-    if (!(e.w > 0)) { lines.push(para); continue; }
-    let cur = '';
-    for (const wd of para.split(' ')) {
-      const cand = cur ? `${cur} ${wd}` : wd;
-      if (cur && textWidth(cand, e.h, e.style) > e.w) { lines.push(cur); cur = wd; } else cur = cand;
+  let cur = null;
+  const newLine = () => { cur = { frags: [], w: 0, h: 0, lastH: cur ? cur.lastH : e.h }; lines.push(cur); };
+  const push = fr => { cur.frags.push({ ...fr, x: cur.w }); cur.w += fr.w; cur.h = Math.max(cur.h, fr.f.h); cur.lastH = fr.f.h; };
+  newLine();
+  for (const t of toks) {
+    if (t.t === 'nl') { newLine(); continue; }
+    if (t.t === 'stk') {
+      const w = stkWidth(t, st);
+      if (e.w > 0 && cur.frags.length && cur.w + w > e.w) newLine();
+      push({ stk: t, f: t.f, w });
+      continue;
     }
-    lines.push(cur);
+    for (const part of t.s.split(/( +)/)) {
+      if (!part) continue;
+      const w = runWidth(part, t.f, st);
+      if (part[0] !== ' ' && e.w > 0 && cur.frags.length && cur.w + w > e.w) {
+        while (cur.frags.length && /^ +$/.test(cur.frags[cur.frags.length - 1].s ?? '')) cur.w -= cur.frags.pop().w; // sin espacios al final
+        newLine();
+      }
+      if (part[0] === ' ' && !cur.frags.length && lines.length > 1 && e.w > 0) continue; // ni al principio de una línea ajustada
+      push({ s: part, f: t.f, w });
+    }
   }
-  lay = { key, lines, widths: lines.map(l => textWidth(l, e.h, e.style)) };
+  // Une los fragmentos contiguos con el mismo formato (una sola llamada de dibujo por tramo)
+  for (const l of lines) {
+    if (!l.h) l.h = l.lastH;
+    const m = [];
+    for (const fr of l.frags) {
+      const p = m[m.length - 1];
+      if (p && !p.stk && !fr.stk && p.f === fr.f) { p.s += fr.s; p.w += fr.w; } else m.push({ ...fr });
+    }
+    l.frags = m;
+    l.str = m.map(fr => (fr.stk ? `${fr.stk.a}/${fr.stk.b}` : fr.s)).join('');
+  }
+  lay = { key, lines, widths: lines.map(l => l.w) };
   mlcache.set(e, lay);
   return lay;
 }
-// Posición de cada línea y contorno, en coordenadas del dibujo
+// Posición de cada línea y de cada tramo con formato, y contorno, en coordenadas del dibujo
 export function mtextGeom(e) {
-  const { lines, widths } = mtextLayout(e), h = e.h, pitch = h * MT_PITCH * (e.ls || 1);
+  const { lines, widths } = mtextLayout(e), ls = (e.ls || 1) * MT_PITCH;
   const att = e.attach || 'tl', col = att[1];
-  const W = e.w > 0 ? e.w : Math.max(h, ...widths), H = h + (lines.length - 1) * pitch;
+  const base = []; // línea base de cada línea, medida hacia abajo desde el borde superior
+  lines.forEach((l, i) => base.push(i ? base[i - 1] + ls * l.h : l.h));
+  const W = e.w > 0 ? e.w : Math.max(e.h, ...widths), H = base[base.length - 1];
   const top = att[0] === 't' ? 0 : att[0] === 'm' ? H / 2 : H;
   const left = col === 'l' ? 0 : col === 'c' ? -W / 2 : -W, ax = left + (col === 'l' ? 0 : col === 'c' ? W / 2 : W);
-  const rot = e.rot || 0, W2 = q => G.add(e.p, G.rot(q, rot));
+  const rot = e.rot || 0, W2 = q => G.add(e.p, G.rot(q, rot)), lastH = lines[lines.length - 1].h;
   return {
-    lines: lines.map((str, i) => ({ p: W2(P(ax, top - h - i * pitch)), str, align: col, h, rot, style: e.style })),
-    box: [P(left, top - H - 0.3 * h), P(left + W, top - H - 0.3 * h), P(left + W, top), P(left, top)].map(W2),
+    lines: lines.map((l, i) => {
+      const y = top - base[i], x0 = col === 'l' ? left : col === 'c' ? ax - l.w / 2 : ax - l.w;
+      return { p: W2(P(ax, y)), str: l.str, align: col, h: l.h, rot, style: e.style, frags: l.frags.map(fr => ({ ...fr, p: W2(P(x0 + fr.x, y)) })) };
+    }),
+    box: [P(left, top - H - 0.3 * lastH), P(left + W, top - H - 0.3 * lastH), P(left + W, top), P(left, top)].map(W2),
     widthGrip: W2(P(col === 'r' ? left : left + W, top - H / 2)),
   };
 }
+// Dibuja un tramo con formato. hl: resaltado (se ignoran los colores propios del tramo)
+function drawFrag(c, R, fr, rot, st, hl) {
+  const f = fr.f, H = f.h * R.scale;
+  if (H * TXT_K < 0.8) return;
+  const s = R.toScreen(fr.p);
+  c.save();
+  c.setTransform(R.dpr, 0, 0, R.dpr, 0, 0);
+  c.translate(s.x, s.y);
+  c.rotate(-rot);
+  const obl = (st.oblique || 0) + (f.q || 0);
+  if (obl) c.transform(1, 0, -Math.tan(G.rad(obl)), 1, 0, 0);
+  const sx = (st.width || 1) * (f.w || 1);
+  if (sx !== 1) c.scale(sx, 1);
+  if (!hl && f.color) c.fillStyle = f.color;
+  c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+  const wpx = fr.w * R.scale / sx;
+  if (fr.stk) {
+    const t = fr.stk, small = H * STK;
+    c.font = fmtFont(f, st, small * TXT_K);
+    if (t.k === '#') {
+      const wa = runWidth(t.a, f, st, f.h * STK) * R.scale / sx, wsl = runWidth('/', f, st) * R.scale / sx;
+      c.fillText(t.a, 0, -0.45 * H);
+      c.font = fmtFont(f, st, H * TXT_K); c.fillText('/', wa, 0);
+      c.font = fmtFont(f, st, small * TXT_K); c.fillText(t.b, wa + wsl, 0);
+    } else {
+      const wa = runWidth(t.a, f, st, f.h * STK) * R.scale / sx, wb = runWidth(t.b, f, st, f.h * STK) * R.scale / sx;
+      c.fillText(t.a, (wpx - wa) / 2, -0.62 * H);
+      c.fillText(t.b, (wpx - wb) / 2, 0.32 * H);
+      if (t.k === '/') c.fillRect(0.05 * wpx, -0.5 * H, 0.9 * wpx, Math.max(1, 0.06 * H));
+    }
+  } else {
+    c.font = fmtFont(f, st, H * TXT_K);
+    c.fillText(fr.s, 0, 0);
+  }
+  const lw = Math.max(1, 0.07 * H);
+  if (f.u) c.fillRect(0, 0.18 * H, wpx, lw);
+  if (f.o) c.fillRect(0, -1.2 * H, wpx, lw);
+  if (f.k) c.fillRect(0, -0.5 * H, wpx, lw);
+  c.restore();
+}
+export function drawMText(c, R, e, hl) {
+  const st = styleOf(e.style);
+  for (const ln of mtextGeom(e).lines) for (const fr of ln.frags) drawFrag(c, R, fr, ln.rot, st, hl);
+}
+export { richPlain };
 TYPES.mtext = {
   name: 'Texto de líneas múltiples',
   prims: () => [],
@@ -586,11 +652,15 @@ TYPES.mtext = {
       if (Math.cos(a) < -1e-9) { a += Math.PI; e.attach = att[0] + { l: 'r', r: 'l', c: 'c' }[att[1]]; }
       else e.attach = { t: 'b', b: 't', m: 'm' }[att[0]] + att[1];
     }
-    e.p = Mx.ap(m, e.p); e.rot = a; e.h *= s;
-    if (e.w) e.w *= s;
+    e.p = Mx.ap(m, e.p); e.rot = a;
+    if (Math.abs(s - 1) > 1e-12) {
+      e.h *= s;
+      if (e.w) e.w *= s;
+      if (e.rich) e.text = String(e.text).replace(/\\H([\d.]+);/g, (_, v) => `\\H${+(parseFloat(v) * s).toFixed(6)};`); // alturas absolutas
+    }
   },
-  draw(c, e, R) { for (const ln of mtextGeom(e).lines) drawText(c, R, ln); },
-  props: [{ label: 'Contenido', type: 'mtext', get: e => e.text, set: (e, v) => { e.text = v; } },
+  draw(c, e, R, st) { drawMText(c, R, e, st?.hl); },
+  props: [{ label: 'Contenido', type: 'mtext', get: e => (e.rich ? richPlain(e.text) : e.text), set: (e, v) => { e.text = v.text; if (v.rich) e.rich = true; else delete e.rich; } },
     { label: 'Estilo', type: 'select', options: () => D().textStyles.map(s => [s.name, s.name]), get: e => e.style || 'Standard', set: (e, v) => { e.style = v; } },
     num('Altura', e => e.h, (e, v) => { if (v > 0) e.h = v; }),
     num('Anchura (0 = libre)', e => e.w || 0, (e, v) => { if (v >= 0) e.w = v; }),
@@ -598,7 +668,193 @@ TYPES.mtext = {
     sel('Justificación', MT_ATTACH, e => e.attach || 'tl', (e, v) => { e.attach = v; }),
     num('Interlineado', e => e.ls || 1, (e, v) => { if (v > 0) e.ls = v; }),
     ...ptProps('Posición', 'p'),
-    ro('Líneas', e => mtextLayout(e).lines.length, 'int')],
+    ro('Líneas', e => mtextLayout(e).lines.length, 'int'),
+    ro('Formato', e => (e.rich ? 'Con formato' : 'Sin formato'), 'text')],
+};
+
+// ---------- Directriz múltiple ----------
+// {pts: [punta, …, último vértice], content: 'mtext'|'block'|'none', text, rich?, h, asz, arrow, land (rellano), gap, w, style}
+// El rellano horizontal sale del último vértice hacia el lado del texto; content 'block' es un globo con número.
+export const ML_CONTENT = [['mtext', 'Texto'], ['block', 'Globo'], ['none', 'Ninguno']];
+const mgcache = new WeakMap();
+export function mleaderGeom(e) {
+  const key = JSON.stringify([e.pts, e.content, e.text, e.rich, e.h, e.asz, e.arrow, e.land, e.gap, e.w, e.style, D()?.textStyle?.(e.style)]);
+  const hit = mgcache.get(e);
+  if (hit && hit.key === key) return hit.g;
+  const pts = e.pts, n = pts.length, last = pts[n - 1], prev = pts[n - 2] || G.sub(last, P(1, 0));
+  const side = last.x >= prev.x - 1e-9 ? 1 : -1, hasContent = e.content !== 'none';
+  const L = hasContent && e.land > 0 ? G.add(last, P(side * e.land, 0)) : last;
+  const lines = [], arrows = [], dots = [];
+  for (let i = 0; i + 1 < n; i++) lines.push([pts[i], pts[i + 1]]);
+  if (!G.eqPt(L, last)) lines.push([last, L]);
+  if (n > 1 && G.dist(pts[0], pts[1]) > 1e-9) arrowHead(e.arrow || 'closed', pts[0], G.norm(G.sub(pts[1], pts[0])), e.asz, lines, arrows, dots);
+  let text = null, circle = null;
+  if (e.content === 'mtext' && e.text) {
+    // Texto con el centro de su primera línea a la altura del rellano
+    text = { type: 'mtext', p: G.add(L, P(side * (e.gap || 0), e.h / 2)), h: e.h, w: e.w || 0, rot: 0, attach: side > 0 ? 'tl' : 'tr', text: e.text, style: e.style, ...(e.rich ? { rich: true } : {}) };
+  } else if (e.content === 'block') {
+    const r = Math.max(e.h * 1.25, textWidth(e.text || '', e.h, e.style) / 2 + 0.5 * e.h), c = G.add(L, P(side * r, 0));
+    circle = [c, r];
+    if (e.text) text = { type: 'mtext', p: c, h: e.h, w: 0, rot: 0, attach: 'mc', text: e.text, style: e.style };
+  }
+  const g = { lines, arrows, dots, text, circle, L, side };
+  mgcache.set(e, { key, g });
+  return g;
+}
+const mlSegs = g => [...g.lines.map(([a, b]) => ({ k: 's', a, b })), ...(g.circle ? [{ k: 'a', c: g.circle[0], r: g.circle[1], a1: 0, a2: TAU }] : [])];
+TYPES.mleader = {
+  name: 'Directriz múltiple',
+  prims: e => mlSegs(mleaderGeom(e)),
+  selPrims: e => { const g = mleaderGeom(e); return [...mlSegs(g), ...(g.text ? closedSegs(mtextGeom(g.text).box) : [])]; },
+  bbox: e => {
+    const g = mleaderGeom(e);
+    let b = bbPts([...e.pts, g.L, ...g.arrows.flat()]);
+    if (g.circle) b = bbUnion(b, { x1: g.circle[0].x - g.circle[1], y1: g.circle[0].y - g.circle[1], x2: g.circle[0].x + g.circle[1], y2: g.circle[0].y + g.circle[1] });
+    if (g.text) b = bbUnion(b, bbPts(mtextGeom(g.text).box));
+    return b;
+  },
+  hit(e, p) {
+    const g = mleaderGeom(e);
+    if (g.text && G.pointInPoly(p, mtextGeom(g.text).box)) return 0;
+    return Math.min(...mlSegs(g).map(q => G.dist(p, G.nearPrim(p, q))));
+  },
+  snaps: e => ({ end: [e.pts[0], e.pts[e.pts.length - 1]], ins: [mleaderGeom(e).L] }),
+  grips: e => [...e.pts, mleaderGeom(e).L],
+  moveGrip(e, i, p) {
+    const n = e.pts.length;
+    if (i < n) { e.pts = e.pts.map((q, j) => (j === i ? p : q)); return; }
+    const g = mleaderGeom(e); // el pinzamiento del rellano arrastra el texto con el último vértice
+    e.pts = e.pts.map((q, j) => (j === n - 1 ? G.add(q, G.sub(p, g.L)) : q));
+  },
+  xform(e, m) {
+    const s = Mx.scaleOf(m);
+    e.pts = e.pts.map(q => Mx.ap(m, q));
+    if (Math.abs(s - 1) > 1e-12) {
+      for (const k of ['h', 'asz', 'land', 'gap', 'w']) if (e[k]) e[k] *= s;
+      if (e.rich) e.text = String(e.text).replace(/\\H([\d.]+);/g, (_, v) => `\\H${+(parseFloat(v) * s).toFixed(6)};`);
+    }
+  },
+  draw(c, e, R, st) {
+    const g = mleaderGeom(e);
+    c.beginPath();
+    for (const [a, b] of g.lines) { c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); }
+    if (g.circle) { const [q, r] = g.circle; c.moveTo(q.x + r, q.y); c.arc(q.x, q.y, r, 0, TAU); }
+    c.stroke();
+    c.beginPath();
+    for (const [a, b, q] of g.arrows) { c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.lineTo(q.x, q.y); c.closePath(); }
+    for (const [p, r] of g.dots) { c.moveTo(p.x + r, p.y); c.arc(p.x, p.y, r, 0, TAU); }
+    c.fill();
+    if (g.text) drawMText(c, R, g.text, st?.hl);
+  },
+  props: e => [
+    sel('Contenido', ML_CONTENT, x => x.content, (x, v) => { x.content = v; if (v === 'block' && x.rich) { x.text = richPlain(x.text); delete x.rich; } }),
+    e.content === 'mtext'
+      ? { label: 'Texto', type: 'mtext', get: x => (x.rich ? richPlain(x.text) : x.text || ''), set: (x, v) => { x.text = v.text; if (v.rich) x.rich = true; else delete x.rich; } }
+      : { label: 'Texto', type: 'text', get: x => x.text || '', set: (x, v) => { x.text = v; delete x.rich; } },
+    { label: 'Estilo de texto', type: 'select', options: () => D().textStyles.map(s => [s.name, s.name]), get: x => x.style || 'Standard', set: (x, v) => { x.style = v; } },
+    num('Altura de texto', x => x.h, (x, v) => { if (v > 0) x.h = v; }),
+    num('Anchura de texto (0 = libre)', x => x.w || 0, (x, v) => { if (v >= 0) x.w = v; }),
+    sel('Punta de flecha', () => Object.entries(ARROWS), x => x.arrow || 'closed', (x, v) => { x.arrow = v; }),
+    num('Tamaño de flecha', x => x.asz, (x, v) => { if (v >= 0) x.asz = v; }),
+    num('Longitud del rellano', x => x.land || 0, (x, v) => { if (v >= 0) x.land = v; }),
+    ro('Vértices', x => x.pts.length, 'int'),
+  ],
+};
+
+// ---------- Tabla ----------
+// {p: esquina superior izquierda, rot, cols: [anchos], rows: [alturas mínimas], cells: [[texto]], th: altura de texto,
+//  title: la primera fila es un título que ocupa todas las columnas, header: la fila siguiente es de encabezados, style}
+// Las filas crecen para que quepa el texto, que se ajusta a la anchura de cada celda.
+const tgcache = new WeakMap();
+const isNumber = s => /^[-+]?\s*[\d.,]+\s*[%€$°]?$/.test(String(s).trim());
+export function tableGeom(e) {
+  const key = JSON.stringify([e.p, e.rot, e.cols, e.rows, e.cells, e.th, e.title, e.header, e.style, D()?.textStyle?.(e.style)]);
+  const hit = tgcache.get(e);
+  if (hit && hit.key === key) return hit.g;
+  const nr = e.rows.length, nc = e.cols.length, mar = e.th * 0.6, colX = [0];
+  for (const w of e.cols) colX.push(colX[colX.length - 1] + w);
+  const W = colX[nc], cells = [], rowH = [];
+  for (let r = 0; r < nr; r++) {
+    const isTitle = e.title && r === 0, isHead = e.header && r === (e.title ? 1 : 0);
+    let need = e.rows[r];
+    for (const [c0, c1] of isTitle ? [[0, nc]] : e.cols.map((_, c) => [c, c + 1])) {
+      const str = e.cells[r]?.[c0] ?? '';
+      if (!String(str).trim()) continue;
+      const t = { type: 'mtext', p: P(0, 0), text: String(str), h: e.th * (isTitle ? 1.25 : 1), w: Math.max(colX[c1] - colX[c0] - 2 * mar, e.th), rot: 0, attach: 'tl', style: e.style };
+      const hgt = -bbPts(mtextGeom(t).box).y1;
+      need = Math.max(need, hgt + 2 * mar);
+      cells.push({ r, c0, c1, t, align: isTitle || isHead ? 'c' : isNumber(str) ? 'r' : 'l' });
+    }
+    rowH.push(need);
+  }
+  const rowY = [0];
+  for (const hh of rowH) rowY.push(rowY[rowY.length - 1] - hh);
+  const H = -rowY[nr], rot = e.rot || 0, W2 = q => G.add(e.p, G.rot(q, rot));
+  const lines = [];
+  for (let r = 0; r <= nr; r++) lines.push([W2(P(0, rowY[r])), W2(P(W, rowY[r]))]);
+  for (let c = 0; c <= nc; c++) {
+    const inner = c > 0 && c < nc;
+    const y0 = inner && e.title ? rowY[1] : 0; // el título no tiene divisiones verticales
+    if (y0 > rowY[nr]) lines.push([W2(P(colX[c], y0)), W2(P(colX[c], rowY[nr]))]);
+  }
+  const texts = cells.map(({ r, c0, c1, t, align }) => {
+    const ym = (rowY[r] + rowY[r + 1]) / 2, x = align === 'c' ? (colX[c0] + colX[c1]) / 2 : align === 'r' ? colX[c1] - mar : colX[c0] + mar;
+    return { ...t, p: W2(P(x, ym)), rot, attach: 'm' + align };
+  });
+  const g = { lines, texts, colX, rowY, W, H, box: [P(0, 0), P(W, 0), P(W, -H), P(0, -H)].map(W2), local: q => G.rot(G.sub(q, e.p), -rot), world: W2 };
+  tgcache.set(e, { key, g });
+  return g;
+}
+// Celda [fila, columna] en un punto del dibujo, o null
+export function tableCellAt(e, p) {
+  const g = tableGeom(e), q = g.local(p);
+  if (q.x < 0 || q.x > g.W || q.y > 0 || q.y < -g.H) return null;
+  const r = g.rowY.findIndex((y, i) => i > 0 && q.y >= y) - 1, c = e.title && r === 0 ? 0 : g.colX.findIndex((x, i) => i > 0 && q.x <= x) - 1;
+  return r >= 0 && c >= 0 ? [r, c] : null;
+}
+TYPES.table = {
+  name: 'Tabla',
+  prims: e => tableGeom(e).lines.map(([a, b]) => ({ k: 's', a, b })),
+  bbox: e => bbPts(tableGeom(e).box),
+  hit(e, p) { const g = tableGeom(e); return G.pointInPoly(p, g.box) ? 0 : Math.min(...g.lines.map(([a, b]) => G.dist(p, G.nearSeg(p, a, b).p))); },
+  snaps: e => ({ end: tableGeom(e).box, ins: [e.p] }),
+  // Pinzamientos: punto de inserción, bordes derechos de las columnas (anchura) y bordes inferiores de las filas (altura)
+  grips: e => { const g = tableGeom(e); return [e.p, ...g.colX.slice(1).map(x => g.world(P(x, 0))), ...g.rowY.slice(1).map(y => g.world(P(0, y)))]; },
+  moveGrip(e, i, p) {
+    if (i === 0) { e.p = p; return; }
+    const g = tableGeom(e), q = g.local(p), nc = e.cols.length;
+    if (i <= nc) { e.cols = e.cols.map((w, c) => (c === i - 1 ? Math.max(e.th, q.x - g.colX[c]) : w)); return; }
+    const r = i - nc - 1;
+    e.rows = e.rows.map((hh, k) => (k === r ? Math.max(e.th * 1.2, g.rowY[r] - q.y) : hh));
+  },
+  xform(e, m) {
+    const s = Mx.scaleOf(m), v = Mx.apV(m, P(Math.cos(e.rot || 0), Math.sin(e.rot || 0)));
+    let a = Math.atan2(v.y, v.x);
+    if (Mx.det(m) < 0) { // simetría con el texto legible: la tabla no se invierte, se recoloca
+      const b = tableGeom(e).box;
+      if (Math.cos(a + Math.PI) > -1e-9) { e.p = Mx.ap(m, b[1]); a += Math.PI; } else e.p = Mx.ap(m, b[3]);
+    } else e.p = Mx.ap(m, e.p);
+    e.rot = Math.abs(G.normAng(a)) < 1e-12 || Math.abs(G.normAng(a) - TAU) < 1e-12 ? 0 : G.normAng(a);
+    if (Math.abs(s - 1) > 1e-12) { e.cols = e.cols.map(w => w * s); e.rows = e.rows.map(hh => hh * s); e.th *= s; }
+  },
+  draw(c, e, R, st) {
+    const g = tableGeom(e);
+    c.beginPath();
+    for (const [a, b] of g.lines) { c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); }
+    c.stroke();
+    for (const t of g.texts) drawMText(c, R, t, st?.hl);
+  },
+  props: [
+    ro('Filas', e => e.rows.length, 'int'), ro('Columnas', e => e.cols.length, 'int'),
+    { label: 'Celdas', type: 'table', get: e => `${e.rows.length} × ${e.cols.length}` },
+    num('Altura de texto', e => e.th, (e, v) => { if (v > 0) e.th = v; }),
+    { label: 'Estilo de texto', type: 'select', options: () => D().textStyles.map(s => [s.name, s.name]), get: e => e.style || 'Standard', set: (e, v) => { e.style = v; } },
+    { label: 'Fila de título', type: 'bool', get: e => !!e.title, set: (e, v) => { e.title = v; } },
+    { label: 'Fila de encabezado', type: 'bool', get: e => !!e.header, set: (e, v) => { e.header = v; } },
+    angp('Rotación', e => e.rot || 0, (e, v) => { e.rot = v; }),
+    ...ptProps('Posición', 'p'),
+    ro('Anchura total', e => tableGeom(e).W), ro('Altura total', e => tableGeom(e).H),
+  ],
 };
 
 // ---------- Definición de atributo ----------
@@ -642,13 +898,20 @@ TYPES.dim = {
   grips: e => dimGripKeys(e).map(k => e[k]),
   moveGrip(e, i, p) {
     const k = dimGripKeys(e)[i];
+    if (e.assoc && k !== 'p3') { // el punto movido deja de estar asociado a la geometría
+      delete e.assoc[k];
+      if (k === 'c' || e.kind === 'rad' || e.kind === 'dia') { delete e.assoc.obj; delete e.assoc.l1; delete e.assoc.l2; }
+      if (!Object.keys(e.assoc).length) delete e.assoc;
+    }
     if (k === 'c') { const d = G.sub(p, e.c); for (const q of ['c', 'p1', 'p2', 'p3']) e[q] = G.add(e[q], d); if (e.l1) { e.l1 = e.l1.map(x => G.add(x, d)); e.l2 = e.l2.map(x => G.add(x, d)); } return; }
     e[k] = p;
   },
+  // _xf: la cota se ha transformado; si su geometría no cambió a la vez, deja de ser asociativa (document.js)
   xform(e, m) {
     for (const k of ['p1', 'p2', 'p3', 'c']) if (e[k]) e[k] = Mx.ap(m, e[k]);
     if (e.l1) { e.l1 = e.l1.map(q => Mx.ap(m, q)); e.l2 = e.l2.map(q => Mx.ap(m, q)); }
     if (e.kind === 'lin') { const v = Mx.apV(m, P(Math.cos(e.rot), Math.sin(e.rot))); e.rot = Math.atan2(v.y, v.x); }
+    if (e.assoc) e._xf = true;
   },
   draw(c, e, R) {
     const d = dimParts(e);
@@ -664,7 +927,8 @@ TYPES.dim = {
   },
   props: [ro('Tipo', e => DIM_KINDS[e.kind] || e.kind, 'text'), ro('Medida', e => dimParts(e).val),
     { label: 'Estilo de cota', type: 'select', options: () => D().dimStyles.map(s => [s.name, s.name]), get: e => e.style || D().dimStyles[0].name, set: (e, v) => { e.style = v; } },
-    { label: 'Texto (<> = medida)', type: 'text', get: e => e.text || '', set: (e, v) => { e.text = v; } }],
+    { label: 'Texto (<> = medida)', type: 'text', get: e => e.text || '', set: (e, v) => { e.text = v; } },
+    { label: 'Asociativa', type: 'bool', get: e => !!e.assoc, set: (e, v) => { if (!v) delete e.assoc; } }],
 };
 
 // ---------- Sombreado ----------
@@ -757,7 +1021,8 @@ TYPES.insert = {
   },
   draw() { /* lo dibuja render.js expandiendo blockEnts */ },
   props: e => {
-    const base = [ro('Nombre', x => x.name, 'text'), ...ptProps('Posición', 'p'),
+    const xr = D()?.blocks?.[e.name]?.xref;
+    const base = [ro('Nombre', x => x.name, 'text'), ...(xr ? [ro('Referencia externa', () => xr.file, 'text')] : []), ...ptProps('Posición', 'p'),
       num('Escala', x => Math.abs(x.sx ?? 1), (x, v) => { if (v > 0) { x.sx = Math.sign(x.sx || 1) * v; x.sy = Math.sign(x.sy || 1) * v; } }),
       angp('Rotación', x => x.rot || 0, (x, v) => { x.rot = v; })];
     const defs = blockAttdefs(e.name);

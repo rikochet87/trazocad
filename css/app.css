@@ -57,6 +57,7 @@ code { font-family: var(--mono); color: var(--accent2); }
 .rb-btn.active { background: rgba(30,144,214,.25); border-color: var(--accent); }
 /* Grupo Modificar: botones compactos en tres filas */
 .rb-panel[data-tab="0"] .rb-group:nth-child(2) .rb-items { max-width: 480px; }
+.rb-panel[data-tab="2"] .rb-group:nth-child(2) .rb-items { max-width: 540px; }
 .rb-panel[data-tab="0"] .rb-group:nth-child(2) .rb-btn { height: 21px; width: 79px; flex-direction: row; justify-content: flex-start; gap: 4px; padding: 0 4px; }
 .rb-panel[data-tab="0"] .rb-group:nth-child(2) .rb-btn .ic { width: 15px; height: 15px; }
 .rb-panel[data-tab="0"] .rb-group:nth-child(2) .rb-btn .lbl { font-size: 11px; max-width: 60px; }
@@ -238,6 +239,30 @@ input.full { width: 100%; }
 /* ----- v0.3: texto de líneas múltiples, atributos, capas por ventana ----- */
 .mtext-edit { width: 100%; min-height: 160px; resize: vertical; background: var(--bg1); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; color: var(--fg); font: 14px/1.45 var(--font); }
 .mtext-edit:focus { outline: none; border-color: var(--accent); }
+.mtext-edit.rich { min-height: 180px; max-height: 50vh; overflow: auto; font-size: 18px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
+.mtext-edit .stk { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; line-height: 1; font-size: .7em; margin: 0 1px; user-select: all; }
+.mtext-edit .stk sup, .mtext-edit .stk sub { vertical-align: baseline; font-size: 1em; }
+.mtext-edit .stk .bar { display: block; align-self: stretch; border-top: 1px solid currentColor; margin: 1px 0; }
+.mt-toolbar { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px; }
+.mt-toolbar select, .mt-toolbar input { height: 28px; background: var(--bg1); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; font-size: 12px; max-width: 150px; }
+.mt-toolbar .tb-h { width: 64px; padding: 0 6px; }
+.tb-btn { height: 28px; min-width: 28px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--line); background: var(--bg3); color: var(--fg); font-size: 13px; cursor: pointer; }
+.tb-btn:hover { background: var(--bg4); }
+.tb-btn.b { font-weight: 700; } .tb-btn.i { font-style: italic; } .tb-btn.u { text-decoration: underline; } .tb-btn.o { text-decoration: overline; } .tb-btn.k { text-decoration: line-through; }
+.table-grid { overflow: auto; max-height: 55vh; border: 1px solid var(--line); border-radius: 6px; }
+.table-grid table { border-collapse: collapse; }
+.table-grid td { border: 1px solid var(--line); padding: 0; }
+.table-grid td.title { background: var(--bg3); }
+.table-grid textarea { display: block; width: 130px; min-height: 30px; resize: both; border: 0; background: var(--bg1); color: var(--fg); font: 13px/1.35 var(--font); padding: 5px 6px; }
+.table-grid textarea:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.table-grid td.title textarea { width: 100%; font-weight: 600; text-align: center; background: var(--bg3); }
+.table-grid th { font: 600 11px var(--font); color: var(--fg3); padding: 2px 6px; background: var(--bg2); position: sticky; top: 0; }
+.xref-list { width: 100%; border-collapse: collapse; font-size: 13px; }
+.xref-list th, .xref-list td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.xref-list tr.sel td { background: rgba(30,144,214,.18); }
+.xref-list tr { cursor: pointer; }
+#bedit-bar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5; display: flex; gap: 8px; align-items: center; background: rgba(35,41,51,.94); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 10px; font-size: 13px; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+#bedit-bar b { color: var(--accent2); }
 .prop-btn { width: 100%; height: 24px; justify-content: flex-start; font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .lay-list.vp .lay-row { grid-template-columns: 14px minmax(52px, 1fr) 24px 24px 24px 20px 80px; gap: 3px; }
 .ib.frz { color: #7cc8ff; }
