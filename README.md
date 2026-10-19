@@ -103,6 +103,7 @@ js/dxf.js        DXF 2000 (con presentaciones) / R12
 js/io.js         Abrir, guardar, exportar SVG/PNG, imprimir
 js/ui.js         Cinta, paletas, barra de estado, diálogos
 js/app.js        Núcleo: entrada, motor de comandos, presentaciones
+tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para desarrollo
 ```
 
 ## Limitaciones conocidas

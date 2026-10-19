@@ -1,0 +1,81 @@
+// Captura de la v0.5: restricciones, cotas en serie, degradado, bloque dinámico y campo
+const tick = (ms = 5) => new Promise(r => setTimeout(r, ms));
+const doc = app.doc, out = {};
+const pick = (e, pt) => async () => { await tick(); app.req.resolve({ e: doc.get(e.id), pt }); };
+const cmd = async (name, ...steps) => { const p = app.run(name); for (const s of steps) { await tick(); if (typeof s === 'string') app.submit(s); else await s(); } await tick(); if (app.req) { const pr = app.req.prompt; app.escape(); await p; return 'ESPERANDO ' + pr; } await p; return 'ok'; };
+const last = () => doc.model.at(-1);
+doc.name = 'Soporte-param';
+doc.begin();
+doc.addLayer('Contorno', '#ffffff'); doc.layer('Contorno').lw = 0.5;
+doc.addLayer('Cotas', '#4fc3f7');
+doc.addLayer('Relleno', '#8bc34a');
+doc.addLayer('Textos', '#ffd54f');
+doc.commit();
+const layer = n => { doc.cur.layer = n; };
+// 1. Cuadrilátero restringido
+layer('Contorno');
+await cmd('LINE', '0,0', '98,3', ''); const A = last();
+await cmd('LINE', '98,3', '101,52', ''); const B = last();
+await cmd('LINE', '101,52', '-2,49', ''); const C = last();
+await cmd('LINE', '-2,49', '0,0', ''); const D = last();
+await cmd('CIRCLE', '30,25', '9'); const K = last();
+app.view.cx = 50; app.view.cy = 25; app.view.scale = 5; app.renderer.invalidate();
+await cmd('GCCOINCIDENT', pick(A, { x: 97, y: 3 }), pick(B, { x: 98, y: 4 }));
+await cmd('GCCOINCIDENT', pick(B, { x: 101, y: 51 }), pick(C, { x: 100, y: 52 }));
+await cmd('GCCOINCIDENT', pick(C, { x: -1, y: 49 }), pick(D, { x: -2, y: 48 }));
+await cmd('GCCOINCIDENT', pick(D, { x: 0, y: 1 }), pick(A, { x: 1, y: 0 }));
+await cmd('GCHORIZONTAL', '', pick(A, { x: 50, y: 1.5 }));
+await cmd('GCVERTICAL', '', pick(B, { x: 99.5, y: 27 }));
+await cmd('GCPARALLEL', pick(A, { x: 50, y: 1.5 }), pick(C, { x: 50, y: 50 }));
+await cmd('GCPERPENDICULAR', pick(A, { x: 50, y: 1.5 }), pick(D, { x: -1, y: 25 }));
+await cmd('GCFIX', pick(A, { x: 0.5, y: 0 }));
+doc.begin(); doc.params.push({ name: 'ancho', expr: '80' }); doc.commit();
+out.d1 = await cmd('DCHORIZONTAL', '', pick(A, { x: 50, y: 0 }), '50,-15', 'ancho*1.5');
+out.d2 = await cmd('DCVERTICAL', '', pick(B, { x: 100, y: 27 }), '135,30', 'd1/2');
+out.rad = await cmd('DCDIAMETER', pick(K, { x: 39, y: 25 }), '20,45', '18');
+// 2. Perfil con cotas encadenadas y desde línea base
+await cmd('PLINE', '180,-10', '210,-10', '230,10', '270,10', '270,50', '180,50', 'C');
+layer('Cotas');
+await cmd('DIMLINEAR', '180,-10', '210,-10', '195,-22');
+await cmd('DIMCONTINUE', '230,10', '270,10', '');
+await cmd('DIMLINEAR', '180,50', '180,-10', '165,20');
+// 3. Degradado esférico con campo de área
+layer('Contorno');
+await cmd('RECTANG', '10,-120', '90,-60'); const R = last();
+layer('Relleno');
+app.view.cx = 50; app.view.cy = -90; app.view.scale = 5; app.renderer.invalidate();
+out.grad = await cmd('GRADIENT', '50,-90', '');
+const gh = doc.model.find(e => e.type === 'hatch');
+doc.begin(); doc.modify(gh.id, e => { e.grad = { ...e.grad, type: 'SPHERICAL', c1: '#ffb300', c2: '#3b1d00', centered: true }; }); doc.commit();
+layer('Textos');
+doc.begin(); doc.add({ type: 'text', layer: 'Textos', color: 'BYLAYER', ltype: 'BYLAYER', lw: 'BYLAYER', p: { x: 10, y: -134 }, h: 6, rot: 0, text: `Área: %<Obj:${R.id}:Área:0>% mm²` }); doc.commit();
+// 4. Bloque dinámico PUERTA insertado y seleccionado (pinzamientos cian)
+layer('Contorno');
+await cmd('RECTANG', '0,0', '100,5');
+await cmd('LINE', '0,5', '0,95', '');
+await cmd('ARC', 'C', '0,5', '90,5', '0,95');
+const ids = doc.model.slice(-3).map(e => e.id);
+app.sel.clear(); ids.forEach(i => app.sel.add(i));
+await cmd('BLOCK', 'PUERTA', '0,0');
+await app.run('BEDIT', 'PUERTA');
+const bids = doc.ents.map(e => e.id);
+await cmd('BPARAMETER', 'L', 'Anchura', '0,0', '100,0', '90,-5', '110,10', () => { app.req.set.add(bids[0]); }, '');
+await cmd('BPARAMETER', 'S', '50,-10', '50,10');
+await cmd('BPARAMETER', 'V', '50,50');
+await cmd('BVSTATE', 'R', 'Abierta');
+await cmd('BVSTATE', 'N', 'Cerrada', 'C');
+await cmd('BVSTATE', 'S', 'Abierta');
+await cmd('BCLOSE', 'S');
+{ const r = doc.model.find(e => e.type === 'insert'); doc.begin(); doc.modify(r.id, e => { e.p = { x: 170, y: -125 }; }); doc.commit(); }
+const ins = doc.model.filter(e => e.type === 'insert').at(-1);
+out.ins = ins && ins.name;
+app.zoomExtents(); app.view.zoomAt(0.92, { x: app.view.w / 2, y: app.view.h / 2 });
+app.sel.clear(); app.sel.add(ins.id);
+app.ui.refreshProps?.();
+app.renderer.invalidate(); app.renderer.drawBase();
+// Pestaña Paramétrico de la cinta
+[...document.querySelectorAll('.rb-tab')].find(b => b.textContent === 'Paramétrico').click();
+await tick(200);
+out.cons = doc.constraints.length;
+out.types = doc.model.map(e => e.type).join(',');
+return out;
