@@ -1,10 +1,11 @@
 // Archivos: nuevo, abrir, guardar (.tcad), exportar DXF/SVG/PNG, imprimir y autoguardado.
 import * as G from './geom.js';
-import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, mtextGeom, mleaderGeom, tableGeom } from './entities.js';
+import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, mtextGeom, mleaderGeom, tableGeom, fieldText, ENV } from './entities.js';
 import { splinePts } from './spline.js';
 import { writeDXF, readDXF } from './dxf.js';
-import { hatchSegments } from './patterns.js';
+import { hatchSegments, gradientSpec } from './patterns.js';
 import { makeRV, setWorld, vpModelRect } from './render.js';
+import { PdfContext, buildPdf } from './pdf.js';
 
 const AUTOSAVE_KEY = 'trazocad.autosave';
 const fsAccess = 'showSaveFilePicker' in window;
@@ -25,6 +26,7 @@ export class IO {
   constructor(app) {
     this.app = app;
     this.handle = null;
+    this.gradN = 0;
     let t = null;
     app.doc.on(kind => {
       if (kind === 'reset') return;
@@ -181,7 +183,7 @@ export class IO {
     const textEl = (t, col) => {
       const st = doc.textStyle(t.style), anchor = t.align === 'c' ? 'middle' : t.align === 'r' ? 'end' : 'start';
       const extra = `${st.width && st.width !== 1 ? ` scale(${st.width} 1)` : ''}${st.oblique ? ` skewX(${-st.oblique})` : ''}`;
-      return `<text transform="translate(${n5(t.p.x)} ${n5(t.p.y)}) scale(1 -1) rotate(${n5(-G.deg(t.rot || 0))})${extra}" font-family="${esc(st.font)}, ${FONT}" font-size="${n5(t.h * TXT_K)}" text-anchor="${anchor}" fill="${col}">${esc(t.text ?? t.str)}</text>`;
+      return `<text transform="translate(${n5(t.p.x)} ${n5(t.p.y)}) scale(1 -1) rotate(${n5(-G.deg(t.rot || 0))})${extra}" font-family="${esc(st.font)}, ${FONT}" font-size="${n5(t.h * TXT_K)}" text-anchor="${anchor}" fill="${col}">${esc(fieldText(t.text ?? t.str))}</text>`;
     };
     // Tramos con formato de un MTEXT (fuente, negrita, cursiva, color, decoraciones y fracciones apiladas)
     const mtextEls = (e, col) => {
@@ -231,6 +233,15 @@ export class IO {
         }
         case 'spline': { const p = splinePts(e); out.push(`<path d="M${pts(p).replace(/ /g, ' L')}${e.closed ? ' Z' : ''}" ${s}/>`); break; }
         case 'hatch': {
+          if (e.pattern === 'GRADIENT') { // degradado SVG en coordenadas del dibujo
+            const g = gradientSpec(e, bbPts(e.loops.flat())), id = `gr${++this.gradN}`;
+            const stops = g.stops.map(([t, c]) => `<stop offset="${n5(Math.max(0, Math.min(1, t)))}" stop-color="${c}"/>`).join('');
+            out.push(g.kind === 'linear'
+              ? `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${n5(g.p0.x)}" y1="${n5(g.p0.y)}" x2="${n5(g.p1.x)}" y2="${n5(g.p1.y)}">${stops}</linearGradient>`
+              : `<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="${n5(g.c.x)}" cy="${n5(g.c.y)}" r="${n5(g.r)}">${stops}</radialGradient>`);
+            out.push(`<path d="${e.loops.map(l => `M${pts(l).replace(/ /g, ' L')} Z`).join(' ')}" fill="url(#${id})" fill-rule="evenodd"/>`);
+            break;
+          }
           if (e.pattern === 'SOLID') { out.push(`<path d="${e.loops.map(l => `M${pts(l).replace(/ /g, ' L')} Z`).join(' ')}" fill="${col}" fill-rule="evenodd"/>`); break; }
           const segs = hatchSegments(e, bbPts(e.loops.flat()));
           out.push(`<path d="${segs.map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}" ${s}/>`);
@@ -265,7 +276,9 @@ export class IO {
     let x1, y1, w, h, body, size;
     if (lay) {
       x1 = 0; y1 = 0; w = lay.w; h = lay.h;
+      ENV.layout = lay;
       body = this.svgEnts(lay.ents, 1, []);
+      ENV.layout = null;
       size = `width="${n5(w)}mm" height="${n5(h)}mm"`;
     } else {
       const b = doc.extents(doc.model.filter(e => doc.visible(e)));
@@ -315,6 +328,38 @@ ${body.join('\n')}
     const blob = await new Promise(res => cv.toBlob(res, 'image/png'));
     const h = await this.writeFile(blob, `${doc.name}${lay ? '-' + lay.name : ''}.png`, 'image/png', '.png', 'Imagen PNG', false);
     if (h) app.print(`Exportado a PNG (${W}×${H}).`);
+  }
+
+  // ---------- PDF vectorial ----------
+  // which: 'current' (presentación activa o modelo) o 'all' (todas las presentaciones, una por página)
+  async buildPDF(which = 'current') {
+    const app = this.app, doc = app.doc, K = 72 / 25.4; // puntos por mm
+    const sty = e => { const st = doc.style(e); return { color: printColor(st.color), px: Math.max(0.1, st.lw) * K, pat: st.pat, ltscale: doc.settings.ltscale }; };
+    const pageOf = lay => {
+      const W = lay.w * K, H = lay.h * K, ctx = new PdfContext(H);
+      app.renderer.drawLayout(ctx, makeRV(lay.w / 2, lay.h / 2, K, W, H, 1), lay, sty, true);
+      return { w: W, h: H, ctx };
+    };
+    const lay = app.layoutShown();
+    if (which === 'all' && doc.layouts.length) return doc.layouts.map(pageOf);
+    if (lay) return [pageOf(lay)];
+    // Modelo: ajustado a una hoja A3 apaisada con 10 mm de margen
+    const b = doc.extents(doc.model.filter(e => doc.visible(e)));
+    if (!b) return null;
+    const W = 420 * K, H = 297 * K, bw = b.x2 - b.x1 || 1, bh = b.y2 - b.y1 || 1, s = Math.min((W - 20 * K) / bw, (H - 20 * K) / bh);
+    const ctx = new PdfContext(H), R = makeRV((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2, s, W, H, 1);
+    setWorld(ctx, R);
+    app.renderer.paintList(ctx, R, doc.model, e => ({ ...sty(e), px: Math.max(0.1, doc.style(e).lw) * K }));
+    return [{ w: W, h: H, ctx }];
+  }
+  async exportPDF(which = 'current') {
+    const pages = await this.buildPDF(which);
+    if (!pages) return this.app.print('El dibujo está vacío.');
+    const doc = this.app.doc, lay = this.app.layoutShown();
+    const blob = await buildPdf(pages, doc.name);
+    const name = `${doc.name}${which !== 'all' && lay ? '-' + lay.name : ''}.pdf`;
+    const h = await this.writeFile(blob, name, 'application/pdf', '.pdf', 'Documento PDF', false);
+    if (h) this.app.print(`Exportado a PDF vectorial: ${pages.length} página(s)${lay || which === 'all' ? ', a escala real' : ' (modelo ajustado a A3)'}.`);
   }
 
   async print() {

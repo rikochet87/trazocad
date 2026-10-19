@@ -1,15 +1,17 @@
 // Lectura y escritura de DXF ASCII. Escribe DXF 2000 (AC1015), con presentaciones y ventanas gráficas, o R12 (AC1009, sólo modelo).
 import * as G from './geom.js';
-import { LTYPES, aciToHex, hexToAci, dimParts, ellPts, mtextGeom, mleaderGeom, insertAttribs, xformEnt, textBox, DEFAULT_DIMSTYLE } from './entities.js';
+import { LTYPES, aciToHex, hexToAci, dimParts, ellPts, mtextGeom, mleaderGeom, insertAttribs, blockEnts, xformEnt, textBox, DEFAULT_DIMSTYLE, fieldText, mlEff, ENV } from './entities.js';
 import { explodeEntity } from './ops.js';
+import { isDynamic } from './dynblock.js';
 import { hasCodes, richPlain } from './richtext.js';
-import { PATTERNS, famsOf, hatchSegments } from './patterns.js';
+import { PATTERNS, famsOf, hatchSegments, GRADIENTS, GRAD_DEFAULT } from './patterns.js';
 import { splinePts, interpolate, rebuild as rebuildSpline } from './spline.js';
 const { P } = G;
 
 const num = v => (Math.abs(v) < 1e-12 ? 0 : +(+v).toFixed(10));
 const lwCode = lw => (lw === 'BYLAYER' ? -1 : lw === 'BYBLOCK' ? -2 : lw === 'DEFAULT' ? -3 : Math.round(lw * 100));
 const tcolor = hex => parseInt(hex.slice(1), 16);
+const mixHex = (a, b) => '#' + [1, 3, 5].map(i => Math.round((parseInt(a.slice(i, i + 2), 16) + parseInt(b.slice(i, i + 2), 16)) / 2).toString(16).padStart(2, '0')).join('');
 // Nombres con | (dependientes de referencias externas) no son válidos fuera de una referencia: se escriben como al unirla
 const nm = s => String(s ?? '').split('|').join('$0$');
 
@@ -38,6 +40,12 @@ export function writeDXF(doc, version = '2000') {
   if (!R12) {
     let nd = 0;
     for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if (e.type === 'dim') dimBlocks.set(e, [`*D${++nd}`, H()]);
+  }
+  // Referencias a bloques dinámicos: cada una se escribe como bloque anónimo (*U1…) con su geometría según su estado
+  const dynIns = new Map();
+  if (!R12) {
+    let nu = 0;
+    for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if (e.type === 'insert' && isDynamic(doc.blocks[e.name])) dynIns.set(e, [`*U${++nu}`, H()]);
   }
   const lastVp = [];
   let ps = false; // escribiendo entidades del espacio papel
@@ -70,7 +78,7 @@ export function writeDXF(doc, version = '2000') {
   // Parte común de TEXT, ATTDEF y ATTRIB (subclase AcDbText)
   const textBody = (t, str) => {
     const st = doc.textStyle(t.style);
-    xy(0, t.p); g(40, num(t.h)); g(1, str);
+    xy(0, t.p); g(40, num(t.h)); g(1, fieldText(str));
     if (t.rot) g(50, num(G.deg(t.rot)));
     if (st.width && st.width !== 1) g(41, st.width);
     if (st.oblique) g(51, st.oblique);
@@ -88,7 +96,7 @@ export function writeDXF(doc, version = '2000') {
     if (R12) { for (const ln of mtextGeom(e).lines) if (ln.str) text(e, ln, ow); return; }
     common('MTEXT', e, ow, 'AcDbMText', fh);
     xy(0, e.p); g(40, num(e.h)); g(41, num(e.w || 0)); g(71, MT_ATT.indexOf(e.attach || 'tl') + 1); g(72, 1);
-    let str = e.rich ? String(e.text).split('\n').join('\\P') : mtextEsc(e.text);
+    let str = e.rich ? String(fieldText(e.text, true)).split('\n').join('\\P') : mtextEsc(fieldText(e.text));
     while (str.length > 250) { g(3, str.slice(0, 250)); str = str.slice(250); }
     g(1, str); g(7, nm(doc.textStyle(e.style).name));
     g(11, num(Math.cos(e.rot || 0))); g(21, num(Math.sin(e.rot || 0))); g(31, 0);
@@ -111,9 +119,11 @@ export function writeDXF(doc, version = '2000') {
     if (R12) { // R12 no tiene HATCH: contorno + líneas del patrón
       for (const l of e.loops) poly(e, l, true, null, ow);
       const bb = e.loops.flat().reduce((r, p) => ({ x1: Math.min(r.x1, p.x), y1: Math.min(r.y1, p.y), x2: Math.max(r.x2, p.x), y2: Math.max(r.y2, p.y) }), { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity });
-      for (const [a, b] of hatchSegments(e, bb)) line(e, a, b, ow);
+      if (e.pattern !== 'GRADIENT') for (const [a, b] of hatchSegments(e, bb)) line(e, a, b, ow);
       return;
     }
+    // DXF 2000 no tiene degradados: se escribe un relleno sólido con el color medio
+    if (e.pattern === 'GRADIENT') { const g = { ...GRAD_DEFAULT, ...e.grad }; e = { ...e, pattern: 'SOLID', color: mixHex(g.c1, g.c2) }; }
     const solidFill = e.pattern === 'SOLID';
     common('HATCH', e, ow, 'AcDbHatch');
     xy(0, P(0, 0)); g(210, 0); g(220, 0); g(230, 1);
@@ -138,6 +148,11 @@ export function writeDXF(doc, version = '2000') {
     g(98, 0);
   };
   const insert = (e, ow) => {
+    if (isDynamic(doc.blocks[e.name])) { // bloque dinámico: geometría ya evaluada
+      if (R12 || !dynIns.has(e)) { for (const x of blockEnts(e)) writeEnt(x, ow); return; }
+      common('INSERT', e, ow, 'AcDbBlockReference'); g(2, dynIns.get(e)[0]); xy(0, P(0, 0)); g(41, 1); g(42, 1); g(43, 1);
+      return;
+    }
     const atts = insertAttribs(e);
     common('INSERT', e, ow, 'AcDbBlockReference');
     if (atts.length) g(66, 1);
@@ -188,7 +203,7 @@ export function writeDXF(doc, version = '2000') {
     g(2, bname); xy(0, def || e.p3); xy(1, tm);
     g(70, type | 32 | 128 | (e.kind === 'ord' && (d.axis === 'x') ? 64 : 0));
     g(71, 5);
-    if (e.text) g(1, e.text);
+    if (e.text) g(1, fieldText(e.text));
     g(42, num(e.kind === 'ang' ? G.rad(d.val) : d.val));
     g(3, nm(doc.dimStyle(e.style).name));
     switch (e.kind) {
@@ -210,8 +225,8 @@ export function writeDXF(doc, version = '2000') {
     const linked = gm.text && e.content === 'mtext', th = linked ? H() : null;
     const verts = [...e.pts, ...(G.eqPt(gm.L, e.pts[e.pts.length - 1]) ? [] : [gm.L])];
     common('LEADER', e, ow, 'AcDbLeader');
-    g(3, nm(doc.dimStyle(doc.cur.dimStyle).name)); g(71, e.arrow === 'none' ? 0 : 1); g(72, 0); g(73, linked ? 0 : 3); g(74, 0); g(75, 0);
-    g(40, num(e.h)); g(41, 0); g(76, verts.length);
+    g(3, nm(doc.dimStyle(doc.cur.dimStyle).name)); g(71, mlEff(e).arrow === 'none' ? 0 : 1); g(72, 0); g(73, linked ? 0 : 3); g(74, 0); g(75, 0);
+    g(40, num(mlEff(e).h)); g(41, 0); g(76, verts.length);
     for (const p of verts) xy(0, p);
     if (linked) g(340, th);
     if (gm.circle) { common('CIRCLE', e, ow, 'AcDbCircle'); xy(0, gm.circle[0]); g(40, num(gm.circle[1])); }
@@ -256,6 +271,7 @@ export function writeDXF(doc, version = '2000') {
   // Entidades de una presentación: primero la ventana general del papel (id 1), después las del usuario
   const writePaper = (lay, i, ow) => {
     ps = true;
+    ENV.layout = lay;
     lastVp[i] = viewport({ layer: '0' }, ow, { cx: lay.w / 2, cy: lay.h / 2, w: lay.w, h: lay.h, vcx: lay.w / 2, vcy: lay.h / 2, vh: lay.h, id: 1, status: 1 });
     let id = 2;
     for (const e of lay.ents) {
@@ -265,6 +281,7 @@ export function writeDXF(doc, version = '2000') {
       id++;
     }
     ps = false;
+    ENV.layout = null;
   };
 
   // ---- HEADER ----
@@ -337,20 +354,21 @@ export function writeDXF(doc, version = '2000') {
       rec('DIMSTYLE', th, 'AcDbDimStyleTableRecord', 105);
       g(2, nm(d.name)); g(70, 0);
       if (d.suffix) g(3, '<>' + d.suffix);
-      g(40, num(d.scale || 1)); g(41, num(d.asz)); g(42, num(d.exo)); g(44, num(d.exe));
+      g(40, num(d.scale || 1)); g(41, num(d.asz)); g(42, num(d.exo)); g(43, num(d.dli ?? 3.75)); g(44, num(d.exe));
       if (d.arrow === 'tick') g(142, num(d.asz / 2));
       g(73, 0); g(74, 0); g(77, 1); g(140, num(d.txt)); g(147, num(d.gap)); g(179, d.adec ?? 0); g(271, d.dec ?? 2);
       if (!R12 && styleH[doc.textStyle(d.textStyle).name]) g(340, styleH[doc.textStyle(d.textStyle).name]);
     }
   }, 'AcDbDimStyleTable');
   if (!R12) {
-    table('BLOCK_RECORD', 2 + Math.max(0, layouts.length - 1) + userBlocks.length + dimBlocks.size, th => {
+    table('BLOCK_RECORD', 2 + Math.max(0, layouts.length - 1) + userBlocks.length + dimBlocks.size + dynIns.size, th => {
       const br = (h, name, lay) => { g(0, 'BLOCK_RECORD'); g(5, h); g(330, th); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbBlockTableRecord'); g(2, name); if (lay) g(340, lay); };
       br(brMS, '*Model_Space', layouts.length ? layModel : null);
       br(brPS, '*Paper_Space', layH[0]);
       for (let i = 1; i < layouts.length; i++) br(brLay[i], psName(i), layH[i]);
       for (const b of userBlocks) br(brUser[b.name], nm(b.name));
       for (const [name, h] of dimBlocks.values()) br(h, name);
+      for (const [name, h] of dynIns.values()) br(h, name);
     });
   }
   g(0, 'ENDSEC');
@@ -380,6 +398,7 @@ export function writeDXF(doc, version = '2000') {
   for (const b of userBlocks) block(nm(b.name), b.base, brUser[b.name], () => { for (const e of b.ents) writeEnt(e, brUser[b.name]); });
   // Bloques anónimos con la geometría de cada cota (*D1, *D2…)
   for (const [e, [name, h]] of dimBlocks) block(name, P(0, 0), h, () => dimGeometry(e, h), false, 1);
+  for (const [e, [name, h]] of dynIns) block(name, P(0, 0), h, () => { for (const x of blockEnts(e)) writeEnt(x, h); }, false, 1);
   g(0, 'ENDSEC');
 
   // ---- ENTITIES ----
@@ -563,7 +582,7 @@ export function readDXF(text) {
     const name = val(gr, 2, '');
     if (!name) continue;
     const D = DEFAULT_DIMSTYLE, post = val(gr, 3, '') || '';
-    dimStyles.push({ ...D, name, txt: numv(gr, 140, D.txt), asz: numv(gr, 41, D.asz), exo: numv(gr, 42, D.exo), exe: numv(gr, 44, D.exe), gap: Math.abs(numv(gr, 147, D.gap)),
+    dimStyles.push({ ...D, name, txt: numv(gr, 140, D.txt), asz: numv(gr, 41, D.asz), exo: numv(gr, 42, D.exo), dli: numv(gr, 43, D.dli), exe: numv(gr, 44, D.exe), gap: Math.abs(numv(gr, 147, D.gap)),
       dec: parseInt(val(gr, 271, String(D.dec)), 10), adec: parseInt(val(gr, 179, '0'), 10), scale: numv(gr, 40, 1) || 1,
       arrow: numv(gr, 142, 0) > 0 ? 'tick' : 'closed', textStyle: styleByHandle.get(val(gr, 340)) || 'Standard', suffix: post.includes('<>') ? post.split('<>')[1] : '' });
   }
@@ -643,6 +662,12 @@ export function readDXF(text) {
           if (!loops.length) { skipped++; break; }
           const name = (val(gr, 2, 'ANSI31') || 'ANSI31').toUpperCase(), solidFlag = val(gr, 70) === '1';
           const v = G.Mx.apV(M, P(1, 0));
+          if (val(gr, 450) === '1') { // degradado (DXF 2004+)
+            const cols = gr.d.filter(x => x[0] === 421).map(x => '#' + (+x[1] & 0xffffff).toString(16).padStart(6, '0'));
+            const gname = (val(gr, 470, 'LINEAR') || 'LINEAR').toUpperCase(), type = GRADIENTS[gname] ? gname : 'LINEAR';
+            push({ type: 'hatch', loops, pattern: 'GRADIENT', scale: 1, angle: G.deg(numv(gr, 460, 0)) + G.deg(Math.atan2(v.y, v.x)), grad: { type, c1: cols[0] || GRAD_DEFAULT.c1, c2: cols[1] || GRAD_DEFAULT.c2, centered: !numv(gr, 461, 0) } });
+            break;
+          }
           push({ type: 'hatch', loops, pattern: solidFlag || name === 'SOLID' ? 'SOLID' : PATTERNS[name] ? name : 'ANSI31', scale: numv(gr, 41, 1) * s || 1, angle: numv(gr, 52, 0) + G.deg(Math.atan2(v.y, v.x)) });
           break;
         }

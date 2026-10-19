@@ -17,6 +17,25 @@ export const PATTERNS = {
     [90, 0.79375, 5.55625, 6.35, 6.35, 6.35, -6.35], [90, 3.175, 5.55625, 6.35, 6.35, 6.35, -6.35], [90, 5.55625, 5.55625, 6.35, 6.35, 6.35, -6.35]] },
 };
 
+// ---------- Degradados (pattern 'GRADIENT', datos en e.grad = {type, c1, c2, centered}; ángulo en e.angle) ----------
+export const GRADIENTS = { LINEAR: 'Lineal', CYLINDER: 'Cilíndrico', INVCYLINDER: 'Cilíndrico invertido', SPHERICAL: 'Esférico', INVSPHERICAL: 'Esférico invertido', HEMISPHERICAL: 'Semiesférico', INVHEMISPHERICAL: 'Semiesférico invertido' };
+export const GRAD_DEFAULT = { type: 'LINEAR', c1: '#1e90d6', c2: '#ffffff', centered: true };
+// Geometría del degradado en coordenadas del dibujo: {kind: 'linear', p0, p1, stops} o {kind: 'radial', c, r, stops}
+export function gradientSpec(e, bb) {
+  const g = { ...GRAD_DEFAULT, ...e.grad }, a = G.rad(e.angle || 0), u = G.P(Math.cos(a), Math.sin(a)), n = G.perp(u);
+  const C = G.P((bb.x1 + bb.x2) / 2, (bb.y1 + bb.y2) / 2), shift = g.centered === false ? 0.3 : 0;
+  const corners = [G.P(bb.x1, bb.y1), G.P(bb.x2, bb.y1), G.P(bb.x2, bb.y2), G.P(bb.x1, bb.y2)];
+  const pu = corners.map(q => G.dot(G.sub(q, C), u)), pn = corners.map(q => G.dot(G.sub(q, C), n));
+  const lo = Math.min(...pu), hi = Math.max(...pu), half = Math.max(1e-9, Math.hypot(hi - lo, Math.max(...pn) - Math.min(...pn)) / 2);
+  const inv = g.type.startsWith('INV'), [a1, a2] = inv ? [g.c2, g.c1] : [g.c1, g.c2], t = g.type.replace(/^INV/, '');
+  if (t === 'LINEAR') return { kind: 'linear', p0: G.add(C, G.mul(u, lo)), p1: G.add(C, G.mul(u, hi)), stops: [[0, g.c1], [1, g.c2]] };
+  if (t === 'CYLINDER') return { kind: 'linear', p0: G.add(C, G.mul(u, lo)), p1: G.add(C, G.mul(u, hi)), stops: [[0, a1], [0.5 - shift / 2, a2], [1, a1]] };
+  if (t === 'HEMISPHERICAL') { const c0 = G.add(C, G.mul(n, Math.min(...pn))); return { kind: 'radial', c: c0, r: half * 2, stops: [[0, a2], [1, a1]] }; }
+  // Esférico: luz en el centro (desplazada hacia arriba a la izquierda si no está centrado)
+  const c0 = G.add(C, G.mul(G.add(G.mul(u, -1), n), half * shift));
+  return { kind: 'radial', c: c0, r: half * (1 + shift), stops: [[0, a2], [1, a1]] };
+}
+
 // Familias de líneas del patrón de un sombreado, ya giradas y escaladas
 export function famsOf(e) {
   const pat = PATTERNS[e.pattern] || PATTERNS.ANSI31, A = G.rad(e.angle || 0), S = e.scale || 1;

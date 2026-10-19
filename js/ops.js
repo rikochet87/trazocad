@@ -443,7 +443,7 @@ export function explodeEntity(e) {
     ];
   }
   if (e.type === 'hatch') {
-    if (e.pattern === 'SOLID') return e.loops.map(l => ({ ...b, type: 'pline', pts: l, closed: true }));
+    if (e.pattern === 'SOLID' || e.pattern === 'GRADIENT') return e.loops.map(l => ({ ...b, type: 'pline', pts: l, closed: true }));
     const bb = e.loops.flat().reduce((r, p) => ({ x1: Math.min(r.x1, p.x), y1: Math.min(r.y1, p.y), x2: Math.max(r.x2, p.x), y2: Math.max(r.y2, p.y) }), { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity });
     return hatchSegments(e, bb).map(([p1, p2]) => ({ ...b, type: 'line', p1, p2 }));
   }

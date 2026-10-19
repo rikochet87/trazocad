@@ -1,4 +1,4 @@
-# TrazoCAD — v0.4
+# TrazoCAD — v0.5
 
 Software de dibujo técnico 2D inspirado en AutoCAD, hecho desde cero como **PWA** (aplicación web instalable y sin conexión). JavaScript puro con módulos ES: sin dependencias ni compilación.
 
@@ -11,6 +11,20 @@ node serve.mjs          # http://localhost:8080
 ```
 
 Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta tal cual a cualquier hosting estático con HTTPS (GitHub Pages, Netlify, Hostinger…). En Chrome/Edge aparece el botón **Instalar**.
+
+## Novedades de la v0.5
+
+![Restricciones paramétricas, cotas encadenadas, degradado con campo de área y bloque dinámico](docs/parametrico.png)
+
+| Función | Detalle |
+|---|---|
+| **Cotas en serie** (`DIMCONTINUE`, `DIMBASELINE`, `QDIM`) | Encadenadas o desde una línea base (separación DIMDLI del estilo), lineales, angulares y de coordenadas; QDIM acota de una vez los extremos y centros de una selección. Todas asociativas |
+| **Restricciones paramétricas** (pestaña Paramétrico) | Geométricas: horizontal, vertical, paralela, perpendicular, coincidente, concéntrica, igual, fija, tangente, colineal. De cota: lineal, horizontal, vertical, alineada, radio, diámetro, angular, con nombre y expresión (`d2 = d1/2`). Solucionador de cambio mínimo; doble clic en una cota de restricción para cambiarla; `PARAMETERS`, `DELCONSTRAINT`, `CONSTRAINTBAR` |
+| **Bloques dinámicos** (`BPARAMETER`, `BVSTATE`, `BVHIDE`, `BVSHOW`) | Estiramiento lineal, simetría y estados de visibilidad; pinzamientos cian y propiedades «Personalizado» en las referencias; en DXF se escriben como bloques anónimos |
+| **Campos** (`FIELD`) | Fecha, archivo, presentación, escala, autor o propiedad de un objeto (área, longitud, radio…), que se actualizan solos; el cajetín los usa |
+| **Estilos de directriz y de tabla** (`MLEADERSTYLE`, `TABLESTYLE`) | Las directrices y tablas toman los valores de su estilo salvo los que se modifiquen en cada objeto |
+| **Degradados** (`GRADIENT`) | Lineal, cilíndrico, esférico y semiesférico, con dos colores; asociativos; SVG y PDF los conservan |
+| **PDF vectorial** (`PDFOUT`) | Presentaciones a escala real (todas en un archivo) o el modelo ajustado a A3, con texto seleccionable |
 
 ## Novedades de la v0.4
 
@@ -59,7 +73,7 @@ Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta ta
 
 ## Base de la v0.1
 
-Línea de comandos con alias y opciones, entrada de coordenadas (`x,y`, `@dx,dy`, `@d<a`, distancia directa), referencias a objetos (punto final, medio, centro, cuadrante, intersección, perpendicular, cercano), ORTO, POLAR, RASTREO, FORZC, entrada dinámica, selección por ventana o captura, pinzamientos, capas, paleta de propiedades, cotas, deshacer ilimitado y autoguardado. Pulsa **F1** en la app para ver los 87 comandos.
+Línea de comandos con alias y opciones, entrada de coordenadas (`x,y`, `@dx,dy`, `@d<a`, distancia directa), referencias a objetos (punto final, medio, centro, cuadrante, intersección, perpendicular, cercano), ORTO, POLAR, RASTREO, FORZC, entrada dinámica, selección por ventana o captura, pinzamientos, capas, paleta de propiedades, cotas, deshacer ilimitado y autoguardado. Pulsa **F1** en la app para ver los más de 120 comandos.
 
 ## Estructura
 
@@ -74,6 +88,9 @@ js/entities.js   Tipos de entidad (línea … spline, texto con formato, directr
 js/assoc.js      Cotas asociativas: referencias a la geometría y recálculo
 js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, deshacer, asociatividad
 js/xref.js       Referencias externas: lectura, prefijos, recarga, desenlace y unión
+js/constraints.js Restricciones paramétricas, expresiones y solucionador
+js/dynblock.js   Bloques dinámicos
+js/pdf.js        Exportación a PDF vectorial
 js/patterns.js   Patrones de sombreado y recorte de líneas de patrón
 js/hatch.js      Detección de contornos (grafo plano, caras e islas) y recálculo asociativo
 js/spatial.js    Índice espacial
@@ -91,13 +108,15 @@ js/app.js        Núcleo: entrada, motor de comandos, presentaciones
 ## Limitaciones conocidas
 
 - La asociatividad de cotas y sombreados no se exporta a DXF: AutoCAD los abre como cotas y sombreados normales (las cotas sí como entidades DIMENSION editables). Una cota asociada a un punto de una polilínea sigue al vértice por su número; si se recorta o parte el objeto, la cota pierde la asociación.
-- Las directrices se exportan como LEADER + MTEXT (el formato DXF 2000 no tiene MULTILEADER) y los globos como círculo y texto; las tablas se exportan descompuestas en líneas y MTEXT. No hay estilos de directriz ni de tabla: las directrices toman flecha y altura del estilo de cota actual.
+- Las directrices se exportan como LEADER + MTEXT (el formato DXF 2000 no tiene MULTILEADER) y los globos como círculo y texto; las tablas se exportan descompuestas en líneas y MTEXT. Los estilos de directriz y de tabla no se exportan a DXF.
 - En las fracciones apiladas y los colores de MTEXT se admite el subconjunto de códigos indicado; los códigos de párrafo (tabulaciones, sangrías, columnas) se descartan al importar.
 - Las referencias externas se leen con el selector de archivos del navegador (una web no puede abrir rutas por sí sola): «Recargar» pide de nuevo el archivo salvo en la misma sesión. En DXF se exportan unidas (como bloques normales).
 - Las splines cerradas se escriben en DXF como splines abiertas con los vértices repetidos (geometría idéntica). Al recortar o alargar una spline por vértices de control se convierte en una spline sin puntos de ajuste.
 - Los atributos de una referencia no se pueden desplazar por separado: siguen la posición definida en el bloque. Al descomponer la referencia se convierten en textos con su valor.
 - La exportación R12 sigue siendo sólo del espacio modelo y escribe las cotas, directrices y tablas descompuestas. En la importación, las referencias con escala no uniforme se descomponen.
 
-## Hoja de ruta (v0.5+)
+- Las restricciones paramétricas y los parámetros dinámicos no se exportan a DXF. En DXF 2000 los degradados se escriben como relleno sólido del color medio.
 
-Cotas continuas y de línea base (DIMCONTINUE, DIMBASELINE, QDIM), estilos de directriz y de tabla, campos en textos (fecha, área, atributos), restricciones paramétricas geométricas y de cota, bloques dinámicos, exportación a PDF vectorial y sombreados degradados.
+## Hoja de ruta (v0.6+)
+
+Restricciones automáticas (AUTOCONSTRAIN), parámetros de rotación y tabla de consulta en bloques dinámicos, exportación DXF 2007+ con MULTILEADER y degradados, capas de estados (LAYERSTATE), grupos (GROUP), MEASURE/DIVIDE y sombreados con patrones personalizados.

@@ -58,6 +58,7 @@ code { font-family: var(--mono); color: var(--accent2); }
 /* Grupo Modificar: botones compactos en tres filas */
 .rb-panel[data-tab="0"] .rb-group:nth-child(2) .rb-items { max-width: 480px; }
 .rb-panel[data-tab="2"] .rb-group:nth-child(2) .rb-items { max-width: 540px; }
+.rb-panel[data-tab="3"] .rb-group:nth-child(1) .rb-items { max-width: 580px; }
 .rb-panel[data-tab="0"] .rb-group:nth-child(2) .rb-btn { height: 21px; width: 79px; flex-direction: row; justify-content: flex-start; gap: 4px; padding: 0 4px; }
 .rb-panel[data-tab="0"] .rb-group:nth-child(2) .rb-btn .ic { width: 15px; height: 15px; }
 .rb-panel[data-tab="0"] .rb-group:nth-child(2) .rb-btn .lbl { font-size: 11px; max-width: 60px; }
@@ -267,3 +268,7 @@ input.full { width: 100%; }
 .lay-list.vp .lay-row { grid-template-columns: 14px minmax(52px, 1fr) 24px 24px 24px 20px 80px; gap: 3px; }
 .ib.frz { color: #7cc8ff; }
 .rb-panel[data-tab="0"] .rb-group:first-child .rb-items { max-width: 520px; }
+
+.prop-color { width: 100%; height: 24px; padding: 0 2px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg1); }
+.xref-list.params input { width: 100%; height: 26px; background: var(--bg1); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; font: 12px var(--mono); }
+.xref-list.params td.num { font-family: var(--mono); font-size: 12px; white-space: nowrap; }

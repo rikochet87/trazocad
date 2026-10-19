@@ -1,7 +1,9 @@
 // Documento: capas, espacio modelo, presentaciones, bloques, estilos, deshacer/rehacer, sombreados asociativos y serialización.
-import { bboxOf, bbUnion, cloneEnt, LTYPES, DEFAULT_DIMSTYLE } from './entities.js';
+import { bboxOf, bbUnion, cloneEnt, LTYPES, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, DEFAULT_TBLSTYLE } from './entities.js';
 import { assocLoops } from './hatch.js';
 import { updateDim, dropMissing, dimRefIds } from './assoc.js';
+import { remapDyn } from './dynblock.js';
+import { solve, consValid, refIds } from './constraints.js';
 
 export const DEFAULT_SETTINGS = {
   gridX: 10, snapX: 10, polarInc: 15, ltscale: 1, coordDec: 4,
@@ -25,12 +27,16 @@ export class Doc {
     this.layouts = [];
     this.blocks = {};
     this.bedit = null; // editor de bloques abierto: {name, base, ents}
+    this.constraints = []; // restricciones paramétricas (constraints.js)
+    this.params = [];      // parámetros de usuario {name, expr}
     this.space = 'model';
     this.textStyles = [{ name: 'Standard', font: 'Arial', width: 1, oblique: 0 }];
     this.dimStyles = [{ ...DEFAULT_DIMSTYLE }];
+    this.mleaderStyles = [{ ...DEFAULT_MLSTYLE }];
+    this.tableStyles = [{ ...DEFAULT_TBLSTYLE }];
     this.byId = new Map();
     this.nextId = 1;
-    this.cur = { layer: '0', color: 'BYLAYER', ltype: 'BYLAYER', lw: 'BYLAYER', textStyle: 'Standard', dimStyle: 'ISO-25' };
+    this.cur = { layer: '0', color: 'BYLAYER', ltype: 'BYLAYER', lw: 'BYLAYER', textStyle: 'Standard', dimStyle: 'ISO-25', mleaderStyle: 'Standard', tableStyle: 'Standard' };
     this.settings = { ...DEFAULT_SETTINGS };
     this.undoS = []; this.redoS = []; this.tx = null;
     this.touched = new Set(); // entidades añadidas, modificadas o borradas en la transacción
@@ -51,11 +57,11 @@ export class Doc {
 
   // ----- Deshacer / rehacer por instantáneas -----
   state() {
-    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit });
+    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params });
   }
   loadState(s) {
     const o = JSON.parse(s);
-    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, nextId: o.nextId, cur: o.cur, bedit: o.bedit || null });
+    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [] });
     if (this.bedit) this.space = 'bedit';
     else if (this.space === 'bedit') this.space = 'model';
     else if (this.space !== 'model' && this.space !== 'bedit' && !this.layouts[this.space]) this.space = 'model';
@@ -65,6 +71,7 @@ export class Doc {
   begin() { if (this.tx) { this.tx.depth++; return; } this.tx = { snap: this.state(), depth: 1 }; }
   commit() {
     if (!this.tx || --this.tx.depth > 0) return;
+    this.syncConstraints();
     this.syncAssoc();
     const s = this.tx.snap;
     this.tx = null;
@@ -94,7 +101,7 @@ export class Doc {
     if (e.type === 'text') e.style ??= this.cur.textStyle;
     if (e.type === 'dim') e.style ??= this.cur.dimStyle;
     if (!this.layers.some(l => l.name === e.layer)) e.layer = '0';
-    if (['mtext', 'attdef', 'mleader', 'table'].includes(e.type)) e.style ??= this.cur.textStyle;
+    if (e.type === 'mtext' || e.type === 'attdef') e.style ??= this.cur.textStyle;
     target.push(e); this.byId.set(e.id, e);
     this.touched.add(e.id);
     this.changed();
@@ -149,6 +156,18 @@ export class Doc {
       }
     }
   }
+  // Restricciones: se quitan las que perdieron su geometría y se resuelven si cambió algo restringido.
+  // Las entidades modificadas por el usuario se mueven lo menos posible.
+  syncConstraints() {
+    if (!this.constraints.length) return;
+    this.constraints = this.constraints.filter(c => consValid(this, c));
+    const cids = new Set(this.constraints.flatMap(refIds)), keep = new Set([...this.touched].filter(id => cids.has(id)));
+    if (!keep.size && !this.consDirty) return;
+    this.consDirty = false;
+    const r = solve(this, keep);
+    for (const id of r.changed) this.touched.add(id);
+    if (!r.ok) this.emit('constraint-fail');
+  }
   // Vista previa: cotas y sombreados asociados a las entidades `clones` (copias modificadas), ya recalculados
   previewDeps(clones) {
     const map = new Map(clones.map(e => [e.id, e])), get = id => map.get(id) || this.byId.get(id), out = [];
@@ -181,9 +200,11 @@ export class Doc {
   locked(e) { return this.layer(e.layer).lock; }
   textStyle(name) { return this.textStyles.find(s => s.name === name) || this.textStyles[0]; }
   dimStyle(name) { return this.dimStyles.find(s => s.name === name) || this.dimStyles[0]; }
-  defineBlock(name, base, ents) {
+  mleaderStyle(name) { return this.mleaderStyles.find(s => s.name === name) || this.mleaderStyles[0]; }
+  tableStyle(name) { return this.tableStyles.find(s => s.name === name) || this.tableStyles[0]; }
+  defineBlock(name, base, ents, extra = {}) {
     const old = this.blocks[name];
-    this.blocks[name] = { name, base, ents, ver: (old?.ver || 0) + 1 };
+    this.blocks[name] = { name, base, ents, ver: (old?.ver || 0) + 1, ...extra };
     this.changed();
   }
   // ¿Las entidades (o los bloques que insertan, recursivamente) hacen referencia al bloque `target`?
@@ -203,6 +224,10 @@ export class Doc {
     this.bedit = { name, base: { ...b.base }, ents: [], prev: this.space };
     this.space = 'bedit';
     for (const e of b.ents) { const c = cloneEnt(e); delete c.id; this.add(c, this.bedit.ents); }
+    // Parámetros dinámicos: índices → identificadores de las copias
+    const ids = this.bedit.ents.map(e => e.id);
+    this.bedit.dyn = remapDyn(b.dyn, i => ids[i]) || null;
+    this.bedit.visCur = this.bedit.dyn?.vis?.states?.[0] || null;
     this.changed();
   }
   beditContent() {
@@ -210,9 +235,10 @@ export class Doc {
   }
   beditChanged() {
     const b = this.blocks[this.bedit.name];
-    return !b || JSON.stringify([this.bedit.base, this.beditContent()]) !== JSON.stringify([b.base, b.ents]);
+    return !b || JSON.stringify([this.bedit.base, this.beditContent(), this.beditDyn() || null]) !== JSON.stringify([b.base, b.ents, b.dyn || null]);
   }
-  saveBedit() { this.defineBlock(this.bedit.name, { ...this.bedit.base }, this.beditContent()); }
+  beditDyn() { const idx = new Map(this.bedit.ents.map((e, i) => [e.id, i])); return remapDyn(this.bedit.dyn, id => idx.get(id)); }
+  saveBedit() { const dyn = this.beditDyn(); this.defineBlock(this.bedit.name, { ...this.bedit.base }, this.beditContent(), dyn ? { dyn } : {}); }
   closeBedit() {
     const prev = this.bedit.prev;
     this.bedit = null;
@@ -247,8 +273,8 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 4, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
-      textStyles: this.textStyles, dimStyles: this.dimStyles, cur: this.cur, settings: this.settings, nextId: this.nextId,
+      app: 'TrazoCAD', version: 5, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, constraints: this.constraints, params: this.params, cur: this.cur, settings: this.settings, nextId: this.nextId,
     };
   }
   fromJSON(o) {
@@ -263,6 +289,10 @@ export class Doc {
       const s = o.settings;
       this.dimStyles = [{ ...DEFAULT_DIMSTYLE, txt: s.dimTxt, asz: s.dimAsz, exo: s.dimExo, exe: s.dimExe, gap: s.dimGap, dec: s.dimDec }];
     }
+    this.constraints = o.constraints || [];
+    this.params = o.params || [];
+    if (o.mleaderStyles?.length) this.mleaderStyles = o.mleaderStyles;
+    if (o.tableStyles?.length) this.tableStyles = o.tableStyles;
     this.cur = { ...this.cur, ...o.cur };
     this.settings = { ...DEFAULT_SETTINGS, ...o.settings };
     this.reindex();

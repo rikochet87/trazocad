@@ -9,6 +9,8 @@ import { ENV, hitDist, inWindow, crosses, gripsOf, STD_SCALES, scaleLabel, block
 import { findCmd, suggest } from './commands.js';
 import { UI } from './ui.js';
 import { IO } from './io.js';
+import './dynblock.js'; // registra los bloques dinámicos
+import { parseExpr, evalParams } from './constraints.js';
 
 const CANCEL = Symbol('cancel');
 const PICKBOX = 6;
@@ -69,6 +71,7 @@ class App {
   // ---------- Estado ----------
   onDocChange(kind) {
     if (kind === 'reset') { this.sel.clear(); this.beditView = null; if (this.tab !== 'model' || this.vpActive || this.view !== this.modelView) { this.tab = 'model'; this.vpActive = null; this.doc.activeVp = null; this.view = this.modelView; } }
+    if (kind === 'constraint-fail') this.print('Aviso: las restricciones no se pueden cumplir con esta modificación (están en conflicto o la geometría no lo permite).', 'err');
     for (const id of this.sel) if (!this.doc.get(id)) this.sel.delete(id);
     this.renderer.invalidate();
     this.ui.refresh();
@@ -197,7 +200,7 @@ class App {
     const tw = 140, th = 24, tx = W - m - tw, ty = m;
     const vp = this.addViewport({ x1: m + 4, y1: ty + th + 4, x2: W - m - 4, y2: H - m - 4 }, idx);
     add({ type: 'insert', name: this.ensureTitleBlock(), p: P(tx, ty), sx: 1, sy: 1, rot: 0,
-      attribs: { TITULO: doc.name, PRESENTACION: name, ESCALA: vp.label, FECHA: new Date().toLocaleDateString('es') } });
+      attribs: { TITULO: '%<Archivo>%', PRESENTACION: '%<Presentación>%', ESCALA: '%<Escala>%', FECHA: '%<Fecha>%' } }); // campos: se actualizan solos
     this.switchTab(idx);
     this.print(`Presentación "${name}" creada (${paper}, ventana a escala ${vp.label}). Doble clic dentro de la ventana para trabajar en el modelo; doble clic en el cajetín para editar sus datos.`);
     return lay;
@@ -413,6 +416,18 @@ class App {
       const vp = [...this.doc.layouts[this.tab].ents].reverse().find(v => v.type === 'vport' && pp.x >= v.p1.x && pp.x <= v.p2.x && pp.y >= v.p1.y && pp.y <= v.p2.y);
       if (this.vpActive && (!vp || vp.id !== this.vpActive)) { this.pspace(); if (!vp) return; }
       if (vp && vp.id !== this.vpActive) { this.mspace(vp); return; }
+    }
+    // Doble clic en una cota de restricción: cambiar su valor o expresión
+    const lab = (this.renderer.consLabels || []).find(l => G.pointInPoly(this.mouse.w, l.box));
+    if (lab) {
+      const k = lab.k, v = await this.ui.prompt(`Restricción ${k.name}`, 'Valor o expresión (puede usar otros parámetros, p. ej. d1/2)', k.expr);
+      if (v === null || !v.trim()) return;
+      try { parseExpr(v); } catch (err) { this.print(`Expresión no válida: ${err.message}`, 'err'); return; }
+      const doc = this.doc, old = k.expr;
+      doc.begin(); k.expr = v.trim(); doc.consDirty = true; doc.changed(); doc.commit();
+      const { errors } = evalParams(doc);
+      if (errors.has(k.name)) { doc.undo(); this.afterUndo(); this.print(`No se puede usar "${v}": ${errors.get(k.name)}. Se mantiene "${old}".`, 'err'); }
+      return;
     }
     const id = this.pickId(this.mouse.sx, this.mouse.sy);
     if (!id) return;

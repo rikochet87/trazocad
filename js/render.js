@@ -1,6 +1,7 @@
 // Dibujado en canvas: capa base (rejilla, modelo, presentaciones) y capa superpuesta (cursor, selección, vistas previas).
 import * as G from './geom.js';
-import { TYPES, gripsOf, blockEnts } from './entities.js';
+import { TYPES, gripsOf, blockEnts, ENV, textBox, dimParts } from './entities.js';
+import { evalParams, refGeom, consDim, refIds, DIM_TYPES } from './constraints.js';
 
 export const BG = '#212830';
 const LAYOUT_BG = '#3a4049';
@@ -102,11 +103,14 @@ export class Renderer {
       c.setLineDash([]);
     }
     const on = x => doc.layer(x.layer).on; // en el papel no cuentan las capas inutilizadas en ventanas
+    const prev = ENV.layout;
+    ENV.layout = layout; // campos %<Presentación>% y %<Escala>%
     for (const e of layout.ents) {
       if (e.type === 'vport') this.drawViewport(c, R, e, sty);
       setWorld(c, R);
       if (on(e)) paintEntity(c, e, R, sty(e), sty, on);
     }
+    ENV.layout = prev;
   }
 
   drawBase() {
@@ -125,14 +129,94 @@ export class Renderer {
       c.fillStyle = BEDIT_BG; c.fillRect(0, 0, this.base.width, this.base.height);
       if (app.T.grid) this.drawGrid(c, R);
       setWorld(c, R);
-      this.paintList(c, R, app.idx().query(app.view.rect(), true), sty);
-      this.drawBasePoint(c, app.view.toScreen(app.doc.bedit.base));
+      const be = app.doc.bedit, hid = new Set(be.dyn?.vis?.hide?.[be.visCur] || []);
+      const fade = col => { const m = /^#(..)(..)(..)$/.exec(col); return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},0.22)` : col; };
+      this.paintList(c, R, app.idx().query(app.view.rect(), true), e => (hid.has(e.id) ? { ...sty(e), color: fade(sty(e).color) } : sty(e)));
+      this.drawDynParams(c, R, be);
+      this.drawBasePoint(c, app.view.toScreen(be.base));
       this.drawUCS(c);
       return;
     }
     if (app.T.grid) this.drawGrid(c, R);
     this.drawModel(c, R, app.view.rect(), sty);
+    this.drawConstraints(c, R);
     this.drawUCS(c);
+  }
+
+  // Restricciones: símbolos junto a la geometría (pantalla) y cotas de restricción con nombre=expresión (dibujo)
+  drawConstraints(c, R) {
+    const app = this.app, doc = app.doc;
+    this.consLabels = [];
+    if (!doc.constraints?.length || doc.settings.showCons === false) return;
+    const inSpace = new Set(doc.ents.map(e => e.id)), v = app.view, d = this.dpr;
+    const { vals } = evalParams(doc), slots = new Map();
+    const COL = '#7fb3ff';
+    for (const k of doc.constraints) {
+      if (!refIds(k).every(id => inSpace.has(id) && doc.visible(doc.get(id)))) continue;
+      if (DIM_TYPES.has(k.type)) {
+        const val = vals.get(k.name), num = val == null ? '?' : +val.toFixed(4);
+        const label = /^[-+]?[\d.]+$/.test(k.expr) ? `${k.name}=${num}` : `${k.name}=${k.expr} (${num})`;
+        const dv = consDim(doc, k, label);
+        if (!dv) continue;
+        dv.style = doc.cur.dimStyle;
+        setWorld(c, R);
+        paintEntity(c, dv, R, { color: COL, px: 1, pat: [] });
+        this.consLabels.push({ k, box: textBox(dimParts(dv).text) });
+        continue;
+      }
+      // Símbolo en el primer objeto (y en el segundo si la restricción relaciona dos)
+      const anchors = k.type === 'coincident' ? [k.refs[0]] : k.refs.slice(0, 2);
+      for (const rf of anchors) {
+        const g = refGeom(doc, rf);
+        if (!g) continue;
+        let p, off = { x: 10, y: -14 };
+        if (g.pt) { p = g.pt; if (k.type === 'coincident') { const s = v.toScreen(p); c.setTransform(d, 0, 0, d, 0, 0); c.fillStyle = COL; c.fillRect(s.x - 3, s.y - 3, 6, 6); continue; } }
+        else if (g.line) { p = { x: (g.line[0].x + g.line[1].x) / 2, y: (g.line[0].y + g.line[1].y) / 2 }; const a = Math.atan2(g.line[1].y - g.line[0].y, g.line[1].x - g.line[0].x); off = { x: -Math.sin(a) * 14, y: -Math.cos(a) * 14 }; }
+        else p = { x: g.circ.c.x, y: g.circ.c.y + g.circ.r };
+        const key = `${rf.id}|${rf.seg ?? rf.k ?? ''}`, n = slots.get(key) || 0;
+        slots.set(key, n + 1);
+        const s = v.toScreen(p);
+        this.drawBadge(c, k.type, s.x + off.x + n * 17 - 7, s.y + off.y - 7);
+      }
+    }
+  }
+  drawBadge(c, type, x, y) {
+    const d = this.dpr;
+    c.setTransform(d, 0, 0, d, 0, 0); c.setLineDash([]);
+    c.fillStyle = 'rgba(25,40,60,0.85)'; c.fillRect(x, y, 14, 14);
+    c.strokeStyle = '#7fb3ff'; c.lineWidth = 1; c.strokeRect(x + 0.5, y + 0.5, 13, 13);
+    c.beginPath();
+    const L = (a, b, e, f) => { c.moveTo(x + a, y + b); c.lineTo(x + e, y + f); };
+    switch (type) {
+      case 'horizontal': L(3, 7, 11, 7); break;
+      case 'vertical': L(7, 3, 7, 11); break;
+      case 'parallel': L(4, 11, 8, 3); L(7, 11, 11, 3); break;
+      case 'perpendicular': L(3, 11, 11, 11); L(7, 11, 7, 3); break;
+      case 'collinear': L(2, 10, 12, 4); break;
+      case 'equal': L(3, 5, 11, 5); L(3, 9, 11, 9); break;
+      case 'concentric': c.moveTo(x + 11, y + 7); c.arc(x + 7, y + 7, 4, 0, G.TAU); c.moveTo(x + 9, y + 7); c.arc(x + 7, y + 7, 2, 0, G.TAU); break;
+      case 'tangent': c.moveTo(x + 10, y + 8); c.arc(x + 7, y + 8, 3, 0, G.TAU); L(2, 11, 12, 11); break;
+      case 'fix': c.rect(x + 4, y + 7, 6, 5); c.moveTo(x + 5, y + 7); c.arc(x + 7, y + 6, 2, Math.PI, 0); break;
+    }
+    c.stroke();
+  }
+
+  // Parámetros dinámicos en el editor de bloques
+  drawDynParams(c, R, be) {
+    const d = be.dyn, v = this.app.view, dp = this.dpr;
+    if (!d) return;
+    c.setTransform(dp, 0, 0, dp, 0, 0); c.lineWidth = 1.2; c.font = '11px sans-serif';
+    c.strokeStyle = c.fillStyle = '#14b8a6';
+    const label = (p, t) => { const s = v.toScreen(p); c.fillText(t, s.x + 8, s.y - 8); };
+    if (d.lin) {
+      const a = v.toScreen(d.lin.p1), b = v.toScreen(d.lin.p2), r1 = v.toScreen({ x: d.lin.rect.x1, y: d.lin.rect.y2 }), r2 = v.toScreen({ x: d.lin.rect.x2, y: d.lin.rect.y1 });
+      c.setLineDash([]); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
+      c.beginPath(); c.arc(b.x, b.y, 4, 0, G.TAU); c.fill(); c.strokeRect(a.x - 3, a.y - 3, 6, 6);
+      c.setLineDash([4, 3]); c.strokeRect(r1.x, r1.y, r2.x - r1.x, r2.y - r1.y); c.setLineDash([]);
+      label(G.mid(d.lin.p1, d.lin.p2), `${d.lin.name} (${d.lin.ents.length} obj.)`);
+    }
+    if (d.flip) { const a = v.toScreen(d.flip.a), b = v.toScreen(d.flip.b); c.setLineDash([8, 3, 2, 3]); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); c.setLineDash([]); label(d.flip.b, 'Simetría'); }
+    if (d.vis) label(d.vis.pos || be.base, `Visibilidad: ${be.visCur} (${d.vis.states.length} estados)`);
   }
 
   drawBasePoint(c, s) {
@@ -278,13 +362,14 @@ export class Renderer {
     for (const id of app.sel) {
       const e = doc.get(id);
       if (!e || !doc.visible(e)) continue;
-      for (const g of gripsOf(e)) {
+      const kinds = TYPES[e.type].gripKinds?.(e) || [];
+      gripsOf(e).forEach((g, gi) => {
         const s = app.view.toScreen(g);
         const isHot = hot && G.eqPt(hot, g, 1e-9), isHover = app.hoverGrip && G.eqPt(app.hoverGrip.pt, g, 1e-9);
-        c.fillStyle = isHot ? '#ff3b30' : isHover ? '#ff8a3d' : '#1f7ae0';
+        c.fillStyle = isHot ? '#ff3b30' : isHover ? '#ff8a3d' : kinds[gi] ? '#14b8a6' : '#1f7ae0'; // cian: pinzamiento dinámico
         c.fillRect(s.x - 4, s.y - 4, 8, 8);
         c.strokeStyle = '#e6eef7'; c.strokeRect(s.x - 4.5, s.y - 4.5, 9, 9);
-      }
+      });
     }
   }
 

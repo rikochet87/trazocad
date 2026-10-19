@@ -1,7 +1,7 @@
 // Interfaz: cinta de opciones, paletas (propiedades y capas), barra de estado, línea de comandos y diálogos.
 import { icon } from './icons.js';
 import { CMDS } from './commands.js';
-import { TYPES, LTYPES, LWEIGHTS, COLORS, FONTS, ARROWS, DEFAULT_DIMSTYLE, fmt, bboxOf, bbUnion, propsOf, blockAttdefs, attVal } from './entities.js';
+import { TYPES, LTYPES, LWEIGHTS, COLORS, FONTS, ARROWS, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, DEFAULT_TBLSTYLE, ML_CONTENT, DATE_FORMATS, formatDate, fmt, bboxOf, bbUnion, propsOf, blockAttdefs, attVal } from './entities.js';
 import { OSNAP_MODES } from './snap.js';
 import { PATTERNS } from './patterns.js';
 import { PAPERS } from './document.js';
@@ -9,6 +9,7 @@ import { makeRV, setWorld, paintEntity } from './render.js';
 import * as G from './geom.js';
 import { parseRich, buildRich, baseFmt } from './richtext.js';
 import { xrefNames, xrefRefs } from './xref.js';
+import { evalParams } from './constraints.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
@@ -36,15 +37,23 @@ const RIBBON = [
   ] },
   { tab: 'Insertar', groups: [
     { name: 'Bloque', items: [['BLOCK', 'Crear bloque', 'block'], ['INSERT', 'Insertar', 'insert'], ['BEDIT', 'Editor de bloques', 'bedit'], ['EXPLODE', 'Descomponer', 'explode'], ['PURGE', 'Limpiar', 'trash']] },
+    { name: 'Bloque dinámico', items: [['BPARAMETER', 'Parámetro', 'bparam'], ['BVSTATE', 'Estados', 'bvstate'], ['BVHIDE', 'Ocultar', 'bvhide'], ['BVSHOW', 'Mostrar', 'bvshow']] },
     { name: 'Referencia', items: [['XATTACH', 'Enlazar', 'xattach'], ['XREF', 'Referencias externas', 'xref']] },
     { name: 'Atributos', items: [['ATTDEF', 'Definir atributo', 'attdef'], ['ATTEDIT', 'Editar atributos', 'attedit']] },
     { name: 'Importar', items: [['OPEN', 'Abrir DXF', 'dxf'], ['PASTECLIP', 'Pegar', 'copy']] },
   ] },
   { tab: 'Anotar', groups: [
-    { name: 'Texto', items: [['MTEXT', 'Líneas múltiples', 'mtext'], ['TEXT', 'Una línea', 'text'], ['STYLE', 'Estilo de texto', 'textstyle']] },
+    { name: 'Texto', items: [['MTEXT', 'Líneas múltiples', 'mtext'], ['TEXT', 'Una línea', 'text'], ['FIELD', 'Campo', 'field'], ['STYLE', 'Estilo de texto', 'textstyle']] },
     { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMORDINATE', 'Coordenada', 'dimord'], ['DIMREASSOCIATE', 'Reasociar', 'dimassoc'], ['DIMDISASSOCIATE', 'Desasociar', 'unlink'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
-    { name: 'Directrices y tablas', items: [['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table']] },
-    { name: 'Sombreado', items: [['HATCH', 'Sombreado', 'hatch']] },
+    { name: 'Series', items: [['DIMCONTINUE', 'Continua', 'dimcont'], ['DIMBASELINE', 'Línea base', 'dimbase'], ['QDIM', 'Rápida', 'qdim']] },
+    { name: 'Directrices y tablas', items: [['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table'], ['MLEADERSTYLE', 'Estilo dir.', 'mlstyle'], ['TABLESTYLE', 'Estilo tabla', 'tblstyle']] },
+    { name: 'Sombreado', items: [['HATCH', 'Sombreado', 'hatch'], ['GRADIENT', 'Degradado', 'gradient']] },
+  ] },
+  { tab: 'Paramétrico', groups: [
+    { name: 'Geométricas', items: [['GCCOINCIDENT', 'Coincidente', 'gccoinc'], ['GCCOLLINEAR', 'Colineal', 'gccol'], ['GCCONCENTRIC', 'Concéntrica', 'gcconc'], ['GCFIX', 'Fija', 'gcfix'], ['GCPARALLEL', 'Paralela', 'gcpar'],
+      ['GCPERPENDICULAR', 'Perpend.', 'gcperp'], ['GCHORIZONTAL', 'Horizontal', 'gchoriz'], ['GCVERTICAL', 'Vertical', 'gcvert'], ['GCTANGENT', 'Tangente', 'gctan'], ['GCEQUAL', 'Igual', 'gcequal']] },
+    { name: 'De cota', items: [['DCLINEAR', 'Lineal', 'dcon'], ['DCALIGNED', 'Alineada', 'dimali'], ['DCANGULAR', 'Angular', 'dimang'], ['DCRADIUS', 'Radio', 'dimrad'], ['DCDIAMETER', 'Diámetro', 'dimdia']] },
+    { name: 'Administrar', items: [['DELCONSTRAINT', 'Suprimir', 'delcon'], ['PARAMETERS', 'Parámetros', 'params'], ['CONSTRAINTBAR', 'Mostrar/ocultar', 'cbar']] },
   ] },
   { tab: 'Vista', groups: [
     { name: 'Navegar', items: [['!zoomext', 'Extensión', 'zoomext'], ['!zoomwin', 'Ventana', 'zoomwin'], ['!zoomprev', 'Previo', 'zoomprev'], ['PAN', 'Encuadre', 'pan'], ['REGEN', 'Regenerar', 'regen']] },
@@ -54,11 +63,11 @@ const RIBBON = [
   { tab: 'Presentación', groups: [
     { name: 'Presentación', items: [['!newlayout', 'Nueva', 'layout'], ['PAGESETUP', 'Configurar página', 'page'], ['!model', 'Modelo', 'model']] },
     { name: 'Ventanas gráficas', items: [['MVIEW', 'Ventana', 'vport'], ['MSPACE', 'Espacio modelo', 'mspace'], ['PSPACE', 'Espacio papel', 'page'], ['VPLAYER', 'Capas ventana', 'freeze']] },
-    { name: 'Trazar', items: [['PLOT', 'Imprimir', 'print'], ['SVGOUT', 'SVG', 'svg'], ['PNGOUT', 'PNG', 'png']] },
+    { name: 'Trazar', items: [['PLOT', 'Imprimir', 'print'], ['PDFOUT', 'PDF', 'pdf'], ['SVGOUT', 'SVG', 'svg'], ['PNGOUT', 'PNG', 'png']] },
   ] },
   { tab: 'Salida', groups: [
     { name: 'Archivo', items: [['NEW', 'Nuevo', 'new'], ['OPEN', 'Abrir', 'open'], ['QSAVE', 'Guardar', 'save'], ['SAVEAS', 'Guardar como', 'save']] },
-    { name: 'Exportar', items: [['!dxf2000', 'DXF 2000', 'dxf'], ['!dxf12', 'DXF R12', 'dxf'], ['SVGOUT', 'SVG', 'svg'], ['PNGOUT', 'PNG', 'png'], ['PLOT', 'Imprimir', 'print']] },
+    { name: 'Exportar', items: [['PDFOUT', 'PDF', 'pdf'], ['!dxf2000', 'DXF 2000', 'dxf'], ['!dxf12', 'DXF R12', 'dxf'], ['SVGOUT', 'SVG', 'svg'], ['PNGOUT', 'PNG', 'png'], ['PLOT', 'Imprimir', 'print']] },
   ] },
 ];
 
@@ -344,6 +353,10 @@ export class UI {
         if (pr.type === 'mtext') {
           input = h('button', { class: 'btn prop-btn', title: raw, onclick: async () => { const v = await this.editMText(e, 'Editar texto de líneas múltiples'); if (v?.text) this.setGeom(e.id, pr, v); } },
             (String(raw).split('\n')[0] || '…').slice(0, 28) + (String(raw).length > 28 || String(raw).includes('\n') ? '…' : ''));
+        } else if (pr.type === 'action') {
+          input = h('button', { class: 'btn prop-btn', onclick: () => this.setGeom(e.id, pr, true) }, raw);
+        } else if (pr.type === 'color') {
+          input = h('input', { type: 'color', value: raw, class: 'prop-color', onchange: ev => this.setGeom(e.id, pr, ev.target.value) });
         } else if (pr.type === 'table') {
           input = h('button', { class: 'btn prop-btn', onclick: async () => { const v = await this.editTable(e); if (v) this.setGeom(e.id, { set: (x, val) => Object.assign(x, val) }, v); } }, `Editar celdas (${raw})…`);
         } else if (pr.ro) {
@@ -714,6 +727,12 @@ export class UI {
       tb('B', 'Negrita (Ctrl+B)', () => toggle('b'), 'b'), tb('I', 'Cursiva (Ctrl+I)', () => toggle('i'), 'i'), tb('U', 'Subrayado (Ctrl+U)', () => toggle('u'), 'u'),
       tb('O', 'Sobrerrayado', () => toggle('o'), 'o'), tb('S', 'Tachado', () => toggle('k'), 'k'), colSel,
       tb('a/b', 'Apilar o desapilar la selección (1/2, 1#2, +0.1^-0.1)', stack), sym('°'), sym('±'), sym('Ø'),
+      tb('Campo…', 'Insertar un campo que se actualiza solo (fecha, archivo, presentación, escala, autor)', async () => {
+        const at = getSel(), code = await this.pickField();
+        if (!code) return;
+        ed.focus(); if (at) setSel(at[0], at[1]);
+        document.execCommand('insertText', false, code);
+      }),
       tb('Quitar formato', 'Quita el formato de la selección', () => apply(mid => { for (const p of mid) if (p.f) p.f = base; })));
     write(o.rich ? parseRich(o.text, h0) : String(o.text ?? '').split('\n').flatMap((s, i) => (i ? [{ t: 'nl' }] : []).concat(s ? [{ t: 's', s, f: base }] : [])));
     const box = h('div', {}, bar, ed, h('p', { class: 'hint' }, 'Intro: nueva línea · Ctrl+Intro: aceptar. Seleccione texto y use la barra para darle formato. Las líneas se ajustan a la anchura del texto.'));
@@ -811,7 +830,9 @@ export class UI {
     plane.value = S.isoPlane;
     sec('Dibujo isométrico', h('div', { class: 'grid2' }, h('label', { class: 'chk' }, isoChk, 'Rejilla y forzado isométricos'), h('label', { class: 'fld' }, 'Plano isométrico (F5)', plane)));
     const assocChk = h('input', { type: 'checkbox', checked: !!S.dimAssoc });
+    const author = h('input', { type: 'text', value: S.author || '', placeholder: 'Para el campo %<Autor>%' });
     sec('Otros', h('div', { class: 'grid2' }, field('Altura de texto por defecto', 'textH'), field('Escala de tipo de línea', 'ltscale'), field('Decimales de coordenadas', 'coordDec', 1),
+      h('label', { class: 'fld' }, 'Autor del dibujo', author),
       h('label', { class: 'chk', title: 'Las cotas nuevas se asocian a la geometría designada con referencia a objetos (DIMASSOC)' }, assocChk, 'Cotas asociativas')));
     this.modal('Parámetros de dibujo', box, [{ label: 'Cancelar', value: false }, { label: 'Aceptar', value: true, primary: true }]).then(ok => {
       if (!ok) return;
@@ -819,7 +840,7 @@ export class UI {
         const v = parseFloat(inp.value);
         if (Number.isFinite(v) && v >= 0) S[inp.dataset.key] = inp.dataset.key.endsWith('Dec') ? Math.min(8, Math.round(v)) : v;
       });
-      S.iso = isoChk.checked; S.isoPlane = plane.value; S.dimAssoc = assocChk.checked;
+      S.iso = isoChk.checked; S.isoPlane = plane.value; S.dimAssoc = assocChk.checked; S.author = author.value.trim();
       app.ui.updateStatus();
       box.querySelectorAll('[data-osnap]').forEach(inp => { app.osnapModes[inp.dataset.osnap] = inp.checked; });
       app.savePrefs();
@@ -936,9 +957,10 @@ export class UI {
     doc.begin();
     doc[listKey] = work;
     doc.cur[curKey] = current;
-    const typs = listKey === 'textStyles' ? ['text', 'mtext', 'attdef', 'mleader', 'table'] : ['dim'];
-    for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (typs.includes(e.type) && !names.has(e.style)) e.style = work[0].name;
-    if (listKey === 'textStyles') for (const d of doc.dimStyles) if (!names.has(d.textStyle)) d.textStyle = work[0].name;
+    // Las referencias a estilos eliminados pasan al estilo base
+    const refs = { textStyles: [['text', 'mtext', 'attdef', 'mleader', 'table'], 'style'], dimStyles: [['dim'], 'style'], mleaderStyles: [['mleader'], 'mstyle'], tableStyles: [['table'], 'tstyle'] }[listKey];
+    for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (refs[0].includes(e.type) && e[refs[1]] != null && !names.has(e[refs[1]])) e[refs[1]] = work[0].name;
+    if (listKey === 'textStyles') for (const d of [...doc.dimStyles, ...doc.mleaderStyles, ...doc.tableStyles]) if (!names.has(d.textStyle)) d.textStyle = work[0].name;
     for (const b of Object.values(doc.blocks)) b.ver = (b.ver || 0) + 1;
     doc.changed();
     doc.commit();
@@ -958,6 +980,86 @@ export class UI {
     });
   }
 
+  mleaderStyleManager() {
+    const doc = this.app.doc;
+    return this.styleManager({
+      title: 'Estilos de directriz múltiple', listKey: 'mleaderStyles', curKey: 'mleaderStyle', make: s => s,
+      fields: [
+        { key: 'h', label: 'Altura de texto' }, { key: 'textStyle', label: 'Estilo de texto', options: () => doc.textStyles.map(t => [t.name, t.name]) },
+        { key: 'arrow', label: 'Punta de flecha', options: Object.entries(ARROWS) }, { key: 'asz', label: 'Tamaño de flecha' },
+        { key: 'land', label: 'Longitud del rellano' }, { key: 'gap', label: 'Separación del texto' },
+        { key: 'content', label: 'Contenido por defecto', options: ML_CONTENT },
+      ],
+      preview: s => {
+        const name = '__prev__', saved = doc.mleaderStyles;
+        doc.mleaderStyles = [{ ...DEFAULT_MLSTYLE, ...s, name }];
+        const P = G.P, base = { type: 'mleader', mstyle: name, w: 0, layer: '0', color: '#ffffff', ltype: 'BYLAYER', lw: 'BYLAYER' };
+        const cv = this.thumb([{ ...base, pts: [P(0, 0), P(15, 12)], content: 'mtext', text: 'Texto de nota' }, { ...base, pts: [P(40, 0), P(52, 12)], content: 'block', text: '1' }], 260, 120, 0.1);
+        doc.mleaderStyles = saved;
+        return cv;
+      },
+    });
+  }
+
+  tableStyleManager() {
+    const doc = this.app.doc;
+    return this.styleManager({
+      title: 'Estilos de tabla', listKey: 'tableStyles', curKey: 'tableStyle', make: s => s,
+      fields: [
+        { key: 'th', label: 'Altura de texto' }, { key: 'textStyle', label: 'Estilo de texto', options: () => doc.textStyles.map(t => [t.name, t.name]) },
+        { key: 'margin', label: 'Margen de celda (× altura)' }, { key: 'titleScale', label: 'Escala del título' },
+        { key: 'align', label: 'Alineación de datos', options: [['auto', 'Automática (números a la derecha)'], ['l', 'Izquierda'], ['c', 'Centro'], ['r', 'Derecha']] },
+      ],
+      preview: s => {
+        const name = '__prev__', saved = doc.tableStyles;
+        doc.tableStyles = [{ ...DEFAULT_TBLSTYLE, ...s, name }];
+        const th = s.th || 2.5;
+        const cv = this.thumb([{ type: 'table', p: G.P(0, 0), rot: 0, tstyle: name, cols: [th * 4, th * 10, th * 5], rows: [th * 2.4, th * 2.2, th * 2.2, th * 2.2], title: true, header: true,
+          cells: [['Título', '', ''], ['N.º', 'Descripción', 'Cant.'], ['1', 'Placa', '2'], ['2', 'Tornillo M8', '12']], layer: '0', color: '#ffffff', ltype: 'BYLAYER', lw: 'BYLAYER' }], 260, 130, 0.06);
+        doc.tableStyles = saved;
+        return cv;
+      },
+    });
+  }
+
+  // Administrador de parámetros. Devuelve {cons: {id: {name, expr}}, params: [{name, expr}]} o null.
+  parametersManager() {
+    const doc = this.app.doc, { vals, errors } = evalParams(doc);
+    const rows = [...doc.constraints.filter(k => k.name).map(k => ({ kind: 'cons', id: k.id, name: k.name, expr: k.expr, type: k.type })), ...doc.params.map(p => ({ kind: 'user', name: p.name, expr: p.expr }))];
+    const tbody = h('tbody');
+    const TYPE = { dist: 'Distancia', radius: 'Radio', diameter: 'Diámetro', angle: 'Ángulo (°)' };
+    const render = () => {
+      tbody.replaceChildren(...rows.map((r, i) => {
+        const name = h('input', { type: 'text', value: r.name, oninput: e => { r.name = e.target.value.trim(); } });
+        const expr = h('input', { type: 'text', value: r.expr, oninput: e => { r.expr = e.target.value.trim(); } });
+        const v = vals.get(r.name);
+        return h('tr', {}, h('td', {}, name), h('td', {}, expr), h('td', { class: 'num' }, errors.has(r.name) ? '⚠ ' + errors.get(r.name) : v == null ? '' : fmt(v, 4)),
+          h('td', {}, r.kind === 'cons' ? TYPE[r.type] : 'Usuario'),
+          h('td', {}, r.kind === 'user' ? h('button', { class: 'ib', title: 'Eliminar', html: icon('trash', 14), onclick: () => { rows.splice(i, 1); render(); } }) : ''));
+      }));
+    };
+    render();
+    const add = h('button', { class: 'btn', onclick: () => { let i = 1; while (rows.some(r => r.name === `usuario${i}`)) i++; rows.push({ kind: 'user', name: `usuario${i}`, expr: '10' }); render(); } }, h('span', { html: icon('plus', 16) }), 'Parámetro de usuario');
+    const box = h('div', {}, h('div', { class: 'lay-bar' }, add),
+      h('table', { class: 'xref-list params' }, h('thead', {}, h('tr', {}, ...['Nombre', 'Expresión', 'Valor', 'Tipo', ''].map(t => h('th', {}, t)))), tbody),
+      h('p', { class: 'hint' }, 'Las expresiones admiten números, otros parámetros, + − × ÷ ^, paréntesis, pi y sin, cos, tan, sqrt, abs (ángulos en grados). Ejemplo: d2 = d1/2 + 5.'));
+    return this.modal('Administrador de parámetros', box, [{ label: 'Cancelar', value: null }, { label: 'Aplicar', primary: true, value: () => {
+      const names = rows.map(r => r.name);
+      if (names.some((n, i) => !/^[A-Za-zÁÉÍÓÚáéíóúÑñ_][\wÁÉÍÓÚáéíóúÑñ]*$/.test(n) || names.indexOf(n) !== i)) { this.app.print('Hay nombres vacíos, repetidos o no válidos: no se aplican los cambios.'); return null; }
+      return { cons: Object.fromEntries(rows.filter(r => r.kind === 'cons').map(r => [r.id, { name: r.name, expr: r.expr }])), params: rows.filter(r => r.kind === 'user').map(r => ({ name: r.name, expr: r.expr })) };
+    } }]);
+  }
+
+  // Selector de campo (sin objetos). Devuelve el código %<…>% o null.
+  pickField() {
+    const kind = h('select', {}, ...[['Fecha', 'Fecha'], ['Archivo', 'Nombre del dibujo'], ['Presentación', 'Presentación'], ['Escala', 'Escala de la ventana'], ['Autor', 'Autor']].map(([v, l]) => h('option', { value: v }, l)));
+    const fmtSel = h('select', {}, ...DATE_FORMATS.map(f => h('option', { value: f }, `${f}  →  ${formatDate(new Date(), f)}`)));
+    const box = h('div', { class: 'grid2' }, h('label', { class: 'fld' }, 'Campo', kind), h('label', { class: 'fld' }, 'Formato de fecha', fmtSel),
+      h('p', { class: 'hint' }, 'Para la propiedad de un objeto (área, longitud…) use el comando CAMPO.'));
+    return this.modal('Insertar campo', box, [{ label: 'Cancelar', value: null }, { label: 'Insertar', primary: true,
+      value: () => (kind.value === 'Fecha' ? (fmtSel.value === DATE_FORMATS[0] ? '%<Fecha>%' : `%<Fecha:${fmtSel.value}>%`) : `%<${kind.value}>%`) }]);
+  }
+
   dimStyleManager() {
     const doc = this.app.doc;
     return this.styleManager({
@@ -967,7 +1069,7 @@ export class UI {
         { key: 'arrow', label: 'Tipo de flecha', options: Object.entries(ARROWS) },
         { key: 'textStyle', label: 'Estilo de texto', options: () => doc.textStyles.map(t => [t.name, t.name]) },
         { key: 'gap', label: 'Separación del texto' }, { key: 'exo', label: 'Desfase desde origen' },
-        { key: 'exe', label: 'Prolongación línea ref.' }, { key: 'dec', label: 'Decimales' }, { key: 'adec', label: 'Decimales angulares' },
+        { key: 'exe', label: 'Prolongación línea ref.' }, { key: 'dec', label: 'Decimales' }, { key: 'adec', label: 'Decimales angulares' }, { key: 'dli', label: 'Separación línea base' },
         { key: 'scale', label: 'Escala global' }, { key: 'suffix', label: 'Sufijo (p. ej. mm)', type: 'text' },
       ],
       preview: s => {
@@ -1024,6 +1126,14 @@ export class UI {
         <li>Pestañas <b>Modelo / Presentación</b> abajo a la izquierda; <b>+</b> crea una presentación con marco, cajetín y una ventana gráfica a escala estándar.</li>
         <li>Doble clic dentro de una ventana gráfica: trabaja en el modelo a través de ella (zoom y encuadre cambian su vista). Doble clic fuera: vuelve al papel.</li>
         <li>La escala de la ventana se cambia en la paleta de Propiedades. Imprimir, SVG y PNG de una presentación salen a escala real en milímetros.</li>
+      </ul>
+      <h4>Novedades de la v0.5</h4>
+      <ul>
+        <li><b>DIMCONTINUE / DIMBASELINE / QDIM</b>: cotas encadenadas, desde una línea base (separación «DIMDLI» del estilo) y acotación rápida de una selección.</li>
+        <li><b>Restricciones paramétricas</b> (pestaña Paramétrico): GEOMCONSTRAINT (horizontal, vertical, paralela, perpendicular, coincidente, concéntrica, igual, fija, tangente, colineal) y DIMCONSTRAINT con nombre y expresión (<code>d2 = d1/2</code>). Doble clic en una cota de restricción para cambiarla; PARAMETERS administra los parámetros.</li>
+        <li><b>Bloques dinámicos</b>: en el editor de bloques, BPARAMETER añade estiramiento lineal, simetría o visibilidad (BVSTATE, BVHIDE, BVSHOW). Las referencias muestran pinzamientos cian y propiedades «Personalizado».</li>
+        <li><b>Campos</b> (CAMPO o botón «Campo…» del editor de texto): fecha, nombre del dibujo, presentación, escala, autor o propiedad de un objeto; se actualizan solos. El cajetín los usa.</li>
+        <li><b>Estilos de directriz y de tabla</b> (MLEADERSTYLE, TABLESTYLE), <b>degradados</b> (GRADIENT) y <b>PDF vectorial</b> (PDFOUT) a escala real, con todas las presentaciones en un archivo.</li>
       </ul>
       <h4>Novedades de la v0.4</h4>
       <ul>
