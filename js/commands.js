@@ -1,7 +1,8 @@
 // Comandos estilo AutoCAD. Cada comando es una función asíncrona que pide datos con el contexto `c`.
 import * as G from './geom.js';
-import { TYPES, cloneEnt, xformEnt, bboxOf, describe, fmt, dimParts, plArea, plLength, hatchArea } from './entities.js';
+import { TYPES, cloneEnt, xformEnt, bboxOf, describe, fmt, dimParts, plArea, plLength, hatchArea, blockAttdefs } from './entities.js';
 import { findBoundary, loopsOfEntity } from './hatch.js';
+import { rebuild as rebuildSpline, splinePts } from './spline.js';
 import * as OPS from './ops.js';
 const { P, Mx } = G;
 
@@ -28,11 +29,21 @@ export function suggest(s) {
 
 const ghost = (c, ids, m) => ids.map(id => c.doc.get(id)).filter(Boolean).map(e => xformEnt(cloneEnt(e), m));
 function applyX(c, ids, m, copy) {
+  const map = new Map(), made = [];
   for (const id of ids) {
     const e = c.doc.get(id);
     if (!e) continue;
-    if (copy) { const n = xformEnt(cloneEnt(e), m); delete n.id; c.doc.add(n); }
+    if (copy) { const n = xformEnt(cloneEnt(e), m); delete n.id; c.doc.add(n); map.set(id, n.id); made.push(n); }
     else c.doc.modify(id, x => xformEnt(x, m));
+  }
+  remapAssoc(made, map);
+}
+// Un sombreado copiado junto con su contorno queda asociado a las copias; copiado solo, deja de ser asociativo
+function remapAssoc(ents, map) {
+  for (const n of ents) {
+    if (!n.assoc) continue;
+    if (n.assoc.every(id => map.has(id))) n.assoc = n.assoc.map(id => map.get(id));
+    else { delete n.assoc; delete n.seed; }
   }
 }
 const rectPts = (a, b) => [a, P(b.x, a.y), b, P(a.x, b.y)];
@@ -208,6 +219,37 @@ def('ELLIPSE', ['EL', 'ELIPSE'], 'Dibuja una elipse (o un isocírculo en modo is
   c.add({ type: 'ellipse', c: cen, rx, ry, rot });
 }, { group: 'Dibujo' });
 
+def('SPLINE', ['SPL', 'CURVA'], 'Dibuja una curva suave por puntos de ajuste o vértices de control', async c => {
+  const S = c.settings;
+  let method = S.splineMethod === 'cv' ? 'cv' : 'fit', first;
+  for (;;) {
+    const r = await c.getPoint(`Precise primer punto (método: ${method === 'fit' ? 'ajuste' : 'vértices de control'})`, { options: ['Método'] });
+    if (r !== 'Método') { first = r; break; }
+    const k = await c.getKeyword('Indique método de creación de spline', ['Ajuste', 'VC'], method === 'fit' ? 'Ajuste' : 'VC');
+    method = S.splineMethod = k === 'VC' ? 'cv' : 'fit';
+  }
+  const pts = [first];
+  const mk = (list, closed) => { const e = { type: 'spline', [method]: list, closed }; return rebuildSpline(e) ? e : null; };
+  let closed = false;
+  for (;;) {
+    const opts = [];
+    if (pts.length >= 3) opts.push('Cerrar');
+    if (pts.length >= 2) opts.push('desHacer');
+    const last = pts[pts.length - 1];
+    const r = await c.getPoint(pts.length < 2 ? 'Precise punto siguiente' : 'Precise punto siguiente o INTRO para terminar', {
+      base: last, options: opts, allowEnter: true, rubber: method === 'cv',
+      preview: p => { const e = mk([...pts, p], false); return e ? [e] : []; },
+    });
+    if (r === null) break;
+    if (r === 'Cerrar') { closed = true; break; }
+    if (r === 'desHacer') { pts.pop(); c.setLast(pts[pts.length - 1]); continue; }
+    if (!G.eqPt(r, last, 1e-9)) pts.push(r);
+  }
+  if (pts.length < 2) return c.print('Se necesitan al menos dos puntos.');
+  const e = mk(pts, closed);
+  if (e) c.add(e); else c.print('No se ha podido crear la spline con esos puntos.');
+}, { group: 'Dibujo' });
+
 def('POINT', ['PO', 'PUNTO'], 'Crea objetos punto', async c => {
   for (;;) {
     const p = await c.getPoint('Precise un punto', { allowEnter: true });
@@ -219,31 +261,35 @@ def('POINT', ['PO', 'PUNTO'], 'Crea objetos punto', async c => {
 def('HATCH', ['H', 'BH', 'SOMBCONT', 'SOMBREADO'], 'Rellena un área cerrada con un patrón de sombreado', async c => {
   const S = c.settings, made = [];
   for (;;) {
-    const r = await c.getPoint(`Designe punto interno [${S.hatchPat}, escala ${S.hatchScale}, ${S.hatchAng}°]`, { options: ['Seleccionar objetos', 'Patrón', 'Escala', 'Ángulo', 'desHacer'], allowEnter: true, noSnap: true });
+    const r = await c.getPoint(`Designe punto interno [${S.hatchPat}, escala ${S.hatchScale}, ${S.hatchAng}°, ${S.hatchAssoc ? 'asociativo' : 'no asociativo'}]`, { options: ['Seleccionar objetos', 'Patrón', 'Escala', 'Ángulo', 'asOciativo', 'desHacer'], allowEnter: true, noSnap: true });
     if (r === null) break;
+    if (r === 'asOciativo') { S.hatchAssoc = !S.hatchAssoc; c.print(S.hatchAssoc ? 'Los sombreados nuevos se actualizarán al modificar su contorno.' : 'Los sombreados nuevos no serán asociativos.'); continue; }
     if (r === 'Patrón') { const p = await c.app.ui.pickPattern(S.hatchPat); if (p) S.hatchPat = p; continue; }
     if (r === 'Escala') { const v = await c.getNumber('Indique escala del patrón', { def: S.hatchScale }); if (v > 0) S.hatchScale = v; continue; }
     if (r === 'Ángulo') { S.hatchAng = await c.getNumber('Indique ángulo del patrón', { def: S.hatchAng }); continue; }
     if (r === 'desHacer') { if (made.length) c.doc.remove(made.pop()); else c.print('Nada que deshacer.'); continue; }
-    let loops;
+    let loops, assoc = null, seed = null;
     if (r === 'Seleccionar objetos') {
-      const ids = await c.getSelection('Designe objetos cerrados', { noPickfirst: true });
-      loops = ids.flatMap(id => loopsOfEntity(c.doc.get(id)) || []);
+      const ids = (await c.getSelection('Designe objetos cerrados', { noPickfirst: true })).filter(id => loopsOfEntity(c.doc.get(id)));
+      loops = ids.flatMap(id => loopsOfEntity(c.doc.get(id)));
       if (!loops.length) { c.print('Los objetos designados no son contornos cerrados.'); continue; }
+      if (!ids.some(id => c.doc.get(id).type === 'hatch')) assoc = ids;
     } else {
       const ents = c.app.idx().query(c.app.view.rect()).filter(e => c.doc.visible(e));
       loops = findBoundary(ents, r);
       if (!loops) { c.print('No se ha encontrado un contorno cerrado válido alrededor del punto.'); continue; }
       c.print(`Contorno encontrado${loops.length > 1 ? ` con ${loops.length - 1} isla(s)` : ''}.`);
+      assoc = loops.ids; seed = r;
     }
-    const e = c.add({ type: 'hatch', loops, pattern: S.hatchPat, scale: S.hatchScale, angle: S.hatchAng });
+    const e = c.add({ type: 'hatch', loops: [...loops], pattern: S.hatchPat, scale: S.hatchScale, angle: S.hatchAng });
+    if (S.hatchAssoc && assoc?.length) { e.assoc = assoc; if (seed) e.seed = seed; }
     sendToBack(c, e);
     made.push(e.id);
   }
 }, { group: 'Dibujo' });
 
 // ================= ANOTACIÓN =================
-def('TEXT', ['T', 'DT', 'DTEXT', 'TEXTO', 'MTEXT'], 'Crea texto de una línea', async c => {
+def('TEXT', ['DT', 'DTEXT', 'TEXTO'], 'Crea texto de una línea', async c => {
   const S = c.settings;
   let p = await c.getPoint(`Precise punto inicial de texto (estilo "${c.doc.cur.textStyle}")`, { options: ['Justificar', 'Estilo'] });
   let align = 'l';
@@ -269,6 +315,46 @@ def('TEXT', ['T', 'DT', 'DTEXT', 'TEXTO', 'MTEXT'], 'Crea texto de una línea', 
     c.add({ type: 'text', p, h, rot, text: s, align });
     p = G.add(p, G.rot(P(0, -1.6 * h), rot));
   }
+}, { group: 'Anotación' });
+
+const MT_KW = { SI: 'tl', SC: 'tc', SD: 'tr', MI: 'ml', MC: 'mc', MD: 'mr', II: 'bl', IC: 'bc', ID: 'br' };
+async function chooseTextStyle(c) {
+  const names = c.doc.textStyles.map(s => s.name);
+  c.print(`Estilos: ${names.join(', ')}`);
+  const s = await c.getString('Indique nombre de estilo', { def: c.doc.cur.textStyle, spaces: true });
+  if (names.includes(s)) c.doc.cur.textStyle = s; else c.print(`El estilo "${s}" no existe.`);
+}
+def('MTEXT', ['T', 'MT', 'TEXTOM'], 'Crea un párrafo de texto de líneas múltiples con ajuste de palabras', async c => {
+  const S = c.settings;
+  let h = S.textH, rot = 0, attach = 'tl';
+  const opt = async r => {
+    if (r === 'Altura') { const v = await c.getDistance('Precise altura', { def: h }); if (v > 0) h = S.textH = v; }
+    else if (r === 'Justificar') { const k = await c.getKeyword('Indique justificación', Object.keys(MT_KW), Object.keys(MT_KW).find(k => MT_KW[k] === attach)); attach = MT_KW[k]; }
+    else if (r === 'Rotación') rot = await c.getAngle('Precise ángulo de rotación', { def: 0 });
+    else if (r === 'Estilo') await chooseTextStyle(c);
+  };
+  // Rectángulo de las dos esquinas en el sistema girado del texto
+  const local = (a, b) => G.rot(G.sub(b, a), -rot);
+  const frame = (a, b) => { const d = local(a, b); return [P(0, 0), P(d.x, 0), d, P(0, d.y)].map(q => G.add(a, G.rot(q, rot))); };
+  let a;
+  for (;;) {
+    const r = await c.getPoint(`Precise primera esquina (estilo "${c.doc.cur.textStyle}", altura ${fmt(h, 4)})`, { options: ['Altura', 'Justificar', 'Rotación', 'Estilo'] });
+    if (typeof r !== 'string') { a = r; break; }
+    await opt(r);
+  }
+  let p, w;
+  for (;;) {
+    const r = await c.getPoint('Precise esquina opuesta', { base: a, options: ['Altura', 'Justificar', 'Rotación', 'Estilo', 'Anchura'], rubber: false, preview: q => [{ type: 'pline', pts: frame(a, q), closed: true }] });
+    if (r === 'Anchura') { w = await c.getDistance('Precise anchura (0 = sin ajuste)', { base: a, def: 0 }); p = a; break; }
+    if (typeof r === 'string') { await opt(r); continue; }
+    const d = local(a, r), x0 = Math.min(0, d.x), x1 = Math.max(0, d.x), y0 = Math.min(0, d.y), y1 = Math.max(0, d.y);
+    const lx = { l: x0, c: (x0 + x1) / 2, r: x1 }[attach[1]], ly = { t: y1, m: (y0 + y1) / 2, b: y0 }[attach[0]];
+    p = G.add(a, G.rot(P(lx, ly), rot)); w = x1 - x0;
+    break;
+  }
+  const text = await c.app.ui.editMText('', 'Texto de líneas múltiples');
+  if (!text) return;
+  c.add({ type: 'mtext', p, w: w > 1e-9 ? w : 0, h, rot, attach, text });
 }, { group: 'Anotación' });
 
 async function dimAsk(c, kind) {
@@ -305,6 +391,56 @@ async function dimCircle(c, kind) {
 }
 def('DIMRADIUS', ['DRA', 'COTARADIO', 'ACORADIO'], 'Cota de radio', c => dimCircle(c, 'rad'), { group: 'Anotación' });
 def('DIMDIAMETER', ['DDI', 'COTADIAMETRO', 'ACODIAMETRO'], 'Cota de diámetro', c => dimCircle(c, 'dia'), { group: 'Anotación' });
+def('DIMANGULAR', ['DAN', 'COTAANGULAR', 'ACOANGULO'], 'Cota angular entre dos líneas, de un arco o por tres puntos', async c => {
+  const o = await c.getEntity('Designe arco, círculo o línea, o INTRO para precisar vértice', { allowEnter: true, filter: e => ['line', 'arc', 'circle'].includes(e.type) });
+  let base;
+  if (!o) {
+    const cen = await c.getPoint('Precise vértice del ángulo');
+    const p1 = await c.getPoint('Precise primer punto final del ángulo', { base: cen });
+    const p2 = await c.getPoint('Precise segundo punto final del ángulo', { base: cen });
+    base = { c: cen, p1, p2 };
+  } else if (o.e.type === 'arc') {
+    const e = o.e;
+    base = { c: e.c, p1: G.polar(e.c, e.a1, e.r), p2: G.polar(e.c, e.a2, e.r) };
+  } else if (o.e.type === 'circle') {
+    const e = o.e, p2 = await c.getPoint('Precise segundo punto final del ángulo', { base: e.c });
+    base = { c: e.c, p1: G.polar(e.c, G.ang(e.c, o.pt), e.r), p2 };
+  } else {
+    const o2 = await c.getEntity('Designe segunda línea', { filter: e => e.type === 'line' && e.id !== o.e.id });
+    const l1 = [o.e.p1, o.e.p2], l2 = [o2.e.p1, o2.e.p2], X = G.llInt(l1[0], l1[1], l2[0], l2[1]);
+    if (!X) return c.print('Las líneas son paralelas.');
+    const far = l => (G.dist(l[0], X.p) > G.dist(l[1], X.p) ? l[0] : l[1]);
+    base = { c: X.p, p1: far(l1), p2: far(l2), l1, l2 };
+  }
+  if (G.dist(base.c, base.p1) < 1e-12 || G.dist(base.c, base.p2) < 1e-12) return c.print('Ángulo no válido.');
+  let text = '';
+  const mk = p3 => ({ type: 'dim', kind: 'ang', ...base, p3, text, style: c.doc.cur.dimStyle });
+  for (;;) {
+    const p3 = await c.getPoint('Precise ubicación del arco de cota', { options: ['Texto'], preview: p => [mk(p)], rubber: false });
+    if (p3 === 'Texto') { text = await c.getString('Indique texto de cota (<> = medida)', { spaces: true, def: '<>' }); continue; }
+    const e = c.add(mk(p3));
+    c.print(`Texto de cota = ${dimParts(e).text.str}`);
+    return;
+  }
+}, { group: 'Anotación' });
+
+def('DIMORDINATE', ['DOR', 'COTACOORD', 'ACOCOORDENADA'], 'Cota de la coordenada X o Y de un punto', async c => {
+  const f = await c.getPoint('Precise ubicación de punto');
+  let axis = null, text = '';
+  const mk = q => ({ type: 'dim', kind: 'ord', p1: f, p2: f, p3: q, ...(axis ? { axis } : {}), text, style: c.doc.cur.dimStyle });
+  for (;;) {
+    const q = await c.getPoint('Precise punto final de directriz', { base: f, options: ['Xdato', 'Ydato', 'Texto'], preview: p => [mk(p)], rubber: false });
+    if (q === 'Xdato') { axis = 'x'; continue; }
+    if (q === 'Ydato') { axis = 'y'; continue; }
+    if (q === 'Texto') { text = await c.getString('Indique texto de cota (<> = medida)', { spaces: true, def: '<>' }); continue; }
+    const n = mk(q);
+    n.axis = dimParts(n).axis;
+    const e = c.add(n);
+    c.print(`Texto de cota = ${dimParts(e).text.str}`);
+    return;
+  }
+}, { group: 'Anotación' });
+
 def('STYLE', ['ST', 'ESTILO'], 'Administra los estilos de texto', async c => { await c.app.ui.textStyleManager(); }, { group: 'Anotación' });
 def('DIMSTYLE', ['D', 'DST', 'ACOESTIL', 'ESTILOCOTA'], 'Administra los estilos de cota', async c => { await c.app.ui.dimStyleManager(); }, { group: 'Anotación' });
 
@@ -320,13 +456,41 @@ def('BLOCK', ['B', 'BLOQUE'], 'Crea un bloque a partir de objetos designados', a
   const base = await c.getPoint('Precise punto base de inserción');
   const ids = (await c.getSelection('Designe objetos para el bloque')).filter(id => c.doc.get(id)?.type !== 'vport');
   if (!ids.length) return c.print('No se ha designado ningún objeto.');
-  const ents = ids.map(id => { const e = cloneEnt(c.doc.get(id)); delete e.id; return e; });
+  const ents = ids.map(id => { const e = cloneEnt(c.doc.get(id)); delete e.id; delete e.assoc; delete e.seed; return e; });
   if (c.doc.refersTo(ents, name)) return c.print('Un bloque no puede contenerse a sí mismo.');
   c.doc.defineBlock(name, base, ents);
   for (const id of ids) c.doc.remove(id);
   c.add({ type: 'insert', name, p: base, sx: 1, sy: 1, rot: 0 });
-  c.print(`Bloque "${name}" ${ents.length} objeto(s). Los objetos se han convertido en una referencia al bloque.`);
+  const na = ents.filter(e => e.type === 'attdef').length;
+  c.print(`Bloque "${name}" ${ents.length} objeto(s)${na ? `, ${na} atributo(s)` : ''}. Los objetos se han convertido en una referencia al bloque.`);
 }, { group: 'Bloques', sel: true });
+
+def('ATTDEF', ['ATT', 'DEFATR', 'ATRDEF'], 'Define un atributo (texto variable) para incluir en un bloque', async c => {
+  const S = c.settings;
+  const tag = (await c.getString('Indique etiqueta de atributo')).trim().toUpperCase().replace(/\s+/g, '_');
+  if (!tag) return;
+  const prompt = await c.getString('Indique solicitud de atributo', { spaces: true, def: '' });
+  const dv = await c.getString('Indique valor de atributo por defecto', { spaces: true, def: '' });
+  let align = 'l', invisible = false;
+  let p = await c.getPoint('Precise punto inicial de texto', { options: ['Justificar', 'Invisible'] });
+  while (typeof p === 'string') {
+    if (p === 'Invisible') { invisible = !invisible; c.print(invisible ? 'El atributo será invisible.' : 'El atributo será visible.'); }
+    else align = { Izquierda: 'l', Centro: 'c', Derecha: 'r' }[await c.getKeyword('Indique una opción', ['Izquierda', 'Centro', 'Derecha'], 'Izquierda')];
+    p = await c.getPoint('Precise punto inicial de texto', { options: ['Justificar', 'Invisible'] });
+  }
+  const h = await c.getDistance('Precise altura', { base: p, def: S.textH });
+  if (!(h > 0)) return;
+  S.textH = h;
+  const rot = await c.getAngle('Precise ángulo de rotación', { base: p, def: 0 });
+  c.add({ type: 'attdef', p, h, rot, align, tag, prompt, def: dv, ...(invisible ? { invisible: true } : {}) });
+  c.print(`Atributo "${tag}" definido. Inclúyalo en un bloque con BLOQUE; cada referencia tendrá su propio valor.`);
+}, { group: 'Bloques' });
+
+def('ATTEDIT', ['ATE', 'EATTEDIT', 'EDITATR'], 'Edita los valores de los atributos de una referencia a bloque', async c => {
+  const o = await c.getEntity('Designe referencia a bloque con atributos', { filter: e => e.type === 'insert' && blockAttdefs(e.name).length > 0 });
+  const v = await c.app.ui.editAttribs(o.e);
+  if (v) c.doc.modify(o.e.id, e => { e.attribs = v; });
+}, { group: 'Bloques' });
 
 def('INSERT', ['I', 'INSERTAR', 'DDINSERT'], 'Inserta una referencia a un bloque', async (c, arg) => {
   if (!Object.keys(c.doc.blocks).some(n => !n.startsWith('*'))) return c.print('No hay bloques definidos. Cree uno con BLOQUE.');
@@ -339,7 +503,12 @@ def('INSERT', ['I', 'INSERTAR', 'DDINSERT'], 'Inserta una referencia a un bloque
     const r = await c.getPoint(`Precise punto de inserción de "${name}"`, { options: ['Escala', 'Rotación'], preview: p => [mk(p)] });
     if (r === 'Escala') { const v = await c.getNumber('Indique factor de escala', { def: s }); if (v) s = v; continue; }
     if (r === 'Rotación') { rot = G.rad(await c.getNumber('Indique ángulo de rotación (grados)', { def: G.deg(rot) })); continue; }
-    c.add(mk(r));
+    const ins = mk(r), defs = blockAttdefs(name);
+    if (defs.length) {
+      ins.attribs = {};
+      for (const a of defs) ins.attribs[a.tag] = await c.getString(a.prompt || `Indique valor de ${a.tag}`, { spaces: true, def: a.def || '' });
+    }
+    c.add(ins);
     return;
   }
 }, { group: 'Bloques' });
@@ -645,7 +814,7 @@ def('MATCHPROP', ['MA', 'IGUALARPROP'], 'Copia las propiedades de un objeto a ot
   const ids = await c.getSelection('Designe objetos de destino', { noPickfirst: true });
   for (const id of ids) c.doc.modify(id, e => {
     Object.assign(e, { layer, color, ltype, lw });
-    if (e.type === o.e.type && (e.type === 'text' || e.type === 'dim') && o.e.style) e.style = o.e.style;
+    if (e.type === o.e.type && ['text', 'mtext', 'attdef', 'dim'].includes(e.type) && o.e.style) e.style = o.e.style;
     if (e.type === 'hatch' && o.e.type === 'hatch') Object.assign(e, { pattern: o.e.pattern, scale: o.e.scale, angle: o.e.angle });
   });
 }, { group: 'Propiedades' });
@@ -662,9 +831,10 @@ def('AREA', ['AA'], 'Calcula área y perímetro', async c => {
   const r = await c.getPoint('Precise primer punto de esquina', { options: ['Objeto'] });
   let area, per;
   if (r === 'Objeto') {
-    const o = await c.getEntity('Designe objeto', { filter: e => ['circle', 'pline', 'ellipse', 'hatch'].includes(e.type) });
+    const o = await c.getEntity('Designe objeto', { filter: e => ['circle', 'pline', 'ellipse', 'hatch'].includes(e.type) || (e.type === 'spline' && e.closed) });
     const e = o.e;
     if (e.type === 'circle') { area = Math.PI * e.r ** 2; per = G.TAU * e.r; }
+    else if (e.type === 'spline') { const pts = splinePts(e); area = Math.abs(G.polyArea(pts)); per = G.polyLen(pts, true); }
     else if (e.type === 'ellipse') { area = Math.PI * e.rx * e.ry; per = Math.PI * (3 * (e.rx + e.ry) - Math.sqrt((3 * e.rx + e.ry) * (e.rx + 3 * e.ry))); }
     else if (e.type === 'hatch') { area = hatchArea(e); per = e.loops.reduce((s, l) => s + G.polyLen(l, true), 0); }
     else { area = Math.abs(plArea(e)); per = plLength(e); }
@@ -706,7 +876,7 @@ def('PURGE', ['PU', 'LIMPIA'], 'Elimina bloques, capas y estilos no utilizados',
   const usedD = new Set([doc.cur.dimStyle, ...all.filter(e => e.type === 'dim').map(e => e.style)]);
   const nd = doc.dimStyles.length;
   doc.dimStyles = doc.dimStyles.filter((s, i) => !i || usedD.has(s.name));
-  const usedT = new Set(['Standard', doc.cur.textStyle, ...all.filter(e => e.type === 'text').map(e => e.style), ...doc.dimStyles.map(s => s.textStyle)]);
+  const usedT = new Set(['Standard', doc.cur.textStyle, ...all.filter(e => ['text', 'mtext', 'attdef'].includes(e.type)).map(e => e.style), ...doc.dimStyles.map(s => s.textStyle)]);
   const nt = doc.textStyles.length;
   doc.textStyles = doc.textStyles.filter(s => usedT.has(s.name));
   doc.changed();
@@ -803,6 +973,51 @@ def('PAGESETUP', ['CONFIGPAG', 'PAGINA'], 'Tamaño de papel de la presentación 
 def('MSPACE', ['MS', 'EM', 'ESPACIOM'], 'Trabaja en el modelo a través de una ventana gráfica', async c => { c.app.mspace(); }, { group: 'Presentación', noTx: true });
 def('PSPACE', ['PS', 'EP', 'ESPACIOP'], 'Vuelve al espacio papel de la presentación', async c => { c.app.pspace(); }, { group: 'Presentación', noTx: true });
 
+// Nombres de capa separados por comas, con comodines * y ?
+const layerMatcher = list => {
+  const res = list.split(',').map(t => t.trim()).filter(Boolean)
+    .map(t => new RegExp('^' + t.replace(/[.+^$(){}|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i'));
+  return name => res.some(r => r.test(name));
+};
+def('VPLAYER', ['VPL', 'CAPAVENTANA'], 'Inutiliza o reutiliza capas sólo en ventanas gráficas concretas', async c => {
+  const app = c.app, doc = c.doc;
+  if (app.tab === 'model') return c.print('VPLAYER sólo está disponible en una presentación.');
+  const vports = () => doc.layouts[app.tab].ents.filter(e => e.type === 'vport');
+  for (;;) {
+    const k = await app.ask('keyword', 'Indique una opción', { options: ['?', 'Inutilizar', 'Reutilizar', 'Restablecer'], allowEnter: true });
+    if (k === null) return;
+    if (k === '?') {
+      for (const vp of vports()) c.print(`Ventana ${vp.id}: ${vp.frozen?.length ? vp.frozen.join(', ') : 'sin capas inutilizadas'}`);
+      continue;
+    }
+    let match = null;
+    if (k !== 'Restablecer') {
+      const names = await c.getString(`Indique nombres de capa a ${k === 'Inutilizar' ? 'inutilizar' : 'reutilizar'} (separados por comas, admite *)`, { spaces: true });
+      match = layerMatcher(names);
+      if (!doc.layers.some(l => match(l.name))) { c.print('Ninguna capa coincide.'); continue; }
+    }
+    const w = await c.getKeyword('Ventanas', ['Todas', 'Designar', 'Actual'], app.vpActive ? 'Actual' : 'Designar');
+    let targets;
+    if (w === 'Actual') {
+      if (!app.vpActive) { c.print('No hay ninguna ventana activa (doble clic dentro de una para activarla).'); continue; }
+      targets = [doc.get(app.vpActive)];
+    } else if (w === 'Todas') targets = vports();
+    else {
+      if (app.vpActive) app.pspace();
+      targets = (await app.ask('select', 'Designe ventanas gráficas')).map(id => doc.get(id)).filter(e => e?.type === 'vport');
+    }
+    for (const vp of targets) {
+      doc.modify(vp.id, e => {
+        const cur = new Set(e.frozen || []);
+        if (k === 'Restablecer') cur.clear();
+        for (const l of doc.layers) if (match?.(l.name)) { if (k === 'Inutilizar') cur.add(l.name); else cur.delete(l.name); }
+        if (cur.size) e.frozen = [...cur]; else delete e.frozen;
+      });
+    }
+    c.print(`${targets.length} ventana(s) actualizada(s).`);
+  }
+}, { group: 'Presentación' });
+
 // ================= EDICIÓN / ARCHIVO =================
 def('UNDO', ['U', 'DESHACER'], 'Deshace la última operación', async c => { c.print(c.doc.undo() ? 'Deshacer: operación anulada.' : 'No hay nada que deshacer.'); c.app.clearSel(); c.app.afterUndo(); }, { noTx: true, group: 'Edición' });
 def('REDO', ['REHACER'], 'Rehace la operación deshecha', async c => { c.print(c.doc.redo() ? 'Rehacer: operación restaurada.' : 'No hay nada que rehacer.'); c.app.clearSel(); c.app.afterUndo(); }, { noTx: true, group: 'Edición' });
@@ -830,7 +1045,15 @@ def('PASTECLIP', ['PEGARPORTAPAPELES'], 'Pega objetos del portapapeles', async c
   const base = P(b.x1, b.y1);
   const mv = p => clip.ents.map(e => xformEnt(cloneEnt(e), Mx.T(p.x - base.x, p.y - base.y)));
   const p = await c.getPoint('Precise punto de inserción', { preview: mv });
-  for (const e of mv(p)) { delete e.id; if (!c.doc.layers.some(l => l.name === e.layer)) e.layer = c.doc.cur.layer; c.doc.add(e); }
+  const map = new Map(), made = [];
+  for (const e of mv(p)) {
+    const old = e.id;
+    delete e.id;
+    if (!c.doc.layers.some(l => l.name === e.layer)) e.layer = c.doc.cur.layer;
+    c.doc.add(e); made.push(e);
+    if (old != null) map.set(old, e.id);
+  }
+  remapAssoc(made, map);
 }, { group: 'Edición' });
 
 def('SELECTALL', ['TODO', 'SELTODO'], 'Selecciona todos los objetos', async c => { c.app.selectAll(); }, { noTx: true, group: 'Edición' });

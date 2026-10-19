@@ -27,9 +27,10 @@ export function vpModelRect(vp) {
   return { x1: vp.cx + (vp.p1.x - vcx) / vp.s, y1: vp.cy + (vp.p1.y - vcy) / vp.s, x2: vp.cx + (vp.p2.x - vcx) / vp.s, y2: vp.cy + (vp.p2.y - vcy) / vp.s };
 }
 
-// st: {color, px, pat, ltscale}; sty: función entidad → st (para las entidades de los bloques)
-export function paintEntity(c, e, R, st, sty) {
-  if (e.type === 'insert') { for (const v of blockEnts(e)) paintEntity(c, v, R, sty ? sty(v) : st, sty); return; }
+// st: {color, px, pat, ltscale}; sty: función entidad → st (para las entidades de los bloques);
+// vis: función entidad → visible, aplicada también a las entidades de los bloques
+export function paintEntity(c, e, R, st, sty, vis) {
+  if (e.type === 'insert') { for (const v of blockEnts(e)) if (!vis || vis(v)) paintEntity(c, v, R, sty ? sty(v) : st, sty, vis); return; }
   c.strokeStyle = st.color; c.fillStyle = st.color;
   c.lineWidth = st.px / R.scale;
   let pat = [];
@@ -72,20 +73,19 @@ export class Renderer {
   R() { return makeR(this.app.view, this.dpr); }
 
   // ---------- Escena ----------
-  paintList(c, R, ents, sty) {
-    const doc = this.app.doc;
-    for (const e of ents) if (doc.visible(e)) paintEntity(c, e, R, sty(e), sty);
+  paintList(c, R, ents, sty, vis = e => this.app.doc.visible(e)) {
+    for (const e of ents) if (vis(e)) paintEntity(c, e, R, sty(e), sty, vis);
   }
-  drawModel(c, R, rect, sty) {
+  drawModel(c, R, rect, sty, vis) {
     const doc = this.app.doc;
     setWorld(c, R);
-    this.paintList(c, R, this.app.spatial.of(doc.model, doc.ver).query(rect, true), sty);
+    this.paintList(c, R, this.app.spatial.of(doc.model, doc.ver).query(rect, true), sty, vis);
   }
   drawViewport(c, R, vp, sty) {
     c.save();
     setWorld(c, R);
     c.beginPath(); c.rect(vp.p1.x, vp.p1.y, vp.p2.x - vp.p1.x, vp.p2.y - vp.p1.y); c.clip();
-    this.drawModel(c, vpR(R, vp), vpModelRect(vp), sty);
+    this.drawModel(c, vpR(R, vp), vpModelRect(vp), sty, this.app.doc.visibleIn(vp));
     c.restore();
   }
   drawLayout(c, R, layout, sty, forExport = false) {
@@ -100,10 +100,11 @@ export class Renderer {
       c.strokeRect(5, 5, layout.w - 10, layout.h - 10);
       c.setLineDash([]);
     }
+    const on = x => doc.layer(x.layer).on; // en el papel no cuentan las capas inutilizadas en ventanas
     for (const e of layout.ents) {
       if (e.type === 'vport') this.drawViewport(c, R, e, sty);
       setWorld(c, R);
-      if (doc.visible(e)) paintEntity(c, e, R, sty(e), sty);
+      if (on(e)) paintEntity(c, e, R, sty(e), sty, on);
     }
   }
 

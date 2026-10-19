@@ -1,14 +1,18 @@
 // Detección de contornos para SOMBREADO: grafo plano a partir de las entidades, trazado de caras e islas.
+// También recalcula los sombreados asociativos cuando cambia su contorno.
 import * as G from './geom.js';
 import { primsOf, ellPts, plPolygon } from './entities.js';
+import { splinePts } from './spline.js';
 const { P } = G;
 
-function primSegs(q, out) {
-  if (q.k === 's') { if (G.dist(q.a, q.b) > 1e-12) out.push([q.a, q.b]); return; }
+// Segmentos [a, b, id de la entidad de origen]
+function primSegs(q, out, src) {
+  if (q.k === 's') { if (G.dist(q.a, q.b) > 1e-12) out.push([q.a, q.b, src]); return; }
   const sw = G.sweep(q.a1, q.a2), n = Math.max(2, Math.ceil(sw / (G.TAU / 96)));
   let prev = G.polar(q.c, q.a1, q.r);
-  for (let i = 1; i <= n; i++) { const p = G.polar(q.c, q.a1 + sw * i / n, q.r); out.push([prev, p]); prev = p; }
+  for (let i = 1; i <= n; i++) { const p = G.polar(q.c, q.a1 + sw * i / n, q.r); out.push([prev, p, src]); prev = p; }
 }
+const NO_BOUNDARY = new Set(['hatch', 'text', 'mtext', 'attdef', 'point', 'dim']);
 
 // Contornos cerrados de una entidad (para "Seleccionar objetos")
 export function loopsOfEntity(e) {
@@ -16,17 +20,19 @@ export function loopsOfEntity(e) {
     case 'circle': return [Array.from({ length: 96 }, (_, i) => G.polar(e.c, i / 96 * G.TAU, e.r))];
     case 'ellipse': return [ellPts(e, 96)];
     case 'pline': return e.closed && e.pts.length > 2 ? [plPolygon(e)] : null;
+    case 'spline': return e.closed ? [splinePts(e)] : null;
     case 'hatch': return e.loops.map(l => [...l]);
   }
   return null;
 }
 
 // Busca la región cerrada que contiene P. Devuelve [contorno, ...islas] o null.
+// El resultado lleva en .ids las entidades que forman los contornos (para la asociatividad).
 export function findBoundary(ents, Pt) {
   const segs = [];
   for (const e of ents) {
-    if (e.type === 'hatch' || e.type === 'text' || e.type === 'point' || e.type === 'dim') continue;
-    for (const q of primsOf(e)) primSegs(q, segs);
+    if (NO_BOUNDARY.has(e.type)) continue;
+    for (const q of primsOf(e)) primSegs(q, segs, e.id);
   }
   if (!segs.length) return null;
   let bb = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
@@ -63,7 +69,7 @@ export function findBoundary(ents, Pt) {
     return id;
   };
   const H = [], ekeys = new Set();
-  segs.forEach(([a, b], i) => {
+  segs.forEach(([a, b, src], i) => {
     const ts = [...new Set(cuts[i].map(t => Math.min(1, Math.max(0, t))))].sort((x, y) => x - y);
     for (let k = 1; k < ts.length; k++) {
       const u = vid(G.lerp(a, b, ts[k - 1])), v = vid(G.lerp(a, b, ts[k]));
@@ -72,17 +78,18 @@ export function findBoundary(ents, Pt) {
       if (ekeys.has(key)) continue;
       ekeys.add(key);
       const h1 = H.length;
-      H.push({ from: u, to: v, twin: h1 + 1 }, { from: v, to: u, twin: h1 });
+      H.push({ from: u, to: v, twin: h1 + 1, src }, { from: v, to: u, twin: h1, src });
       V[u].out.push(h1); V[v].out.push(h1 + 1);
     }
   });
   for (const h of H) h.ang = G.ang(V[h.from].p, V[h.to].p);
   for (const v of V) { v.out.sort((a, b) => H[a].ang - H[b].ang); v.out.forEach((h, i) => { H[h].idx = i; }); }
   const next = h => { const v = V[H[h].to], tw = H[h].twin; return v.out[(H[tw].idx - 1 + v.out.length) % v.out.length]; };
+  const used = new Set();
   const trace = h0 => {
     const loop = [], vs = [];
     let h = h0, guard = 0;
-    do { loop.push(V[H[h].from].p); vs.push(H[h].from); h = next(h); } while (h !== h0 && ++guard < 200000);
+    do { loop.push(V[H[h].from].p); vs.push(H[h].from); used.add(H[h].src); h = next(h); } while (h !== h0 && ++guard < 200000);
     return { loop, vs };
   };
   // Rayo horizontal hacia +x: primera semiarista con el punto a su izquierda
@@ -126,5 +133,38 @@ export function findBoundary(ents, Pt) {
     const hh = castRay(Q, x => comp[x] === c);
     if (hh >= 0) loops.push(trace(hh).loop);
   }
+  loops.ids = [...used].filter(id => id != null);
   return loops;
+}
+
+// Punto interior de la región par-impar formada por los contornos (centro del tramo interior más ancho)
+export function interiorPoint(loops) {
+  const pts = loops.flat();
+  if (pts.length < 3) return null;
+  let y1 = Infinity, y2 = -Infinity;
+  for (const p of pts) { y1 = Math.min(y1, p.y); y2 = Math.max(y2, p.y); }
+  let best = null, bw = 0;
+  for (const f of [0.5, 0.31, 0.69, 0.17, 0.83, 0.43, 0.57]) {
+    const y = y1 + (y2 - y1) * f + (y2 - y1) * 1.234e-7, xs = [];
+    for (const l of loops) for (let i = 0; i < l.length; i++) {
+      const a = l[i], b = l[(i + 1) % l.length];
+      if ((a.y > y) !== (b.y > y)) xs.push(a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y));
+    }
+    xs.sort((a, b) => a - b);
+    for (let i = 0; i + 1 < xs.length; i += 2) if (xs[i + 1] - xs[i] > bw) { bw = xs[i + 1] - xs[i]; best = P((xs[i] + xs[i + 1]) / 2, y); }
+  }
+  return best;
+}
+
+// Contornos de un sombreado asociativo a partir de sus entidades de origen (null si ya no hay contorno válido).
+// Con punto interior (seed) se repite la detección sólo con esas entidades; si el punto quedó fuera,
+// se prueba con un punto interior del contorno anterior.
+export function assocLoops(h, srcs) {
+  if (!h.seed) {
+    const loops = srcs.flatMap(e => loopsOfEntity(e) || []);
+    return loops.length ? { loops, ids: h.assoc } : null;
+  }
+  let seed = h.seed, loops = findBoundary(srcs, seed);
+  if (!loops) { seed = interiorPoint(h.loops); loops = seed && findBoundary(srcs, seed); }
+  return loops ? { loops, ids: loops.ids, seed } : null;
 }

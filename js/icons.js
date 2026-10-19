@@ -77,6 +77,14 @@ const I = {
   model: '<path d="M4 18 12 6l8 12z"/><circle cx="12" cy="14" r="2.5"/>',
   vport: '<rect x="3" y="4" width="18" height="16" rx="1"/><rect x="6" y="7" width="12" height="10" stroke-dasharray="2 1.5"/><circle cx="12" cy="12" r="2.5"/>',
   mspace: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M8 16l4-7 4 7z"/>',
+  spline: '<path d="M3 18C6 4 10 4 12 12s6 8 9-6"/><circle cx="3" cy="18" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="21" cy="6" r="1.3"/>',
+  mtext: '<path d="M4 5h16M4 9.5h16M4 14h16M4 18.5h10"/><path d="M19 15v6M17 21h4"/>',
+  attdef: '<rect x="3" y="6" width="18" height="12" rx="1.5" stroke-dasharray="2 1.5"/><path d="M7 15l2.5-6 2.5 6M7.8 13h3.4M14 9h4M16 9v6"/>',
+  attedit: '<rect x="3" y="6" width="13" height="12" rx="1.5"/><path d="M6 15l2-5 2 5M6.7 13.3h2.6"/><path d="m14 17 6-6 2 2-6 6h-2z"/>',
+  dimang: '<path d="M4 20 20 20M4 20 15 5"/><path d="M14 20a10 10 0 0 0-3.6-7.7"/><path d="m14 20-1.6-2.8L16 17ZM10.4 12.3l3.2.4-1.7 2.6Z" fill="currentColor"/>',
+  dimord: '<path d="M5 3v18M5 7h4l3 3h8M5 16h6l2-2h7"/><circle cx="5" cy="7" r="1.2" fill="currentColor"/><circle cx="5" cy="16" r="1.2" fill="currentColor"/>',
+  freeze: '<path d="M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7"/><path d="m9 4 3 2 3-2M9 20l3-2 3 2M4 10.5l3.5-.5-1-3.3M20 13.5l-3.5.5 1 3.3M4 13.5l3.5.5-1 3.3M20 10.5l-3.5-.5 1-3.3"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
 };
 
 export function icon(name, size = 20) {

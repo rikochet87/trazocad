@@ -1,7 +1,8 @@
 // Operaciones de edición geométrica: recortar, alargar, partir, longitud, desfase, empalme, chaflán, descomponer, unir, estirar.
 import * as G from './geom.js';
-import { primsOf, dimParts, plPieces, pieceAt, pieceParam, plLength, cloneEnt, inWindow, xformEnt, blockEnts } from './entities.js';
+import { primsOf, dimParts, plPieces, pieceAt, pieceParam, plLength, cloneEnt, inWindow, xformEnt, blockEnts, mtextGeom } from './entities.js';
 import { hatchSegments } from './patterns.js';
+import { splinePts, rebuild as rebuildSpline } from './spline.js';
 const { TAU } = G;
 
 const props = e => ({ layer: e.layer, color: e.color, ltype: e.ltype, lw: e.lw });
@@ -344,12 +345,15 @@ export function explodeEntity(e) {
     const d = dimParts(e);
     return [
       ...d.lines.map(([p1, p2]) => ({ ...b, type: 'line', p1, p2 })),
+      ...d.arcs.map(([c, r, a1, a2]) => ({ ...b, type: 'arc', c, r, a1, a2 })),
       ...d.arrows.map(pts => ({ ...b, type: 'hatch', pattern: 'SOLID', scale: 1, angle: 0, loops: [pts] })),
       ...d.dots.map(([c, r]) => ({ ...b, type: 'circle', c, r })),
       { ...b, type: 'text', p: d.text.p, h: d.text.h, rot: d.text.rot, text: d.text.str, align: d.text.align, style: d.text.style },
     ];
   }
   if (e.type === 'insert') return blockEnts(e).map(v => { const c = cloneEnt(v); delete c.id; return c; });
+  if (e.type === 'mtext') return mtextGeom(e).lines.filter(l => l.str).map(l => ({ ...b, type: 'text', p: l.p, h: l.h, rot: l.rot, text: l.str, align: l.align, style: e.style }));
+  if (e.type === 'spline') return [{ ...b, type: 'pline', pts: [...splinePts(e)], closed: !!e.closed }];
   if (e.type === 'hatch') {
     if (e.pattern === 'SOLID') return e.loops.map(l => ({ ...b, type: 'pline', pts: l, closed: true }));
     const bb = e.loops.flat().reduce((r, p) => ({ x1: Math.min(r.x1, p.x), y1: Math.min(r.y1, p.y), x2: Math.max(r.x2, p.x), y2: Math.max(r.y2, p.y) }), { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity });
@@ -411,10 +415,20 @@ export function stretchEntity(e, r, d) {
   switch (e.type) {
     case 'line': c.p1 = mv(e.p1); c.p2 = mv(e.p2); return c;
     case 'pline': c.pts = e.pts.map(mv); return c;
-    case 'dim': c.p1 = mv(e.p1); c.p2 = mv(e.p2); c.p3 = mv(e.p3); return c;
-    case 'hatch': c.loops = e.loops.map(l => l.map(mv)); return c;
+    case 'dim':
+      c.p1 = mv(e.p1); c.p2 = mv(e.p2); c.p3 = mv(e.p3);
+      if (e.c) c.c = mv(e.c);
+      if (e.l1) { c.l1 = e.l1.map(mv); c.l2 = e.l2.map(mv); }
+      return c;
+    case 'hatch': c.loops = e.loops.map(l => l.map(mv)); if (c.seed) c.seed = mv(c.seed); c._xf = true; return c;
     case 'circle': case 'arc': case 'ellipse': return G.inRect(e.c, r) ? xformEnt(c, G.Mx.T(d.x, d.y)) : null;
-    case 'text': case 'point': case 'insert': return G.inRect(e.p, r) ? xformEnt(c, G.Mx.T(d.x, d.y)) : null;
+    case 'text': case 'mtext': case 'attdef': case 'point': case 'insert': return G.inRect(e.p, r) ? xformEnt(c, G.Mx.T(d.x, d.y)) : null;
+    case 'spline': {
+      const k = e.fit ? 'fit' : e.cv ? 'cv' : 'ctrl';
+      c[k] = e[k].map(mv);
+      if (k === 'ctrl') return c;
+      return rebuildSpline(c) ? c : null;
+    }
   }
   return null;
 }

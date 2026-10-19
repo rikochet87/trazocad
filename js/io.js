@@ -1,6 +1,7 @@
 // Archivos: nuevo, abrir, guardar (.tcad), exportar DXF/SVG/PNG, imprimir y autoguardado.
 import * as G from './geom.js';
-import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts } from './entities.js';
+import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, mtextGeom } from './entities.js';
+import { splinePts } from './spline.js';
 import { writeDXF, readDXF } from './dxf.js';
 import { hatchSegments } from './patterns.js';
 import { makeRV, setWorld, vpModelRect } from './render.js';
@@ -90,10 +91,15 @@ export class IO {
         doc.blocks = r.blocks;
         for (const s of r.textStyles) if (!doc.textStyles.some(t => t.name === s.name)) doc.textStyles.push(s);
         for (const e of r.ents) doc.add(e);
-        doc.undoS = []; doc.redoS = [];
+        for (const l of r.layouts) {
+          const lay = { name: l.name, paper: l.paper, w: l.w, h: l.h, ents: [] };
+          doc.layouts.push(lay);
+          for (const e of l.ents) doc.add(e, lay.ents);
+        }
+        doc.undoS = []; doc.redoS = []; doc.touched.clear();
         doc.name = baseName(file.name);
         this.handle = null;
-        this.app.print(`DXF importado: ${r.ents.length} objetos, ${r.layers.length} capas, ${Object.keys(r.blocks).length} bloques${r.skipped ? `, ${r.skipped} entidades no compatibles omitidas` : ''}.`);
+        this.app.print(`DXF importado: ${r.ents.length} objetos, ${r.layers.length} capas, ${Object.keys(r.blocks).length} bloques${r.layouts.length ? `, ${r.layouts.length} presentación(es)` : ''}${r.skipped ? `, ${r.skipped} entidades no compatibles omitidas` : ''}.`);
       } else {
         const o = JSON.parse(text);
         if (o.app !== 'TrazoCAD') throw new Error('Formato no reconocido');
@@ -139,12 +145,12 @@ export class IO {
   async exportDXF(version = '2000') {
     const doc = this.app.doc;
     const h = await this.writeFile(writeDXF(doc, version), `${doc.name}.dxf`, 'application/dxf', '.dxf', 'DXF', false);
-    if (h) this.app.print(`Exportado a DXF ${version === 'R12' ? 'R12' : '2000'}: ${doc.name}.dxf (espacio modelo y bloques).`);
+    if (h) this.app.print(`Exportado a DXF ${version === 'R12' ? 'R12' : '2000'}: ${doc.name}.dxf (${version === 'R12' || !doc.layouts.length ? 'espacio modelo y bloques' : `modelo, bloques y ${doc.layouts.length} presentación(es)`}).`);
   }
 
   // ---------- SVG ----------
-  // lwScale: unidades de dibujo por mm de grosor (null = trazo fino independiente del zoom)
-  svgEnts(ents, lwScale, out, clipId) {
+  // lwScale: unidades de dibujo por mm de grosor (null = trazo fino independiente del zoom); vis: filtro de visibilidad
+  svgEnts(ents, lwScale, out, vis = e => this.app.doc.layer(e.layer).on) {
     const doc = this.app.doc;
     const stroke = e => {
       const st = doc.style(e), col = printColor(st.color);
@@ -166,8 +172,9 @@ export class IO {
       return d + (e.closed ? ' Z' : '');
     };
     const pts = l => l.map(p => `${n5(p.x)},${n5(p.y)}`).join(' ');
+    const arcD = ([c, r, a1, a2]) => { const a = G.polar(c, a1, r), b = G.polar(c, a2, r); return `M${n5(a.x)} ${n5(a.y)} A${n5(r)} ${n5(r)} 0 ${G.sweep(a1, a2) > Math.PI ? 1 : 0} 1 ${n5(b.x)} ${n5(b.y)}`; };
     for (const e of ents) {
-      if (!doc.visible(e)) continue;
+      if (!vis(e)) continue;
       const s = stroke(e), col = printColor(doc.style(e).color);
       switch (e.type) {
         case 'line': out.push(`<line x1="${n5(e.p1.x)}" y1="${n5(e.p1.y)}" x2="${n5(e.p2.x)}" y2="${n5(e.p2.y)}" ${s}/>`); break;
@@ -177,16 +184,19 @@ export class IO {
         case 'ellipse': out.push(`<polygon points="${pts(ellPts(e, 96))}" ${s}/>`); break;
         case 'point': out.push(`<circle cx="${n5(e.p.x)}" cy="${n5(e.p.y)}" r="${n5(lwScale ? 0.3 : 0.5)}" fill="${col}"/>`); break;
         case 'text': out.push(textEl(e, col)); break;
+        case 'attdef': out.push(textEl({ ...e, text: e.tag }, col)); break;
+        case 'mtext': for (const ln of mtextGeom(e).lines) if (ln.str) out.push(textEl(ln, col)); break;
+        case 'spline': { const p = splinePts(e); out.push(`<path d="M${pts(p).replace(/ /g, ' L')}${e.closed ? ' Z' : ''}" ${s}/>`); break; }
         case 'hatch': {
           if (e.pattern === 'SOLID') { out.push(`<path d="${e.loops.map(l => `M${pts(l).replace(/ /g, ' L')} Z`).join(' ')}" fill="${col}" fill-rule="evenodd"/>`); break; }
           const segs = hatchSegments(e, bbPts(e.loops.flat()));
           out.push(`<path d="${segs.map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}" ${s}/>`);
           break;
         }
-        case 'insert': out.push('<g>'); this.svgEnts(blockEnts(e), lwScale, out); out.push('</g>'); break;
+        case 'insert': out.push('<g>'); this.svgEnts(blockEnts(e), lwScale, out, vis); out.push('</g>'); break;
         case 'dim': {
           const d = dimParts(e);
-          out.push(`<path d="${d.lines.map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}" ${s}/>`);
+          out.push(`<path d="${d.lines.map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}${d.arcs.map(arcD).join('')}" ${s}/>`);
           for (const tri of d.arrows) out.push(`<polygon points="${pts(tri)}" fill="${col}"/>`);
           for (const [c, r] of d.dots) out.push(`<circle cx="${n5(c.x)}" cy="${n5(c.y)}" r="${n5(r)}" fill="${col}"/>`);
           out.push(textEl(d.text, col));
@@ -197,7 +207,7 @@ export class IO {
           out.push(`<clipPath id="${id}"><rect x="${n5(e.p1.x)}" y="${n5(e.p1.y)}" width="${n5(e.p2.x - e.p1.x)}" height="${n5(e.p2.y - e.p1.y)}"/></clipPath>`);
           out.push(`<g clip-path="url(#${id})"><g transform="matrix(${n5(sc)} 0 0 ${n5(sc)} ${n5(vcx - sc * e.cx)} ${n5(vcy - sc * e.cy)})">`);
           const doc2 = this.app.doc;
-          this.svgEnts(this.app.spatial.of(doc2.model, doc2.ver).query(m, true), lwScale / sc, out);
+          this.svgEnts(this.app.spatial.of(doc2.model, doc2.ver).query(m, true), lwScale / sc, out, doc2.visibleIn(e));
           out.push('</g></g>');
           out.push(`<rect x="${n5(e.p1.x)}" y="${n5(e.p1.y)}" width="${n5(e.p2.x - e.p1.x)}" height="${n5(e.p2.y - e.p1.y)}" ${s}/>`);
           break;

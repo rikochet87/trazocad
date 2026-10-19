@@ -1,6 +1,7 @@
 // Tipos de entidad: geometría, referencias, pinzamientos, transformaciones y propiedades.
 import * as G from './geom.js';
 import { PATTERNS, famsOf, famLines } from './patterns.js';
+import { splinePts, rebuild as rebuildSpline } from './spline.js';
 const { P, Mx, TAU } = G;
 
 export const ENV = { doc: null };
@@ -154,13 +155,13 @@ export function drawText(c, R, t) {
 }
 
 // ---------- Cotas ----------
-export const DEFAULT_DIMSTYLE = { name: 'ISO-25', txt: 2.5, asz: 2.5, exo: 0.625, exe: 1.25, gap: 0.625, dec: 2, scale: 1, arrow: 'closed', textStyle: 'Standard', suffix: '' };
+export const DEFAULT_DIMSTYLE = { name: 'ISO-25', txt: 2.5, asz: 2.5, exo: 0.625, exe: 1.25, gap: 0.625, dec: 2, adec: 0, scale: 1, arrow: 'closed', textStyle: 'Standard', suffix: '' };
 const dimStyleOf = e => (D()?.dimStyle ? D().dimStyle(e.style) : DEFAULT_DIMSTYLE);
 
 export function dimParts(e) {
   const ds = dimStyleOf(e), k = ds.scale || 1;
   const asz = ds.asz * k, h = ds.txt * k, gap = ds.gap * k, exo = ds.exo * k, exe = ds.exe * k;
-  const lines = [], arrows = [], dots = [];
+  const lines = [], arrows = [], dots = [], arcs = [];
   const arrow = (tip, dirIn) => {
     const b = G.add(tip, G.mul(dirIn, asz)), pn = G.perp(dirIn), w = asz / 6;
     switch (ds.arrow) {
@@ -172,6 +173,62 @@ export function dimParts(e) {
     }
   };
   const num = v => fmt(v, ds.dec) + (ds.suffix || '');
+  const label = v => (e.text ? e.text.replace('<>', v) : v);
+  if (e.kind === 'ang') {
+    // Vértice c; p1 y p2 sobre los dos lados; p3 sitúa el arco y elige el sector que se acota.
+    // Con l1/l2 (dos líneas) los lados son rectas completas: hay cuatro sectores posibles.
+    const c = e.c, R = Math.max(G.dist(c, e.p3), 1e-9), ap = G.ang(c, e.p3), a1 = G.ang(c, e.p1), a2 = G.ang(c, e.p2);
+    let s = a1, t = a2;
+    if (e.l1) {
+      const rays = [a1, a1 + Math.PI, a2, a2 + Math.PI].map(G.normAng).sort((x, y) => x - y);
+      for (let i = 0; i < 4; i++) { const lo = rays[i], hi = rays[(i + 1) % 4]; if (G.angIn(ap, lo, hi)) { s = lo; t = hi; break; } }
+    } else if (!G.angIn(ap, a1, a2)) { s = a2; t = a1; }
+    const sw = G.sweep(s, t);
+    // Línea de referencia a lo largo de un lado, sólo si el arco no toca la geometría acotada
+    const ext = (th, seg, org) => {
+      const u = P(Math.cos(th), Math.sin(th));
+      let lo, hi;
+      if (seg) {
+        const t1 = G.dot(G.sub(seg[0], c), u), t2 = G.dot(G.sub(seg[1], c), u);
+        hi = Math.max(t1, t2); lo = Math.max(0, Math.min(t1, t2));
+        if (hi < 0) lo = hi = 0;
+      } else lo = hi = Math.max(0, G.dot(G.sub(org, c), u));
+      if (R >= lo - 1e-9 && R <= hi + 1e-9) return;
+      if (R > hi) lines.push([G.add(c, G.mul(u, hi + exo)), G.add(c, G.mul(u, R + exe))]);
+      else lines.push([G.add(c, G.mul(u, lo - exo)), G.add(c, G.mul(u, R - exe))]);
+    };
+    for (const th of [s, t]) {
+      const first = Math.abs(Math.sin(th - a1)) < 1e-9;
+      ext(th, e.l1 ? (first ? e.l1 : e.l2) : null, first ? e.p1 : e.p2);
+    }
+    arcs.push([c, R, s, t]);
+    arrow(G.polar(c, s, R), P(-Math.sin(s), Math.cos(s)));
+    arrow(G.polar(c, t, R), P(Math.sin(t), -Math.cos(t)));
+    const am = s + sw / 2;
+    let ta = Math.atan2(Math.sin(am - Math.PI / 2), Math.cos(am - Math.PI / 2)), flip = false;
+    if (ta > Math.PI / 2 + 1e-9) { ta -= Math.PI; flip = true; } else if (ta <= -Math.PI / 2 + 1e-9) { ta += Math.PI; flip = true; }
+    const val = G.deg(sw);
+    return { lines, arrows, dots, arcs, val, text: { p: G.polar(c, am, R + gap + (flip ? h : 0)), rot: ta, h, str: label(fmt(val, ds.adec ?? 0) + '°'), align: 'c', style: ds.textStyle } };
+  }
+  if (e.kind === 'ord') {
+    // Cota de coordenadas: directriz desde el punto p1 hasta p3. Directriz horizontal → cota Y; vertical → cota X.
+    const f = e.p1, q = e.p3, axis = e.axis || (Math.abs(q.x - f.x) >= Math.abs(q.y - f.y) ? 'y' : 'x');
+    const val = axis === 'x' ? f.x : f.y;
+    const sw = axis === 'x' ? (p => P(p.y, p.x)) : (p => p); // trabaja siempre como si la directriz fuera horizontal
+    const F = sw(f), Q = sw(q), s = Math.sign(Q.x - F.x) || 1, L = Math.abs(Q.x - F.x), a = P(F.x + s * exo, F.y);
+    if (Math.abs(Q.y - F.y) < 1e-9) { if (L > exo) lines.push([sw(a), q]); }
+    else if (L > 3 * asz + exo) {
+      const k1 = P(Q.x - s * 2 * asz, F.y), k2 = P(Q.x - s * asz, Q.y);
+      lines.push([sw(a), sw(k1)], [sw(k1), sw(k2)], [sw(k2), q]);
+    } else {
+      if (L > exo) lines.push([sw(a), sw(P(Q.x, F.y))]);
+      lines.push([sw(P(Q.x, F.y)), q]);
+    }
+    const text = axis === 'x'
+      ? { p: G.add(q, P(h / 2, s * gap)), rot: Math.PI / 2, align: s > 0 ? 'l' : 'r' }
+      : { p: G.add(q, P(s * gap, -h / 2)), rot: 0, align: s > 0 ? 'l' : 'r' };
+    return { lines, arrows, dots, arcs, val, axis, text: { ...text, h, str: label(num(val)), style: ds.textStyle } };
+  }
   if (e.kind === 'rad' || e.kind === 'dia') {
     const r = G.dist(e.p1, e.p2), u = G.norm(G.sub(e.p3, e.p1)), a = G.add(e.p1, G.mul(u, r));
     const start = e.kind === 'dia' ? G.sub(e.p1, G.mul(u, r)) : e.p1;
@@ -182,7 +239,7 @@ export function dimParts(e) {
     const val = e.kind === 'dia' ? 2 * r : r;
     const base = (e.kind === 'dia' ? 'Ø' : 'R') + num(val);
     const right = u.x >= 0;
-    return { lines, arrows, dots, val, text: { p: G.add(end, P(right ? gap : -gap, -h / 2)), rot: 0, h, str: e.text ? e.text.replace('<>', base) : base, align: right ? 'l' : 'r', style: ds.textStyle } };
+    return { lines, arrows, dots, arcs, val, text: { p: G.add(end, P(right ? gap : -gap, -h / 2)), rot: 0, h, str: label(base), align: right ? 'l' : 'r', style: ds.textStyle } };
   }
   let dir = e.kind === 'ali' ? G.norm(G.sub(e.p2, e.p1)) : P(Math.cos(e.rot || 0), Math.sin(e.rot || 0));
   if (e.kind === 'ali' && G.dist(e.p1, e.p2) < 1e-12) dir = P(1, 0);
@@ -203,8 +260,8 @@ export function dimParts(e) {
   if (ta > Math.PI / 2 + 1e-9) ta -= Math.PI;
   if (ta <= -Math.PI / 2 + 1e-9) ta += Math.PI;
   const up = P(-Math.sin(ta), Math.cos(ta));
-  const str = e.text ? e.text.replace('<>', num(val)) : num(val);
-  return { lines, arrows, dots, val, d1, d2, text: { p: G.add(G.mid(d1, d2), G.mul(up, gap)), rot: ta, h, str, align: 'c', style: ds.textStyle } };
+  const str = label(num(val));
+  return { lines, arrows, dots, arcs, val, d1, d2, text: { p: G.add(G.mid(d1, d2), G.mul(up, gap)), rot: ta, h, str, align: 'c', style: ds.textStyle } };
 }
 
 // ---------- Bloques ----------
@@ -214,18 +271,34 @@ export function insertMatrix(e, b) {
   M = Mx.mul(Mx.R(e.rot || 0), M);
   return Mx.mul(Mx.T(e.p.x, e.p.y), M);
 }
+export const blockAttdefs = name => D()?.blocks?.[name]?.ents.filter(x => x.type === 'attdef') || [];
+export const attVal = (ins, a) => ins.attribs?.[a.tag] ?? a.def ?? '';
+// Texto que representa una definición de atributo: la etiqueta, o el valor dentro de una referencia
+const attText = (a, str) => ({ type: 'text', p: a.p, h: a.h, rot: a.rot || 0, align: a.align || 'l', style: a.style, text: str, layer: a.layer, color: a.color, ltype: a.ltype, lw: a.lw });
+// Atributos de una referencia: {tag, value, invisible, t: texto ya situado en el dibujo}
+export function insertAttribs(e) {
+  const b = D()?.blocks?.[e.name];
+  if (!b) return [];
+  const M = insertMatrix(e, b);
+  return b.ents.filter(x => x.type === 'attdef').map(a => {
+    const value = attVal(e, a), t = xformEnt(attText(a, value), M);
+    if (t.layer === '0' || !t.layer) t.layer = e.layer;
+    if (t.color === 'BYBLOCK') t.color = e.color;
+    return { tag: a.tag, value, invisible: !!a.invisible, t };
+  });
+}
 const vcache = new WeakMap();
 let depth = 0;
 export function blockEnts(e) {
   const b = D()?.blocks?.[e.name];
   if (!b || depth > 12) return [];
-  const key = `${b.ver || 0}|${e.p.x},${e.p.y},${e.sx},${e.sy},${e.rot},${e.layer},${e.color},${e.ltype},${e.lw}`;
+  const key = `${b.ver || 0}|${e.p.x},${e.p.y},${e.sx},${e.sy},${e.rot},${e.layer},${e.color},${e.ltype},${e.lw}|${e.attribs ? JSON.stringify(e.attribs) : ''}`;
   const hit = vcache.get(e);
   if (hit && hit.key === key && hit.b === b) return hit.ents;
   const M = insertMatrix(e, b);
   depth++;
-  const ents = b.ents.map(x => {
-    const v = xformEnt(cloneEnt(x), M);
+  const ents = b.ents.filter(x => !(x.type === 'attdef' && x.invisible)).map(x => {
+    const v = xformEnt(x.type === 'attdef' ? attText(x, attVal(e, x)) : cloneEnt(x), M);
     if (v.layer === '0') v.layer = e.layer;
     if (v.color === 'BYBLOCK') v.color = e.color;
     if (v.ltype === 'BYBLOCK') v.ltype = e.ltype;
@@ -370,6 +443,44 @@ TYPES.ellipse = {
     ro('Área', e => Math.PI * e.rx * e.ry)],
 };
 
+// Vértices de control repetidos al final de una spline periódica importada (se editan juntos)
+const splWrap = e => {
+  if (!e.closed || e.fit || e.cv) return 0;
+  const n = e.ctrl.length, p = e.deg;
+  for (let j = 0; j < p; j++) if (!G.eqPt(e.ctrl[n - p + j], e.ctrl[j], 1e-9)) return 0;
+  return p;
+};
+TYPES.spline = {
+  name: 'Spline',
+  prims: e => { const p = splinePts(e); return e.closed ? closedSegs(p) : p.slice(1).map((q, i) => ({ k: 's', a: p[i], b: q })); },
+  bbox: e => bbPts(splinePts(e)),
+  snaps: e => { const p = splinePts(e); return e.closed ? {} : { end: [p[0], p[p.length - 1]] }; },
+  grips: e => e.fit || e.cv || e.ctrl.slice(0, e.ctrl.length - splWrap(e)),
+  moveGrip(e, i, p) {
+    const k = e.fit ? 'fit' : e.cv ? 'cv' : null;
+    if (k) { const old = e[k]; e[k] = old.map((q, j) => (j === i ? p : q)); if (!rebuildSpline(e)) e[k] = old; return; }
+    const w = splWrap(e), n = e.ctrl.length;
+    e.ctrl = e.ctrl.map((q, j) => (j === i || (i < w && j === n - w + i) ? p : q));
+  },
+  xform(e, m) { for (const k of ['fit', 'cv', 'ctrl']) if (e[k]) e[k] = e[k].map(q => Mx.ap(m, q)); },
+  path(c, e) {
+    const p = splinePts(e);
+    c.moveTo(p[0].x, p[0].y);
+    for (let i = 1; i < p.length; i++) c.lineTo(p[i].x, p[i].y);
+    if (e.closed) c.closePath();
+  },
+  props: e => [
+    ro('Método', x => (x.fit ? 'Ajuste' : x.cv ? 'Vértices de control' : 'Importada'), 'text'),
+    e.fit || e.cv
+      ? { label: 'Cerrada', type: 'bool', get: x => !!x.closed, set: (x, v) => { const old = !!x.closed; x.closed = v; if (!rebuildSpline(x)) x.closed = old; } }
+      : ro('Cerrada', x => (x.closed ? 'Sí' : 'No'), 'text'),
+    ro('Grado', x => x.deg, 'int'),
+    ro(e.fit ? 'Puntos de ajuste' : 'Vértices de control', x => (x.fit || x.cv || x.ctrl).length, 'int'),
+    ro('Longitud', x => G.polyLen(splinePts(x), x.closed)),
+    ...(e.closed ? [ro('Área', x => Math.abs(G.polyArea(splinePts(x))))] : []),
+  ],
+};
+
 TYPES.point = {
   name: 'Punto',
   prims: () => [],
@@ -417,28 +528,133 @@ TYPES.text = {
     ...ptProps('Posición', 'p')],
 };
 
-const dimSegs = d => [...d.lines.map(([a, b]) => ({ k: 's', a, b }))];
+// ---------- Texto de líneas múltiples ----------
+export const MT_ATTACH = [['tl', 'Superior izquierda'], ['tc', 'Superior centro'], ['tr', 'Superior derecha'], ['ml', 'Centro izquierda'], ['mc', 'Centro'], ['mr', 'Centro derecha'], ['bl', 'Inferior izquierda'], ['bc', 'Inferior centro'], ['br', 'Inferior derecha']];
+const MT_PITCH = 5 / 3; // interlineado por defecto de AutoCAD: 5/3 de la altura
+const mlcache = new WeakMap();
+// Líneas tras el ajuste de palabras a la anchura e.w (0 = sin ajuste; \n separa párrafos)
+export function mtextLayout(e) {
+  const st = styleOf(e.style), key = `${e.text}|${e.h}|${e.w}|${e.style}|${st.font}|${st.width}`;
+  let lay = mlcache.get(e);
+  if (lay && lay.key === key) return lay;
+  const lines = [];
+  for (const para of String(e.text ?? '').split('\n')) {
+    if (!(e.w > 0)) { lines.push(para); continue; }
+    let cur = '';
+    for (const wd of para.split(' ')) {
+      const cand = cur ? `${cur} ${wd}` : wd;
+      if (cur && textWidth(cand, e.h, e.style) > e.w) { lines.push(cur); cur = wd; } else cur = cand;
+    }
+    lines.push(cur);
+  }
+  lay = { key, lines, widths: lines.map(l => textWidth(l, e.h, e.style)) };
+  mlcache.set(e, lay);
+  return lay;
+}
+// Posición de cada línea y contorno, en coordenadas del dibujo
+export function mtextGeom(e) {
+  const { lines, widths } = mtextLayout(e), h = e.h, pitch = h * MT_PITCH * (e.ls || 1);
+  const att = e.attach || 'tl', col = att[1];
+  const W = e.w > 0 ? e.w : Math.max(h, ...widths), H = h + (lines.length - 1) * pitch;
+  const top = att[0] === 't' ? 0 : att[0] === 'm' ? H / 2 : H;
+  const left = col === 'l' ? 0 : col === 'c' ? -W / 2 : -W, ax = left + (col === 'l' ? 0 : col === 'c' ? W / 2 : W);
+  const rot = e.rot || 0, W2 = q => G.add(e.p, G.rot(q, rot));
+  return {
+    lines: lines.map((str, i) => ({ p: W2(P(ax, top - h - i * pitch)), str, align: col, h, rot, style: e.style })),
+    box: [P(left, top - H - 0.3 * h), P(left + W, top - H - 0.3 * h), P(left + W, top), P(left, top)].map(W2),
+    widthGrip: W2(P(col === 'r' ? left : left + W, top - H / 2)),
+  };
+}
+TYPES.mtext = {
+  name: 'Texto de líneas múltiples',
+  prims: () => [],
+  selPrims: e => closedSegs(mtextGeom(e).box),
+  bbox: e => bbPts(mtextGeom(e).box),
+  hit(e, p) { const b = mtextGeom(e).box; return G.pointInPoly(p, b) ? 0 : Math.min(...closedSegs(b).map(s => G.dist(p, G.nearSeg(p, s.a, s.b).p))); },
+  snaps: e => ({ ins: [e.p] }),
+  grips: e => [e.p, mtextGeom(e).widthGrip],
+  moveGrip(e, i, p) {
+    if (i === 0) { e.p = p; return; }
+    const lx = G.rot(G.sub(p, e.p), -(e.rot || 0)).x, col = (e.attach || 'tl')[1];
+    e.w = Math.max(e.h, col === 'l' ? lx : col === 'c' ? 2 * Math.abs(lx) : -lx);
+  },
+  xform(e, m) {
+    const s = Mx.scaleOf(m), v = Mx.apV(m, P(Math.cos(e.rot || 0), Math.sin(e.rot || 0)));
+    let a = Math.atan2(v.y, v.x);
+    if (Mx.det(m) < 0) { // simetría con el texto legible: se invierte la justificación en lugar de las letras
+      const att = e.attach || 'tl';
+      if (Math.cos(a) < -1e-9) { a += Math.PI; e.attach = att[0] + { l: 'r', r: 'l', c: 'c' }[att[1]]; }
+      else e.attach = { t: 'b', b: 't', m: 'm' }[att[0]] + att[1];
+    }
+    e.p = Mx.ap(m, e.p); e.rot = a; e.h *= s;
+    if (e.w) e.w *= s;
+  },
+  draw(c, e, R) { for (const ln of mtextGeom(e).lines) drawText(c, R, ln); },
+  props: [{ label: 'Contenido', type: 'mtext', get: e => e.text, set: (e, v) => { e.text = v; } },
+    { label: 'Estilo', type: 'select', options: () => D().textStyles.map(s => [s.name, s.name]), get: e => e.style || 'Standard', set: (e, v) => { e.style = v; } },
+    num('Altura', e => e.h, (e, v) => { if (v > 0) e.h = v; }),
+    num('Anchura (0 = libre)', e => e.w || 0, (e, v) => { if (v >= 0) e.w = v; }),
+    angp('Rotación', e => e.rot || 0, (e, v) => { e.rot = v; }),
+    sel('Justificación', MT_ATTACH, e => e.attach || 'tl', (e, v) => { e.attach = v; }),
+    num('Interlineado', e => e.ls || 1, (e, v) => { if (v > 0) e.ls = v; }),
+    ...ptProps('Posición', 'p'),
+    ro('Líneas', e => mtextLayout(e).lines.length, 'int')],
+};
+
+// ---------- Definición de atributo ----------
+TYPES.attdef = {
+  name: 'Definición de atributo',
+  prims: () => [],
+  selPrims: e => TYPES.text.selPrims(attText(e, e.tag)),
+  bbox: e => TYPES.text.bbox(attText(e, e.tag)),
+  hit: (e, p) => TYPES.text.hit(attText(e, e.tag), p),
+  snaps: e => ({ ins: [e.p] }),
+  grips: e => [e.p],
+  moveGrip(e, i, p) { e.p = p; },
+  xform(e, m) { e.text = e.tag; TYPES.text.xform(e, m); delete e.text; },
+  draw(c, e, R) { drawText(c, R, attText(e, e.tag)); },
+  props: [{ label: 'Etiqueta', type: 'text', get: e => e.tag, set: (e, v) => { if (v.trim()) e.tag = v.trim().toUpperCase().replace(/\s+/g, '_'); } },
+    { label: 'Solicitud', type: 'text', get: e => e.prompt || '', set: (e, v) => { e.prompt = v; } },
+    { label: 'Valor por defecto', type: 'text', get: e => e.def || '', set: (e, v) => { e.def = v; } },
+    { label: 'Invisible', type: 'bool', get: e => !!e.invisible, set: (e, v) => { e.invisible = v; } },
+    { label: 'Estilo', type: 'select', options: () => D().textStyles.map(s => [s.name, s.name]), get: e => e.style || 'Standard', set: (e, v) => { e.style = v; } },
+    num('Altura', e => e.h, (e, v) => { if (v > 0) e.h = v; }),
+    angp('Rotación', e => e.rot || 0, (e, v) => { e.rot = v; }),
+    sel('Justificación', [['l', 'Izquierda'], ['c', 'Centro'], ['r', 'Derecha']], e => e.align || 'l', (e, v) => { e.align = v; }),
+    ...ptProps('Posición', 'p')],
+};
+
+const dimSegs = d => [...d.lines.map(([a, b]) => ({ k: 's', a, b })), ...d.arcs.map(([c, r, a1, a2]) => ({ k: 'a', c, r, a1, a2 }))];
+const DIM_GRIPS = { ang: ['p3', 'c'], ord: ['p1', 'p3'] };
+const dimGripKeys = e => DIM_GRIPS[e.kind] || ['p1', 'p2', 'p3'];
+export const DIM_KINDS = { lin: 'Lineal', ali: 'Alineada', rad: 'Radio', dia: 'Diámetro', ang: 'Angular', ord: 'Coordenada' };
 TYPES.dim = {
   name: 'Cota',
   prims: e => dimSegs(dimParts(e)),
   selPrims: e => { const d = dimParts(e); return [...dimSegs(d), ...closedSegs(textBox(d.text))]; },
-  bbox: e => { const d = dimParts(e); return bbPts([...d.lines.flat(), ...d.arrows.flat(), ...textBox(d.text)]); },
+  bbox: e => { const d = dimParts(e); return d.arcs.reduce((b, [c, r, a1, a2]) => bbUnion(b, arcBB(c, r, a1, a2)), bbPts([...d.lines.flat(), ...d.arrows.flat(), ...textBox(d.text)])); },
   hit(e, p) {
     const d = dimParts(e);
     if (G.pointInPoly(p, textBox(d.text))) return 0;
-    return Math.min(...d.lines.map(([a, b]) => G.dist(p, G.nearSeg(p, a, b).p)));
+    return Math.min(...dimSegs(d).map(q => G.dist(p, G.nearPrim(p, q))));
   },
-  snaps: e => { const d = dimParts(e); return { end: d.lines.flat(), nod: [e.p1, e.p2] }; },
-  grips: e => [e.p1, e.p2, e.p3],
-  moveGrip(e, i, p) { e[['p1', 'p2', 'p3'][i]] = p; },
+  snaps: e => { const d = dimParts(e); return { end: d.lines.flat(), nod: e.kind === 'ord' ? [e.p1] : e.kind === 'ang' ? [e.c] : [e.p1, e.p2] }; },
+  grips: e => dimGripKeys(e).map(k => e[k]),
+  moveGrip(e, i, p) {
+    const k = dimGripKeys(e)[i];
+    if (k === 'c') { const d = G.sub(p, e.c); for (const q of ['c', 'p1', 'p2', 'p3']) e[q] = G.add(e[q], d); if (e.l1) { e.l1 = e.l1.map(x => G.add(x, d)); e.l2 = e.l2.map(x => G.add(x, d)); } return; }
+    e[k] = p;
+  },
   xform(e, m) {
-    e.p1 = Mx.ap(m, e.p1); e.p2 = Mx.ap(m, e.p2); e.p3 = Mx.ap(m, e.p3);
+    for (const k of ['p1', 'p2', 'p3', 'c']) if (e[k]) e[k] = Mx.ap(m, e[k]);
+    if (e.l1) { e.l1 = e.l1.map(q => Mx.ap(m, q)); e.l2 = e.l2.map(q => Mx.ap(m, q)); }
     if (e.kind === 'lin') { const v = Mx.apV(m, P(Math.cos(e.rot), Math.sin(e.rot))); e.rot = Math.atan2(v.y, v.x); }
   },
   draw(c, e, R) {
     const d = dimParts(e);
     c.beginPath();
     for (const [a, b] of d.lines) { c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); }
+    for (const [q, r, a1, a2] of d.arcs) { c.moveTo(q.x + r * Math.cos(a1), q.y + r * Math.sin(a1)); c.arc(q.x, q.y, r, a1, a1 + G.sweep(a1, a2)); }
     c.stroke();
     c.beginPath();
     for (const [a, b, q] of d.arrows) { c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.lineTo(q.x, q.y); c.closePath(); }
@@ -446,7 +662,7 @@ TYPES.dim = {
     c.fill();
     drawText(c, R, d.text);
   },
-  props: [ro('Medida', e => dimParts(e).val),
+  props: [ro('Tipo', e => DIM_KINDS[e.kind] || e.kind, 'text'), ro('Medida', e => dimParts(e).val),
     { label: 'Estilo de cota', type: 'select', options: () => D().dimStyles.map(s => [s.name, s.name]), get: e => e.style || D().dimStyles[0].name, set: (e, v) => { e.style = v; } },
     { label: 'Texto (<> = medida)', type: 'text', get: e => e.text || '', set: (e, v) => { e.text = v; } }],
 };
@@ -473,9 +689,17 @@ TYPES.hatch = {
   },
   snaps: () => ({}),
   grips: e => { const b = bbPts(e.loops.flat()); return [P((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2)]; },
-  moveGrip(e, i, p) { const g = this.grips(e)[0], d = G.sub(p, g); e.loops = e.loops.map(l => l.map(q => G.add(q, d))); },
+  // _xf marca que el sombreado se ha transformado: si su contorno no cambió a la vez, pierde la asociatividad (document.js)
+  moveGrip(e, i, p) {
+    const g = this.grips(e)[0], d = G.sub(p, g);
+    e.loops = e.loops.map(l => l.map(q => G.add(q, d)));
+    if (e.seed) e.seed = G.add(e.seed, d);
+    e._xf = true;
+  },
   xform(e, m) {
     e.loops = e.loops.map(l => l.map(q => Mx.ap(m, q)));
+    if (e.seed) e.seed = Mx.ap(m, e.seed);
+    e._xf = true;
     const v = Mx.apV(m, P(1, 0)), r = G.deg(Math.atan2(v.y, v.x));
     e.angle = Mx.det(m) < 0 ? -(e.angle || 0) + r : (e.angle || 0) + r;
     e.scale = (e.scale || 1) * Mx.scaleOf(m);
@@ -503,6 +727,7 @@ TYPES.hatch = {
     sel('Patrón', () => Object.entries(PATTERNS).map(([k, v]) => [k, v.desc]), e => e.pattern, (e, v) => { e.pattern = v; }),
     num('Escala', e => e.scale || 1, (e, v) => { if (v > 0) e.scale = v; }),
     num('Ángulo (°)', e => e.angle || 0, (e, v) => { e.angle = v; }),
+    { label: 'Asociativo', type: 'bool', get: e => !!e.assoc, set: (e, v) => { if (!v) { delete e.assoc; delete e.seed; } } },
     ro('Contornos', e => e.loops.length, 'int'),
     ro('Área', e => hatchArea(e)),
   ],
@@ -531,9 +756,14 @@ TYPES.insert = {
     e.sy = -Math.sin(th) * N[2] + Math.cos(th) * N[3];
   },
   draw() { /* lo dibuja render.js expandiendo blockEnts */ },
-  props: [ro('Nombre', e => e.name, 'text'), ...ptProps('Posición', 'p'),
-    num('Escala', e => Math.abs(e.sx ?? 1), (e, v) => { if (v > 0) { e.sx = Math.sign(e.sx || 1) * v; e.sy = Math.sign(e.sy || 1) * v; } }),
-    angp('Rotación', e => e.rot || 0, (e, v) => { e.rot = v; })],
+  props: e => {
+    const base = [ro('Nombre', x => x.name, 'text'), ...ptProps('Posición', 'p'),
+      num('Escala', x => Math.abs(x.sx ?? 1), (x, v) => { if (v > 0) { x.sx = Math.sign(x.sx || 1) * v; x.sy = Math.sign(x.sy || 1) * v; } }),
+      angp('Rotación', x => x.rot || 0, (x, v) => { x.rot = v; })];
+    const defs = blockAttdefs(e.name);
+    if (!defs.length) return base;
+    return [...base, { sec: 'Atributos' }, ...defs.map(a => ({ label: a.tag, type: 'text', get: x => attVal(x, a), set: (x, v) => { x.attribs = { ...x.attribs, [a.tag]: v }; } }))];
+  },
 };
 
 // ---------- Ventana gráfica (espacio papel) ----------
@@ -560,6 +790,7 @@ TYPES.vport = {
     num('Centro modelo X', e => e.cx, (e, v) => { e.cx = v; }),
     num('Centro modelo Y', e => e.cy, (e, v) => { e.cy = v; }),
     ro('Ancho', e => e.p2.x - e.p1.x), ro('Alto', e => e.p2.y - e.p1.y),
+    ro('Capas inutilizadas', e => (e.frozen?.length ? e.frozen.join(', ') : '—'), 'text'),
   ],
 };
 
@@ -591,10 +822,14 @@ export function crosses(e, r) {
   return (T.selPrims ? T.selPrims(e) : T.prims(e)).some(q => G.primCrossRect(q, r));
 }
 
+export const propsOf = e => { const p = TYPES[e.type].props; return typeof p === 'function' ? p(e) : p; };
+
 export function describe(e) {
   const T = TYPES[e.type], out = [`${T.name}  Capa: "${e.layer}"`];
-  for (const pr of T.props) {
-    const v = pr.get(e);
+  for (const pr of propsOf(e)) {
+    if (pr.sec) { out.push(`  ${pr.sec}:`); continue; }
+    let v = pr.get(e);
+    if (pr.type === 'mtext') v = String(v).replace(/\n/g, ' ¶ ');
     out.push(`   ${pr.label}: ${pr.type === 'num' ? fmt(v, 4) : pr.type === 'ang' || pr.type === 'deg' ? fmt(pr.type === 'ang' ? G.deg(G.normAng(v)) : v, 2) + '°' : v}`);
   }
   return out;

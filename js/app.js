@@ -5,7 +5,7 @@ import { View, VpView } from './view.js';
 import { SpatialIndex } from './spatial.js';
 import { Renderer } from './render.js';
 import { Snapper } from './snap.js';
-import { ENV, hitDist, inWindow, crosses, gripsOf, STD_SCALES, scaleLabel } from './entities.js';
+import { ENV, hitDist, inWindow, crosses, gripsOf, STD_SCALES, scaleLabel, blockAttdefs } from './entities.js';
 import { findCmd, suggest } from './commands.js';
 import { UI } from './ui.js';
 import { IO } from './io.js';
@@ -68,7 +68,7 @@ class App {
 
   // ---------- Estado ----------
   onDocChange(kind) {
-    if (kind === 'reset') { this.sel.clear(); if (this.tab !== 'model' || this.vpActive) { this.tab = 'model'; this.vpActive = null; this.view = this.modelView; } }
+    if (kind === 'reset') { this.sel.clear(); if (this.tab !== 'model' || this.vpActive) { this.tab = 'model'; this.vpActive = null; this.doc.activeVp = null; this.view = this.modelView; } }
     for (const id of this.sel) if (!this.doc.get(id)) this.sel.delete(id);
     this.renderer.invalidate();
     this.ui.refresh();
@@ -101,7 +101,7 @@ class App {
   switchTab(t) {
     if (t !== 'model' && !this.doc.layouts[t]) t = 'model';
     if (this.cmdPromise) this.cancelCurrent();
-    this.tab = t; this.vpActive = null;
+    this.tab = t; this.vpActive = null; this.doc.activeVp = null;
     this.doc.space = t === 'model' ? 'model' : t;
     this.view = t === 'model' ? this.modelView : this.paperView;
     this.setViewSize(this.modelView.w, this.modelView.h);
@@ -114,7 +114,7 @@ class App {
     const ents = this.doc.layouts[this.tab].ents;
     vp = vp || ents.find(e => e.type === 'vport' && this.doc.visible(e)) || ents.find(e => e.type === 'vport');
     if (!vp) return this.print('La presentación no tiene ventanas gráficas. Cree una con MVIEW.');
-    this.vpActive = vp.id;
+    this.vpActive = vp.id; this.doc.activeVp = vp.id;
     this.doc.space = 'model';
     this.view = new VpView(this.paperView, vp);
     this.sel.clear(); this.acquired = [];
@@ -122,7 +122,7 @@ class App {
   }
   pspace() {
     if (this.tab === 'model' || !this.vpActive) return;
-    this.vpActive = null;
+    this.vpActive = null; this.doc.activeVp = null;
     this.doc.space = this.tab;
     this.view = this.paperView;
     this.sel.clear(); this.acquired = [];
@@ -141,28 +141,39 @@ class App {
     const vp = doc.add({ type: 'vport', p1: G.P(rc.x1, rc.y1), p2: G.P(rc.x2, rc.y2), cx: b ? (b.x1 + b.x2) / 2 : 0, cy: b ? (b.y1 + b.y2) / 2 : 0, s, layer: 'Ventanas', color: 'BYLAYER', ltype: 'BYLAYER', lw: 'BYLAYER' }, lay.ents);
     return { ...vp, label: scaleLabel(s) };
   }
-  // Nueva presentación con marco, cajetín y una ventana gráfica ajustada al modelo
+  // Bloque del cajetín (140 × 24 mm, punto base en la esquina inferior izquierda) con atributos editables
+  ensureTitleBlock() {
+    const doc = this.doc, name = 'CAJETIN';
+    if (doc.blocks[name]) return name;
+    const P = G.P, tw = 140, th = 24, small = 1.8;
+    const base = { layer: '0', color: 'BYBLOCK', ltype: 'BYBLOCK', lw: 'BYBLOCK' };
+    const label = (x, y, text) => ({ ...base, type: 'text', p: P(x, y), h: small, rot: 0, text, style: 'Standard' });
+    const att = (x, y, h, tag, prompt, def) => ({ ...base, type: 'attdef', p: P(x, y), h, rot: 0, align: 'l', tag, prompt, def, style: 'Standard' });
+    doc.defineBlock(name, P(0, 0), [
+      { ...base, type: 'pline', pts: [P(0, 0), P(tw, 0), P(tw, th), P(0, th)], closed: true, lw: 0.35 },
+      { ...base, type: 'line', p1: P(0, th / 2), p2: P(tw, th / 2) },
+      { ...base, type: 'line', p1: P(tw * 0.62, 0), p2: P(tw * 0.62, th / 2) },
+      { ...base, type: 'line', p1: P(tw * 0.81, 0), p2: P(tw * 0.81, th / 2) },
+      label(2, th - 3.2, 'TÍTULO'), label(2, th / 2 - 3.2, 'PRESENTACIÓN'),
+      label(tw * 0.62 + 2, th / 2 - 3.2, 'ESCALA'), label(tw * 0.81 + 2, th / 2 - 3.2, 'FECHA'),
+      att(2, th / 2 + 2.5, 4, 'TITULO', 'Título del plano', 'Dibujo'),
+      att(2, 3, 3, 'PRESENTACION', 'Nombre de la presentación', ''),
+      att(tw * 0.62 + 2, 3, 3, 'ESCALA', 'Escala', '1:1'),
+      att(tw * 0.81 + 2, 3, 2.6, 'FECHA', 'Fecha', ''),
+    ]);
+    return name;
+  }
+  // Nueva presentación con marco, cajetín (bloque con atributos) y una ventana gráfica ajustada al modelo
   createLayout(name, paper = 'A4') {
     const doc = this.doc, lay = doc.addLayout(name, paper), idx = doc.layouts.length - 1, W = lay.w, H = lay.h, m = 10;
     const P = G.P, add = e => doc.add({ layer: '0', color: 'BYLAYER', ltype: 'BYLAYER', lw: 'BYLAYER', ...e }, lay.ents);
     add({ type: 'pline', pts: [P(m, m), P(W - m, m), P(W - m, H - m), P(m, H - m)], closed: true, lw: 0.5 });
-    const tw = Math.min(140, W - 2 * m), th = 24, tx = W - m - tw, ty = m;
-    add({ type: 'pline', pts: [P(tx, ty), P(tx + tw, ty), P(tx + tw, ty + th), P(tx, ty + th)], closed: true, lw: 0.35 });
-    add({ type: 'line', p1: P(tx, ty + th / 2), p2: P(tx + tw, ty + th / 2) });
-    add({ type: 'line', p1: P(tx + tw * 0.62, ty), p2: P(tx + tw * 0.62, ty + th / 2) });
-    add({ type: 'line', p1: P(tx + tw * 0.81, ty), p2: P(tx + tw * 0.81, ty + th / 2) });
+    const tw = 140, th = 24, tx = W - m - tw, ty = m;
     const vp = this.addViewport({ x1: m + 4, y1: ty + th + 4, x2: W - m - 4, y2: H - m - 4 }, idx);
-    const small = 1.8;
-    add({ type: 'text', p: P(tx + 2, ty + th - 3.2), h: small, rot: 0, text: 'TÍTULO' });
-    add({ type: 'text', p: P(tx + 2, ty + th / 2 + 2.5), h: 4, rot: 0, text: doc.name });
-    add({ type: 'text', p: P(tx + 2, ty + th / 2 - 3.2), h: small, rot: 0, text: 'PRESENTACIÓN' });
-    add({ type: 'text', p: P(tx + 2, ty + 3), h: 3, rot: 0, text: name });
-    add({ type: 'text', p: P(tx + tw * 0.62 + 2, ty + th / 2 - 3.2), h: small, rot: 0, text: 'ESCALA' });
-    add({ type: 'text', p: P(tx + tw * 0.62 + 2, ty + 3), h: 3, rot: 0, text: vp.label });
-    add({ type: 'text', p: P(tx + tw * 0.81 + 2, ty + th / 2 - 3.2), h: small, rot: 0, text: 'FECHA' });
-    add({ type: 'text', p: P(tx + tw * 0.81 + 2, ty + 3), h: 2.6, rot: 0, text: new Date().toLocaleDateString('es') });
+    add({ type: 'insert', name: this.ensureTitleBlock(), p: P(tx, ty), sx: 1, sy: 1, rot: 0,
+      attribs: { TITULO: doc.name, PRESENTACION: name, ESCALA: vp.label, FECHA: new Date().toLocaleDateString('es') } });
     this.switchTab(idx);
-    this.print(`Presentación "${name}" creada (${paper}, ventana a escala ${vp.label}). Doble clic dentro de la ventana para trabajar en el modelo.`);
+    this.print(`Presentación "${name}" creada (${paper}, ventana a escala ${vp.label}). Doble clic dentro de la ventana para trabajar en el modelo; doble clic en el cajetín para editar sus datos.`);
     return lay;
   }
   deleteLayout(i) {
@@ -189,6 +200,7 @@ class App {
     this.ui.updateStatus(); this.updateMouse(); this.renderer.invalidate();
   }
   afterUndo() {
+    this.doc.activeVp = this.vpActive;
     if (this.tab !== 'model' && !this.doc.layouts[this.tab]) this.switchTab('model');
     else if (this.vpActive && !this.doc.get(this.vpActive)) this.pspace();
     else if (this.vpActive) this.view = new VpView(this.paperView, this.doc.get(this.vpActive));
@@ -377,10 +389,20 @@ class App {
     const id = this.pickId(this.mouse.sx, this.mouse.sy);
     if (!id) return;
     const ent = this.doc.get(id);
+    const edit = fn => { this.doc.begin(); this.doc.modify(id, fn); this.doc.commit(); };
     if (ent.type === 'text' || ent.type === 'dim') {
       const v = await this.ui.prompt('Editar texto', ent.type === 'text' ? 'Contenido' : 'Texto de cota (<> = medida, vacío = automático)', ent.text || '');
       if (v === null || (ent.type === 'text' && !v)) return;
-      this.doc.begin(); this.doc.modify(id, x => { x.text = v; }); this.doc.commit();
+      edit(x => { x.text = v; });
+    } else if (ent.type === 'mtext') {
+      const v = await this.ui.editMText(ent.text, 'Editar texto de líneas múltiples');
+      if (v) edit(x => { x.text = v; });
+    } else if (ent.type === 'insert' && blockAttdefs(ent.name).length) {
+      const v = await this.ui.editAttribs(ent);
+      if (v) edit(x => { x.attribs = v; });
+    } else if (ent.type === 'attdef') {
+      const v = await this.ui.editAttdef(ent);
+      if (v) edit(x => Object.assign(x, v));
     } else {
       this.sel.clear(); this.sel.add(id); this.selChanged(); this.ui.showPalette('props');
     }
@@ -711,7 +733,7 @@ class App {
         return r.resolve(v, text);
       }
       case 'string': return r.resolve(raw === '' && def !== undefined ? def : raw, raw);
-      case 'keyword': if (!text && def !== undefined) return r.resolve(def, ''); return this.print('Opción no válida.', 'err');
+      case 'keyword': if (!text && empty()) return; return this.print('Opción no válida.', 'err');
       case 'select': {
         if (!text) return r.resolve([...r.set], '');
         if (/^(todo|t|all)$/i.test(text)) { this.selectAll(); return; }

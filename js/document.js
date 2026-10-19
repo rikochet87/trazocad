@@ -1,10 +1,11 @@
-// Documento: capas, espacio modelo, presentaciones, bloques, estilos, deshacer/rehacer y serialización.
+// Documento: capas, espacio modelo, presentaciones, bloques, estilos, deshacer/rehacer, sombreados asociativos y serialización.
 import { bboxOf, bbUnion, LTYPES, DEFAULT_DIMSTYLE } from './entities.js';
+import { assocLoops } from './hatch.js';
 
 export const DEFAULT_SETTINGS = {
   gridX: 10, snapX: 10, polarInc: 15, ltscale: 1, coordDec: 4,
   textH: 2.5, filletR: 0, chamferA: 0, chamferB: 0, offsetD: 10, lastRadius: 10, polySides: 4,
-  hatchPat: 'ANSI31', hatchScale: 1, hatchAng: 0, iso: false, isoPlane: 'top',
+  hatchPat: 'ANSI31', hatchScale: 1, hatchAng: 0, hatchAssoc: true, iso: false, isoPlane: 'top', splineMethod: 'fit',
 };
 export const PAPERS = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841], Carta: [279.4, 215.9], Oficio: [355.6, 215.9] };
 
@@ -29,6 +30,8 @@ export class Doc {
     this.cur = { layer: '0', color: 'BYLAYER', ltype: 'BYLAYER', lw: 'BYLAYER', textStyle: 'Standard', dimStyle: 'ISO-25' };
     this.settings = { ...DEFAULT_SETTINGS };
     this.undoS = []; this.redoS = []; this.tx = null;
+    this.touched = new Set(); // entidades añadidas, modificadas o borradas en la transacción
+    this.activeVp = null;     // ventana gráfica por la que se trabaja (MSPACE): sus capas inutilizadas no se ven
     this.dirty = false;
     this.name = 'Dibujo1';
     this.ver++;
@@ -54,6 +57,7 @@ export class Doc {
   begin() { if (this.tx) { this.tx.depth++; return; } this.tx = { snap: this.state(), depth: 1 }; }
   commit() {
     if (!this.tx || --this.tx.depth > 0) return;
+    this.syncAssoc();
     const s = this.tx.snap;
     this.tx = null;
     if (s !== this.state()) {
@@ -66,12 +70,12 @@ export class Doc {
   }
   undo() {
     if (!this.undoS.length) return false;
-    this.redoS.push(this.state()); this.loadState(this.undoS.pop());
+    this.redoS.push(this.state()); this.loadState(this.undoS.pop()); this.touched.clear();
     this.dirty = true; this.emit('change'); return true;
   }
   redo() {
     if (!this.redoS.length) return false;
-    this.undoS.push(this.state()); this.loadState(this.redoS.pop());
+    this.undoS.push(this.state()); this.loadState(this.redoS.pop()); this.touched.clear();
     this.dirty = true; this.emit('change'); return true;
   }
 
@@ -82,7 +86,9 @@ export class Doc {
     if (e.type === 'text') e.style ??= this.cur.textStyle;
     if (e.type === 'dim') e.style ??= this.cur.dimStyle;
     if (!this.layers.some(l => l.name === e.layer)) e.layer = '0';
+    if (e.type === 'mtext' || e.type === 'attdef') e.style ??= this.cur.textStyle;
     target.push(e); this.byId.set(e.id, e);
+    this.touched.add(e.id);
     this.changed();
     return e;
   }
@@ -95,16 +101,47 @@ export class Doc {
       if (i >= 0) { arr.splice(i, 1); break; }
     }
     this.byId.delete(id);
+    this.touched.add(id);
     this.changed();
   }
-  modify(id, fn) { const e = this.byId.get(id); if (e) { fn(e); this.changed(); } return e; }
+  modify(id, fn) { const e = this.byId.get(id); if (e) { fn(e); this.touched.add(id); this.changed(); } return e; }
+
+  // Sombreados asociativos: si cambió alguna entidad de su contorno se recalculan; si el contorno se borró,
+  // o el sombreado se movió sin su contorno, dejan de ser asociativos.
+  syncAssoc() {
+    const t = this.touched;
+    this.touched = new Set();
+    if (!t.size) return;
+    const drop = h => { delete h.assoc; delete h.seed; };
+    for (const arr of [this.model, ...this.layouts.map(l => l.ents)]) {
+      for (const h of arr) {
+        if (h.type !== 'hatch') continue;
+        const moved = h._xf;
+        delete h._xf;
+        if (!h.assoc) continue;
+        const srcs = h.assoc.map(id => this.byId.get(id));
+        if (srcs.some(x => !x)) { drop(h); continue; }
+        if (!h.assoc.some(id => t.has(id))) { if (moved) drop(h); continue; }
+        const r = assocLoops(h, srcs);
+        if (!r) { drop(h); continue; }
+        h.loops = [...r.loops]; h.assoc = r.ids;
+        if (r.seed) h.seed = r.seed;
+      }
+    }
+  }
   changed() { this.ver++; this.dirty = true; this.emit('change'); }
 
   // ----- Capas, estilos y bloques -----
   layer(name) { return this.layers.find(l => l.name === name) || this.layers[0]; }
   addLayer(name, color) { const l = newLayer(name, color); this.layers.push(l); this.changed(); return l; }
   ensureLayer(name, color) { return this.layers.find(l => l.name === name) || this.addLayer(name, color); }
-  visible(e) { return this.layer(e.layer).on; }
+  visible(e) {
+    if (!this.layer(e.layer).on) return false;
+    const vp = this.activeVp != null ? this.byId.get(this.activeVp) : null;
+    return !vp?.frozen?.includes(e.layer);
+  }
+  // Visibilidad dentro de una ventana gráfica concreta (capas activadas y no inutilizadas en ella)
+  visibleIn(vp) { return e => this.layer(e.layer).on && !vp.frozen?.includes(e.layer); }
   locked(e) { return this.layer(e.layer).lock; }
   textStyle(name) { return this.textStyles.find(s => s.name === name) || this.textStyles[0]; }
   dimStyle(name) { return this.dimStyles.find(s => s.name === name) || this.dimStyles[0]; }
@@ -151,7 +188,7 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 2, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      app: 'TrazoCAD', version: 3, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
       textStyles: this.textStyles, dimStyles: this.dimStyles, cur: this.cur, settings: this.settings, nextId: this.nextId,
     };
   }

@@ -1,7 +1,7 @@
 // Interfaz: cinta de opciones, paletas (propiedades y capas), barra de estado, línea de comandos y diálogos.
 import { icon } from './icons.js';
 import { CMDS } from './commands.js';
-import { TYPES, LTYPES, LWEIGHTS, COLORS, FONTS, ARROWS, DEFAULT_DIMSTYLE, fmt, bboxOf, bbUnion } from './entities.js';
+import { TYPES, LTYPES, LWEIGHTS, COLORS, FONTS, ARROWS, DEFAULT_DIMSTYLE, fmt, bboxOf, bbUnion, propsOf, blockAttdefs, attVal } from './entities.js';
 import { OSNAP_MODES } from './snap.js';
 import { PATTERNS } from './patterns.js';
 import { PAPERS } from './document.js';
@@ -24,21 +24,22 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 
 const RIBBON = [
   { tab: 'Inicio', groups: [
-    { name: 'Dibujo', items: [['LINE', 'Línea', 'line'], ['PLINE', 'Polilínea', 'pline'], ['CIRCLE', 'Círculo', 'circle'], ['ARC', 'Arco', 'arc'], ['RECTANG', 'Rectángulo', 'rect'], ['POLYGON', 'Polígono', 'polygon'], ['ELLIPSE', 'Elipse', 'ellipse'], ['HATCH', 'Sombreado', 'hatch']] },
+    { name: 'Dibujo', items: [['LINE', 'Línea', 'line'], ['PLINE', 'Polilínea', 'pline'], ['CIRCLE', 'Círculo', 'circle'], ['ARC', 'Arco', 'arc'], ['RECTANG', 'Rectángulo', 'rect'], ['POLYGON', 'Polígono', 'polygon'], ['ELLIPSE', 'Elipse', 'ellipse'], ['SPLINE', 'Spline', 'spline'], ['HATCH', 'Sombreado', 'hatch']] },
     { name: 'Modificar', items: [['MOVE', 'Desplazar', 'move'], ['COPY', 'Copiar', 'copy'], ['ROTATE', 'Girar', 'rotate'], ['SCALE', 'Escala', 'scale'], ['MIRROR', 'Simetría', 'mirror'], ['OFFSET', 'Desfase', 'offset'], ['TRIM', 'Recortar', 'trim'], ['EXTEND', 'Alargar', 'extend'], ['FILLET', 'Empalme', 'fillet'], ['CHAMFER', 'Chaflán', 'chamfer'], ['BREAK', 'Partir', 'break'], ['LENGTHEN', 'Longitud', 'lengthen'], ['STRETCH', 'Estirar', 'stretch'], ['ARRAYRECT', 'Matriz', 'arrayrect'], ['ARRAYPOLAR', 'M. polar', 'arraypolar'], ['EXPLODE', 'Descomp.', 'explode'], ['JOIN', 'Unir', 'join'], ['ERASE', 'Borrar', 'erase']] },
-    { name: 'Anotación', items: [['TEXT', 'Texto', 'text'], ['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMRADIUS', 'Radio', 'dimrad']] },
-    { name: 'Bloque', items: [['BLOCK', 'Crear', 'block'], ['INSERT', 'Insertar', 'insert']] },
+    { name: 'Anotación', items: [['MTEXT', 'Texto', 'mtext'], ['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad']] },
+    { name: 'Bloque', items: [['BLOCK', 'Crear', 'block'], ['INSERT', 'Insertar', 'insert'], ['ATTDEF', 'Atributo', 'attdef']] },
     { name: 'Capas', custom: 'layers' },
     { name: 'Propiedades', custom: 'props' },
     { name: 'Utilidades', items: [['DIST', 'Distancia', 'dist'], ['AREA', 'Área', 'area'], ['LIST', 'Lista', 'list']] },
   ] },
   { tab: 'Insertar', groups: [
     { name: 'Bloque', items: [['BLOCK', 'Crear bloque', 'block'], ['INSERT', 'Insertar', 'insert'], ['EXPLODE', 'Descomponer', 'explode'], ['PURGE', 'Limpiar', 'trash']] },
+    { name: 'Atributos', items: [['ATTDEF', 'Definir atributo', 'attdef'], ['ATTEDIT', 'Editar atributos', 'attedit']] },
     { name: 'Importar', items: [['OPEN', 'Abrir DXF', 'dxf'], ['PASTECLIP', 'Pegar', 'copy']] },
   ] },
   { tab: 'Anotar', groups: [
-    { name: 'Texto', items: [['TEXT', 'Texto', 'text'], ['STYLE', 'Estilo de texto', 'textstyle']] },
-    { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
+    { name: 'Texto', items: [['MTEXT', 'Líneas múltiples', 'mtext'], ['TEXT', 'Una línea', 'text'], ['STYLE', 'Estilo de texto', 'textstyle']] },
+    { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMORDINATE', 'Coordenada', 'dimord'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
     { name: 'Sombreado', items: [['HATCH', 'Sombreado', 'hatch']] },
   ] },
   { tab: 'Vista', groups: [
@@ -48,7 +49,7 @@ const RIBBON = [
   ] },
   { tab: 'Presentación', groups: [
     { name: 'Presentación', items: [['!newlayout', 'Nueva', 'layout'], ['PAGESETUP', 'Configurar página', 'page'], ['!model', 'Modelo', 'model']] },
-    { name: 'Ventanas gráficas', items: [['MVIEW', 'Ventana', 'vport'], ['MSPACE', 'Espacio modelo', 'mspace'], ['PSPACE', 'Espacio papel', 'page']] },
+    { name: 'Ventanas gráficas', items: [['MVIEW', 'Ventana', 'vport'], ['MSPACE', 'Espacio modelo', 'mspace'], ['PSPACE', 'Espacio papel', 'page'], ['VPLAYER', 'Capas ventana', 'freeze']] },
     { name: 'Trazar', items: [['PLOT', 'Imprimir', 'print'], ['SVGOUT', 'SVG', 'svg'], ['PNGOUT', 'PNG', 'png']] },
   ] },
   { tab: 'Salida', groups: [
@@ -323,10 +324,14 @@ export class UI {
     if (sel.length === 1) {
       const e = sel[0];
       body.append(h('div', { class: 'prop-sec' }, 'Geometría'));
-      for (const pr of TYPES[e.type].props) {
+      for (const pr of propsOf(e)) {
+        if (pr.sec) { body.append(h('div', { class: 'prop-sec' }, pr.sec)); continue; }
         const raw = pr.get(e);
         let input;
-        if (pr.ro) {
+        if (pr.type === 'mtext') {
+          input = h('button', { class: 'btn prop-btn', title: raw, onclick: async () => { const v = await this.editMText(e.text, 'Editar texto de líneas múltiples'); if (v) this.setGeom(e.id, pr, v); } },
+            (String(raw).split('\n')[0] || '…').slice(0, 28) + (String(raw).length > 28 || String(raw).includes('\n') ? '…' : ''));
+        } else if (pr.ro) {
           const txt = pr.type === 'num' ? fmt(raw, 4) : pr.type === 'deg' ? fmt(raw, 2) + '°' : String(raw);
           input = h('span', { class: 'prop-ro' }, txt);
         } else if (pr.type === 'bool') {
@@ -391,8 +396,10 @@ export class UI {
       } }, h('span', { html: icon('trash', 16) }), 'Eliminar'),
       h('button', { class: 'btn', onclick: () => { if (this.selLayer) { doc.cur.layer = this.selLayer; this.refresh(); } } }, h('span', { html: icon('check', 16) }), 'Actual'));
     body.append(bar);
-    const list = h('div', { class: 'lay-list' });
-    list.append(h('div', { class: 'lay-row head' }, h('span', {}, ''), h('span', {}, 'Nombre'), h('span', { title: 'Activada' }, 'Act.'), h('span', { title: 'Bloqueada' }, 'Bloq.'), h('span', { title: 'Color' }, 'Col.'), h('span', {}, 'Tipo / Grosor')));
+    const vp = app.vpActive ? doc.get(app.vpActive) : null;
+    const list = h('div', { class: 'lay-list' + (vp ? ' vp' : '') });
+    list.append(h('div', { class: 'lay-row head' }, h('span', {}, ''), h('span', {}, 'Nombre'), h('span', { title: 'Activada' }, 'Act.'), h('span', { title: 'Bloqueada' }, 'Bloq.'),
+      vp ? h('span', { title: 'Inutilizada en la ventana gráfica actual' }, 'Vent.') : null, h('span', { title: 'Color' }, 'Col.'), h('span', {}, 'Tipo / Grosor')));
     for (const l of doc.layers) {
       let count = 0;
       for (const e of doc.allEnts()) if (e.layer === l.name) count++;
@@ -412,11 +419,19 @@ export class UI {
           } }, l.name),
         h('button', { class: 'ib' + (l.on ? '' : ' off'), title: l.on ? 'Desactivar' : 'Activar', html: icon(l.on ? 'eye' : 'eyeoff', 16), onclick: ev => { ev.stopPropagation(); tx(() => { l.on = !l.on; }); } }),
         h('button', { class: 'ib' + (l.lock ? ' off' : ''), title: l.lock ? 'Desbloquear' : 'Bloquear', html: icon(l.lock ? 'lock' : 'unlock', 16), onclick: ev => { ev.stopPropagation(); tx(() => { l.lock = !l.lock; }); } }),
+        vp ? (() => {
+          const fz = !!vp.frozen?.includes(l.name);
+          return h('button', { class: 'ib' + (fz ? ' frz' : ''), title: fz ? 'Reutilizar en esta ventana' : 'Inutilizar en esta ventana', html: icon(fz ? 'freeze' : 'sun', 16), onclick: ev => {
+            ev.stopPropagation();
+            tx(() => doc.modify(vp.id, v => { const set = new Set(v.frozen || []); if (fz) set.delete(l.name); else set.add(l.name); if (set.size) v.frozen = [...set]; else delete v.frozen; }));
+          } });
+        })() : null,
         h('button', { class: 'lay-color', title: 'Cambiar color', style: `background:${l.color}`, onclick: async ev => { ev.stopPropagation(); const c = await this.pickColor(l.color); if (c) tx(() => { l.color = c; }); } }),
         h('span', { class: 'lay-lt' }, lt, lw));
       list.append(row);
     }
-    body.append(list, h('p', { class: 'hint' }, 'Doble clic en un nombre: capa actual. Clic derecho: renombrar. Los objetos nuevos se dibujan en la capa actual.'));
+    body.append(list, h('p', { class: 'hint' }, 'Doble clic en un nombre: capa actual. Clic derecho: renombrar. Los objetos nuevos se dibujan en la capa actual.' +
+      (vp ? ' La columna «Vent.» oculta la capa sólo en la ventana gráfica activa.' : app.tab !== 'model' ? ' Active una ventana gráfica (doble clic dentro) para inutilizar capas sólo en ella.' : '')));
   }
 
   updateTitle() {
@@ -529,9 +544,9 @@ export class UI {
       box.addEventListener('keydown', e => {
         e.stopPropagation();
         if (e.key === 'Escape') close(null);
-        if (e.key === 'Enter' && e.target.tagName === 'INPUT') { const p = buttons.find(b => b.primary); if (p) close(typeof p.value === 'function' ? p.value() : p.value); }
+        if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') { const p = buttons.find(b => b.primary); if (p) close(typeof p.value === 'function' ? p.value() : p.value); }
       });
-      setTimeout(() => (box.querySelector('input,select') || box.querySelector('.btn.primary'))?.focus(), 30);
+      setTimeout(() => (box.querySelector('textarea,input,select') || box.querySelector('.btn.primary'))?.focus(), 30);
     });
   }
   confirm(msg, okLabel = 'Aceptar') {
@@ -540,6 +555,35 @@ export class UI {
   prompt(title, label, value = '') {
     const inp = h('input', { type: 'text', value, class: 'full' });
     return this.modal(title, h('label', { class: 'fld' }, label, inp), [{ label: 'Cancelar', value: null }, { label: 'Aceptar', value: () => inp.value.trim(), primary: true }]);
+  }
+
+  // Editor de texto de líneas múltiples. Devuelve el texto (sin espacios finales) o null.
+  editMText(text = '', title = 'Texto de líneas múltiples') {
+    const ta = h('textarea', { class: 'mtext-edit', rows: 8, spellcheck: 'true' });
+    ta.value = text;
+    ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ta.closest('.modal').querySelector('.btn.primary').click(); } });
+    const box = h('div', {}, ta, h('p', { class: 'hint' }, 'Intro: nueva línea · Ctrl+Intro: aceptar. Las líneas se ajustan a la anchura del texto.'));
+    setTimeout(() => ta.focus(), 40);
+    return this.modal(title, box, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', value: () => ta.value.replace(/\s+$/, ''), primary: true }]);
+  }
+
+  // Valores de los atributos de una referencia a bloque. Devuelve {ETIQUETA: valor} o null.
+  editAttribs(ins) {
+    const defs = blockAttdefs(ins.name), inputs = {};
+    const box = h('div', { class: 'grid2' }, ...defs.map(a => {
+      inputs[a.tag] = h('input', { type: 'text', value: attVal(ins, a) });
+      return h('label', { class: 'fld' }, `${a.prompt || a.tag} (${a.tag})${a.invisible ? ' · invisible' : ''}`, inputs[a.tag]);
+    }));
+    return this.modal(`Atributos · ${ins.name}`, box, [{ label: 'Cancelar', value: null },
+      { label: 'Aceptar', value: () => Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value])), primary: true }]);
+  }
+
+  // Etiqueta, solicitud y valor por defecto de una definición de atributo
+  editAttdef(a) {
+    const tag = h('input', { type: 'text', value: a.tag }), pr = h('input', { type: 'text', value: a.prompt || '' }), dv = h('input', { type: 'text', value: a.def || '' });
+    const box = h('div', { class: 'grid2' }, h('label', { class: 'fld' }, 'Etiqueta', tag), h('label', { class: 'fld' }, 'Solicitud', pr), h('label', { class: 'fld' }, 'Valor por defecto', dv));
+    return this.modal('Editar definición de atributo', box, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', primary: true,
+      value: () => { const t = tag.value.trim().toUpperCase().replace(/\s+/g, '_'); return t ? { tag: t, prompt: pr.value, def: dv.value } : null; } }]);
   }
 
   openSettings() {
@@ -660,9 +704,9 @@ export class UI {
     doc.begin();
     doc[listKey] = work;
     doc.cur[curKey] = current;
-    const typ = listKey === 'textStyles' ? 'text' : 'dim';
-    for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (e.type === typ && !names.has(e.style)) e.style = work[0].name;
-    if (typ === 'text') for (const d of doc.dimStyles) if (!names.has(d.textStyle)) d.textStyle = work[0].name;
+    const typs = listKey === 'textStyles' ? ['text', 'mtext', 'attdef'] : ['dim'];
+    for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (typs.includes(e.type) && !names.has(e.style)) e.style = work[0].name;
+    if (listKey === 'textStyles') for (const d of doc.dimStyles) if (!names.has(d.textStyle)) d.textStyle = work[0].name;
     for (const b of Object.values(doc.blocks)) b.ver = (b.ver || 0) + 1;
     doc.changed();
     doc.commit();
@@ -691,15 +735,16 @@ export class UI {
         { key: 'arrow', label: 'Tipo de flecha', options: Object.entries(ARROWS) },
         { key: 'textStyle', label: 'Estilo de texto', options: () => doc.textStyles.map(t => [t.name, t.name]) },
         { key: 'gap', label: 'Separación del texto' }, { key: 'exo', label: 'Desfase desde origen' },
-        { key: 'exe', label: 'Prolongación línea ref.' }, { key: 'dec', label: 'Decimales' },
+        { key: 'exe', label: 'Prolongación línea ref.' }, { key: 'dec', label: 'Decimales' }, { key: 'adec', label: 'Decimales angulares' },
         { key: 'scale', label: 'Escala global' }, { key: 'suffix', label: 'Sufijo (p. ej. mm)', type: 'text' },
       ],
       preview: s => {
         const name = '__prev__', saved = doc.dimStyles;
         doc.dimStyles = [{ ...DEFAULT_DIMSTYLE, ...s, name }];
-        const ents = [{ type: 'line', p1: G.P(0, 0), p2: G.P(30, 0) }, { type: 'line', p1: G.P(30, 0), p2: G.P(30, 15) },
+        const ents = [{ type: 'line', p1: G.P(0, 0), p2: G.P(30, 0) }, { type: 'line', p1: G.P(30, 0), p2: G.P(30, 15) }, { type: 'line', p1: G.P(0, 0), p2: G.P(30, 15) },
           { type: 'dim', kind: 'lin', p1: G.P(0, 0), p2: G.P(30, 0), p3: G.P(15, -8), rot: 0, style: name },
-          { type: 'dim', kind: 'lin', p1: G.P(30, 0), p2: G.P(30, 15), p3: G.P(38, 7), rot: Math.PI / 2, style: name }]
+          { type: 'dim', kind: 'lin', p1: G.P(30, 0), p2: G.P(30, 15), p3: G.P(38, 7), rot: Math.PI / 2, style: name },
+          { type: 'dim', kind: 'ang', c: G.P(0, 0), p1: G.P(30, 0), p2: G.P(30, 15), p3: G.P(16, 4), style: name }]
           .map(e => ({ layer: '0', color: '#ffffff', ltype: 'BYLAYER', lw: 'BYLAYER', ...e }));
         const cv = this.thumb(ents, 260, 140, 0.08);
         doc.dimStyles = saved;
@@ -747,6 +792,16 @@ export class UI {
         <li>Pestañas <b>Modelo / Presentación</b> abajo a la izquierda; <b>+</b> crea una presentación con marco, cajetín y una ventana gráfica a escala estándar.</li>
         <li>Doble clic dentro de una ventana gráfica: trabaja en el modelo a través de ella (zoom y encuadre cambian su vista). Doble clic fuera: vuelve al papel.</li>
         <li>La escala de la ventana se cambia en la paleta de Propiedades. Imprimir, SVG y PNG de una presentación salen a escala real en milímetros.</li>
+      </ul>
+      <h4>Novedades de la v0.3</h4>
+      <ul>
+        <li><b>Sombreado asociativo</b>: al modificar el contorno (pinzamientos, desplazar, estirar…) el sombreado se actualiza. Si se mueve el sombreado solo o se borra el contorno, deja de ser asociativo.</li>
+        <li><b>Atributos de bloque</b>: ATTDEF define textos variables; al insertar el bloque se piden sus valores. Doble clic en la referencia (o ATTEDIT) para cambiarlos. El cajetín de las presentaciones es un bloque con atributos.</li>
+        <li><b>MTEXT</b> (<code>T</code>): párrafos con ajuste de palabras a una anchura y nueve justificaciones. Doble clic para editarlo.</li>
+        <li><b>SPLINE</b>: curvas por puntos de ajuste o por vértices de control, abiertas o cerradas.</li>
+        <li><b>DIMANGULAR</b> y <b>DIMORDINATE</b>: cotas angulares (dos líneas, arco, círculo o tres puntos) y de coordenadas X/Y.</li>
+        <li><b>Capas por ventana</b>: con una ventana gráfica activa, la columna «Vent.» de la paleta de capas (o VPLAYER) oculta capas sólo en esa ventana.</li>
+        <li><b>DXF</b>: las presentaciones, sus ventanas gráficas, los atributos, MTEXT y las splines se exportan e importan.</li>
       </ul>
       <h4>Isométrico</h4>
       <ul><li>Botón <b>ISO</b> o comando ISODRAFT. <kbd>F5</kbd> o <kbd>Ctrl+E</kbd> cambia de plano (izquierdo, superior, derecho). ELIPSE ofrece la opción Isocírculo.</li></ul>
