@@ -1,4 +1,4 @@
-# TrazoCAD — v0.6
+# TrazoCAD — v0.7
 
 Software de dibujo técnico 2D inspirado en AutoCAD, hecho desde cero como **PWA** (aplicación web instalable y sin conexión). JavaScript puro con módulos ES: sin dependencias ni compilación.
 
@@ -11,6 +11,21 @@ node serve.mjs          # http://localhost:8080
 ```
 
 Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta tal cual a cualquier hosting estático con HTTPS (GitHub Pages, Netlify, Hostinger…). En Chrome/Edge aparece el botón **Instalar**.
+
+## Novedades de la v0.7
+
+![Planta de una vivienda: muros de líneas múltiples con relleno, columnas en matriz asociativa (designada, con sus pinzamientos y propiedades), árboles en matriz a lo largo de un sendero, patio como región con la piscina restada, cotas de longitud de arco y de radio con recodo, entorno delimitado con XCLIP y planilla de locales](docs/vivienda.png)
+
+| Función | Detalle |
+|---|---|
+| **Líneas múltiples** (`MLINE`, `MLSTYLE`) | Elementos paralelos (muros, calzadas, cañerías) dibujados como una polilínea, con justificación superior, cero o inferior, escala, cierre y deshacer. Los estilos (ESTILOLM) definen cada elemento con su desfase, color y tipo de línea, remates de línea, de arco exterior o de arcos interiores al inicio y al final, ingletes visibles y relleno, con vista previa. Pinzamientos en los vértices, simetría que conserva el lado de cada elemento, propiedades editables (estilo, justificación, escala) y descomposición en líneas y arcos. MLINE y MLINESTYLE en DXF 2000 y 2007, de ida y vuelta |
+| **Matrices asociativas** (`ARRAYRECT`, `ARRAYPOLAR`, `ARRAYPATH`, `ARRAYEDIT`) | Las matrices son un único objeto que guarda sus objetos de origen y sus parámetros: recuento y separación de filas y columnas, número de elementos, ángulo a rellenar o entre elementos, girar los elementos. **ARRAYPATH** reparte los objetos a lo largo de una línea, arco, círculo, polilínea, spline o elipse, con separación fija (Medir) o en todo el recorrido (Dividir), alineados o no; si el recorrido cambia, la matriz lo sigue. Se editan con ARRAYEDIT, con pinzamientos cian (separaciones, recuento, ángulo) o en Propiedades; se desplazan, giran, escalan y copian enteras. Con ASOciativa = No se crean copias sueltas, como antes |
+| **Regiones y contornos** (`REGION`, `UNION`, `SUBTRACT`, `INTERSECT`, `BOUNDARY`) | REGION convierte círculos, polilíneas, elipses y splines cerradas, o cadenas de líneas y arcos que se cierran, en regiones. Las operaciones booleanas trabajan sobre la geometría exacta: los arcos siguen siendo arcos, los huecos se conservan y la unión de regiones separadas da un solo objeto. CONTORNO (`BO`) crea una polilínea con arcos o una región con el contorno que rodea un punto, con sus islas. Área y perímetro en Propiedades, ÁREA y campos; sirven de contorno de sombreado |
+| **Cotas de longitud de arco y de radio con recodo** (`DIMARC`, `DIMJOGGED`) | DIMARC acota la longitud de un arco o de un tramo de arco de polilínea, entera o parcial (dos puntos sobre el arco), con el símbolo de arco sobre el texto y líneas de referencia paralelas (menos de 90°) o radiales. DIMJOGGED acota el radio de arcos y círculos grandes con el centro desplazado y el recodo a 45°. Ambas son asociativas y se exportan en DXF 2007 como ARC_DIMENSION y LARGE_RADIAL_DIMENSION |
+| **Delimitación de referencias** (`XCLIP`, `XCLIPFRAME`) | Recorta referencias a bloques y referencias externas con un contorno rectangular, poligonal o una polilínea cerrada, normal o **invertido** (oculta lo de dentro). Activar, desactivar, suprimir y generar la polilínea del contorno. El recorte afecta al dibujo, la designación, las referencias a objetos, SVG y PDF; XCLIPFRAME muestra el marco (oculto, impreso o sólo en pantalla). En DXF se escribe como SPATIAL_FILTER en el diccionario de extensión de la referencia |
+| **Tablas en DXF** | En DXF 2007 las tablas se escriben como **ACAD_TABLE** (filas, columnas, alturas, anchuras, celdas con el título combinado) con su bloque `*T` y sus estilos como **TABLESTYLE**; al importar se recuperan como tablas editables con su estilo |
+| **Estados de capa en archivos `.las`** | Botones «Importar .las…» y «Exportar .las…» en el administrador de estados de capa y opciones Importar y eXportar de -LAYERSTATE: el formato de AutoCAD con la capa actual, la descripción y, por capa, activada, bloqueada, color, tipo y grosor de línea |
+| **Otros** | Archivos `.tcad` versión 7. Los diálogos abiertos desde otro (por ejemplo «Nuevo» en un administrador de estilos) vuelven al anterior al cerrarse. LIMPIA elimina los estilos de línea múltiple sin uso; IGUALARPROP copia el estilo, la escala y la justificación de las líneas múltiples |
 
 ## Novedades de la v0.6
 
@@ -99,24 +114,28 @@ js/geom.js       Vectores, matrices, intersecciones, curvaturas
 js/colors.js     Colores ACI ↔ RGB
 js/spline.js     B-splines: De Boor, interpolación, teselado, inserción de nudos, tramos y uniones
 js/richtext.js   Códigos de formato de MTEXT: análisis y escritura
-js/entities.js   Tipos de entidad (línea … spline, texto con formato, directriz, tabla, atributo, sombreado, bloque, ventana)
+js/entities.js   Tipos de entidad (línea … spline, texto con formato, directriz, tabla, atributo, sombreado, bloque, línea múltiple, región, matriz, ventana)
+js/mline.js      Líneas múltiples: estilos, ingletes, remates y relleno
+js/region.js     Regiones: contornos con arcos, operaciones booleanas, cadenas de líneas y arcos, contornos exactos de CONTORNO
+js/arrays.js     Matrices asociativas: rectangular, polar y a lo largo de un recorrido; elementos, pinzamientos y propiedades
+js/xclip.js      Delimitación de referencias (XCLIP): recorte de primitivas con el contorno
 js/assoc.js      Cotas asociativas: referencias a la geometría y recálculo
-js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, grupos, estados de capa, patrones, deshacer, asociatividad
+js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, grupos, estados de capa, patrones, deshacer, asociatividad (también matriz–recorrido)
 js/xref.js       Referencias externas: lectura, prefijos, recarga, desenlace y unión
 js/constraints.js Restricciones paramétricas, expresiones, solucionador y restricciones automáticas
 js/dynblock.js   Bloques dinámicos: parámetros lineales, de rotación, simetría, visibilidad y tabla de consulta
 js/groups.js     Grupos: creación, selección conjunta, copias y limpieza
-js/layerstates.js Estados de capa: guardar, restaurar, comparar y renombrar
+js/layerstates.js Estados de capa: guardar, restaurar, comparar, renombrar y archivos .las
 js/pdf.js        Exportación a PDF vectorial
 js/patterns.js   Patrones de sombreado (predefinidos, personalizados .pat y de usuario), degradados y recorte de líneas de patrón
-js/hatch.js      Detección de contornos (grafo plano, caras e islas) y recálculo asociativo
+js/hatch.js      Detección de contornos (grafo plano, caras e islas, con las primitivas de origen) y recálculo asociativo
 js/spatial.js    Índice espacial
 js/view.js       Vista del modelo/papel y vista a través de ventana gráfica
 js/render.js     Dibujado en canvas
 js/snap.js       Referencias, rastreo, polar, orto, isométrico
 js/ops.js        Recortar, alargar, partir, longitud, desfase, empalme, chaflán, unir, recorrido por longitud (GRADUA, DIVIDE)…
 js/commands.js   Comandos y alias
-js/dxf.js        DXF 2007 (MULTILEADER, degradados) / 2000 (ambos con presentaciones y grupos) / R12
+js/dxf.js        DXF 2007 (MULTILEADER, ACAD_TABLE, ARC_DIMENSION, degradados) / 2000 (ambos con presentaciones, grupos, MLINE y XCLIP) / R12
 js/io.js         Abrir, guardar, exportar SVG/PNG, imprimir
 js/ui.js         Cinta, paletas, barra de estado, diálogos
 js/app.js        Núcleo: entrada, motor de comandos, presentaciones
@@ -126,7 +145,7 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 ## Limitaciones conocidas
 
 - La asociatividad de cotas y sombreados no se exporta a DXF: AutoCAD los abre como cotas y sombreados normales (las cotas sí como entidades DIMENSION editables). Una cota asociada a un punto de una polilínea sigue al vértice por su número; si se recorta o parte el objeto, la cota pierde la asociación.
-- En DXF 2000 las directrices se exportan como LEADER + MTEXT (ese formato no tiene MULTILEADER) y los globos como círculo y texto; en DXF 2007, como MULTILEADER. Las flechas abiertas, de trazo oblicuo y de punto se exportan como cerradas en los MULTILEADER. Las tablas se exportan descompuestas en líneas y MTEXT, y los estilos de tabla no se exportan.
+- En DXF 2000 las directrices se exportan como LEADER + MTEXT (ese formato no tiene MULTILEADER) y los globos como círculo y texto; en DXF 2007, como MULTILEADER. Las flechas abiertas, de trazo oblicuo y de punto se exportan como cerradas en los MULTILEADER. En DXF 2007 las tablas se exportan como ACAD_TABLE con sus estilos (sólo celdas de texto, sin formato por celda); en DXF 2000 y R12, descompuestas en líneas y MTEXT.
 - En las fracciones apiladas y los colores de MTEXT se admite el subconjunto de códigos indicado; los códigos de párrafo (tabulaciones, sangrías, columnas) se descartan al importar.
 - Las referencias externas se leen con el selector de archivos del navegador (una web no puede abrir rutas por sí sola): «Recargar» pide de nuevo el archivo salvo en la misma sesión. En DXF se exportan unidas (como bloques normales).
 - Las splines cerradas se escriben en DXF como splines abiertas con los vértices repetidos (geometría idéntica). Al recortar o alargar una spline por vértices de control se convierte en una spline sin puntos de ajuste.
@@ -135,11 +154,17 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 
 - Las restricciones paramétricas y los parámetros dinámicos no se exportan a DXF: las referencias a bloques dinámicos se escriben como bloques anónimos con su geometría. En DXF 2000 los degradados se escriben como relleno sólido del color medio (en DXF 2007, como degradados).
 - Los parámetros de un bloque dinámico actúan cada uno sobre la geometría original del bloque, en el orden lineales, rotaciones y simetría: no se encadenan (el centro de una rotación no se desplaza con un estiramiento).
-- Los estados de capa se guardan en el archivo `.tcad` pero no se exportan a DXF ni se importan de archivos `.las`.
+- Los estados de capa se importan y exportan en archivos `.las`, pero no se escriben en el DXF. Al importar, una capa inutilizada en el `.las` queda desactivada (TrazoCAD sólo inutiliza capas por ventana gráfica).
 - AUTOCONSTRAIN trabaja con líneas, tramos rectos de polilíneas, arcos, círculos y puntos (no con elipses ni splines) y con unas 300 líneas por designación como máximo.
 - Los patrones `.pat` se interpretan en las unidades del dibujo (milímetros, como acadiso.pat): los archivos en pulgadas, como acad.pat, se cargan marcando «En pulgadas». Un patrón en uso no se puede eliminar.
 - GRADUA y DIVIDE recorren las elipses y las splines sobre su teselado (error inferior a una milésima de su tamaño).
 
-## Hoja de ruta (v0.7+)
+- Las líneas múltiples no tienen todavía MLEDIT (cruces, uniones en T, esquinas y cortes); las MLINE de AutoCAD con cortes se importan sin ellos. En R12 se exportan descompuestas.
+- Las regiones se exportan a DXF como polilíneas cerradas (sin datos ACIS) y las entidades REGION de un DXF no se importan. Las elipses y las splines de una región se convierten en polígonos.
+- Las matrices asociativas se exportan a DXF como un bloque anónimo con sus elementos (AutoCAD las abre como bloques, sin asociatividad). No se editan aún los objetos de origen ni se sustituyen elementos sueltos, y la matriz rectangular no tiene niveles ni ángulo de filas.
+- DIMARC y DIMJOGGED se exportan descompuestas en DXF 2000 y R12; DIMARC no tiene directriz y el símbolo de arco va siempre encima del texto.
+- XCLIP no tiene planos de recorte delantero y trasero. La delimitación invertida o desactivada se guarda en el DXF como datos extendidos propios; R12 no conserva la delimitación, ni tampoco las referencias a bloques dinámicos en DXF. CONTORNO, como SOMBREADO, busca el contorno entre los objetos visibles en pantalla.
 
-Líneas múltiples (MLINE) con estilos, matriz a lo largo de un recorrido (ARRAYPATH) y matrices asociativas editables, contornos y regiones (BOUNDARY, REGION) con operaciones booleanas, cotas de longitud de arco (DIMARC) y de radio con recodo (DIMJOGGED), tablas en DXF como ACAD_TABLE con sus estilos, importación y exportación de estados de capa en archivos `.las`, y delimitación de referencias externas y bloques (XCLIP).
+## Hoja de ruta (v0.8+)
+
+Edición de líneas múltiples (MLEDIT: cruces, uniones en T, esquinas y cortes), edición del origen y sustitución de elementos en las matrices asociativas (ARRAYEDIT Origen/Reemplazar) con niveles y ángulo de filas, marcas y líneas de centro asociativas (CENTERMARK, CENTERLINE), cortes y espaciado de cotas (DIMBREAK, DIMSPACE), nubes de revisión (REVCLOUD) y coberturas (WIPEOUT), imágenes raster (IMAGEATTACH) con delimitación, y estados de capa dentro del DXF.

@@ -128,6 +128,18 @@ const I = {
   lookup: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 9h18M9 4v16"/><path d="m13 14 3-3 3 3Z" fill="currentColor"/>',
   bprot: '<circle cx="9" cy="15" r="1.4" fill="currentColor"/><path d="M9 15 19 9"/><path d="M19 15A10 10 0 0 0 16 6" stroke-dasharray="2 2"/><circle cx="19" cy="9" r="1.8"/>',
   patlib: '<rect x="3" y="3" width="8" height="8"/><path d="m3 7 4-4M3 11l8-8M7 11l4-4"/><rect x="13" y="13" width="8" height="8"/><path d="M13 17h8M17 13v8"/><path d="M14 4h7M14 7h7M3 15h7M3 18h7"/>',
+  mline: '<path d="M3 8h10l6 6"/><path d="M3 13h8l5 5"/><path d="M3 18h6" stroke-dasharray="2 2"/>',
+  mlstyle: '<path d="M3 7h12M3 11h12M3 15h12"/><path d="M3 15h12" stroke-dasharray="2 2"/><path d="m16 20 5-5-2-2-5 5v2Z"/>',
+  region: '<path d="M4 6h12l4 6-4 6H4Z" fill="currentColor" fill-opacity=".25"/><circle cx="10" cy="12" r="2.5"/>',
+  boundary: '<path d="M3 3h18v18H3Z" stroke-dasharray="2 2"/><path d="M7 7h10v10H7Z" stroke-width="2.2"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/>',
+  union: '<path d="M3 5h10v4h8v10H11v-4H3Z" fill="currentColor" fill-opacity=".3"/>',
+  subtract: '<path d="M3 5h10v4h-2v6H3Z" fill="currentColor" fill-opacity=".3"/><path d="M11 9h10v10H11Z" stroke-dasharray="2 2"/>',
+  intersect: '<rect x="3" y="5" width="10" height="10" stroke-dasharray="2 2"/><rect x="11" y="9" width="10" height="10" stroke-dasharray="2 2"/><rect x="11" y="9" width="2" height="6" fill="currentColor"/>',
+  arraypath: '<path d="M3 19C7 5 15 5 21 15" stroke-dasharray="2 2"/><rect x="2.5" y="15" width="4" height="4"/><rect x="8" y="7" width="4" height="4"/><rect x="15" y="7.5" width="4" height="4"/>',
+  arrayedit: '<rect x="3" y="3" width="5" height="5"/><rect x="10" y="3" width="5" height="5"/><rect x="3" y="10" width="5" height="5"/><path d="m12 21 7-7 2 2-7 7h-2Z"/>',
+  dimarc: '<path d="M4 17a9 9 0 0 1 16 0"/><path d="M2 12a11 11 0 0 1 20 0"/><path d="M9 5.5a3.5 3.5 0 0 1 6 0"/>',
+  dimjog: '<path d="M20 20A16 16 0 0 0 4 4"/><path d="M6 20v-6l3-2v-3l5-3"/><path d="m14 6 1 3 2-2.6Z" fill="currentColor"/>',
+  xclip: '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 2"/><path d="M7 17 12 7l5 10Z"/><path d="M2 8h20" opacity=".5"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
 };
 

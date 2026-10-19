@@ -72,6 +72,19 @@ export function updateDim(e, get) {
       e.p1 = o.c; e.p2 = G.polar(o.c, a, o.r);
       return true;
     }
+    if (e.kind === 'jog') { // el centro desplazado, el recodo y la línea de cota se mueven con el centro
+      const d = G.sub(o.c, e.p1), a = G.ang(e.p1, e.p2);
+      for (const k of ['p3', 'p4', 'p5']) e[k] = G.add(e[k], d);
+      e.p1 = o.c; e.p2 = G.polar(o.c, a, o.r);
+      return true;
+    }
+    if (e.kind === 'arc') { // longitud de arco: se conserva la separación del arco de cota y, si es parcial, sus ángulos
+      if (o.type !== 'arc') return false;
+      const r0 = G.dist(e.c, e.p1), off = G.dist(e.c, e.p3) - r0, ap = G.ang(e.c, e.p3);
+      const t1 = e.partial ? G.ang(e.c, e.p1) : o.a1, t2 = e.partial ? G.ang(e.c, e.p2) : o.a2;
+      e.c = o.c; e.p1 = G.polar(o.c, t1, o.r); e.p2 = G.polar(o.c, t2, o.r); e.p3 = G.polar(o.c, ap, Math.max(1e-6, o.r + off));
+      return true;
+    }
     const d = G.sub(o.c, e.c);
     e.p3 = G.add(e.p3, d);
     if (o.type === 'arc') { e.c = o.c; e.p1 = G.polar(o.c, o.a1, o.r); e.p2 = G.polar(o.c, o.a2, o.r); return true; }

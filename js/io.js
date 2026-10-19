@@ -1,6 +1,7 @@
 // Archivos: nuevo, abrir, guardar (.tcad), exportar DXF/SVG/PNG, imprimir y autoguardado.
 import * as G from './geom.js';
-import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, mtextGeom, mleaderGeom, tableGeom, fieldText, ENV } from './entities.js';
+import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, bboxOf, mtextGeom, mleaderGeom, tableGeom, fieldText, ENV, insertClip, mlGeom, LTYPES } from './entities.js';
+import { arrayEnts } from './arrays.js';
 import { splinePts } from './spline.js';
 import { writeDXF, readDXF } from './dxf.js';
 import { hatchSegments, gradientSpec } from './patterns.js';
@@ -119,6 +120,8 @@ export class IO {
         if (r.insBase) doc.settings.insBase = r.insBase;
         doc.patterns = r.patterns || {};
         if (r.mleaderStyles?.length) { doc.mleaderStyles = r.mleaderStyles; doc.cur.mleaderStyle = r.mleaderStyles[0].name; }
+        if (r.tableStyles?.length) { doc.tableStyles = r.tableStyles; doc.cur.tableStyle = r.tableStyles[0].name; }
+        for (const s of r.mlineStyles || []) { const i = doc.mlineStyles.findIndex(x => x.name.toUpperCase() === s.name.toUpperCase()); if (i >= 0) doc.mlineStyles[i] = s; else doc.mlineStyles.push(s); }
         const byHandle = new Map(); // identificador DXF → objeto importado (para los grupos)
         const put = (e, target) => { const h = e._h; delete e._h; doc.add(e, target); if (h) byHandle.set(h, e.id); };
         for (const e of r.ents) put(e);
@@ -261,7 +264,33 @@ export class IO {
           out.push(`<path d="${segs.map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}" ${s}/>`);
           break;
         }
-        case 'insert': out.push('<g>'); this.svgEnts(blockEnts(e), lwScale, out, vis); out.push('</g>'); break;
+        case 'insert': {
+          const k = insertClip(e);
+          if (!k) { out.push('<g>'); this.svgEnts(blockEnts(e), lwScale, out, vis); out.push('</g>'); break; }
+          // Delimitación (XCLIP): trayecto de recorte; invertida, un rectángulo grande con el contorno como hueco
+          const id = `xc${++this.gradN}`, b = bbPts(blockEnts(e).flatMap(v => { const bb = bboxOf(v); return [G.P(bb.x1, bb.y1), G.P(bb.x2, bb.y2)]; })), m = Math.max(b.x2 - b.x1, b.y2 - b.y1) + 1;
+          const d = `${k.invert ? `M${n5(b.x1 - m)} ${n5(b.y1 - m)}H${n5(b.x2 + m)}V${n5(b.y2 + m)}H${n5(b.x1 - m)}Z ` : ''}M${pts(k.poly).replace(/ /g, ' L')} Z`;
+          out.push(`<clipPath id="${id}"><path d="${d}" clip-rule="evenodd"/></clipPath><g clip-path="url(#${id})">`);
+          this.svgEnts(blockEnts(e), lwScale, out, vis);
+          out.push('</g>');
+          if (doc.settings.xclipFrame === 1) out.push(`<polygon points="${pts(k.poly)}" ${s}/>`);
+          break;
+        }
+        case 'array': out.push('<g>'); this.svgEnts(arrayEnts(e), lwScale, out, vis); out.push('</g>'); break;
+        case 'region': out.push(`<path d="${e.loops.map(l => plD({ pts: l.pts, bulges: l.bulges, closed: true })).join(' ')}" ${s}/>`); break;
+        case 'mline': {
+          const g = mlGeom(e), st = doc.mlineStyle(e.mlstyle);
+          if (g.fill) out.push(`<path d="${g.fill.map(l => `M${pts(l).replace(/ /g, ' L')} Z`).join(' ')}" fill="${printColor(st.fill)}" fill-rule="evenodd" stroke="none"/>`);
+          for (const el of g.elems) {
+            const own = el.color && el.color !== 'BYLAYER' && el.color !== 'BYBLOCK', lt = el.ltype && el.ltype !== 'BYLAYER' && el.ltype !== 'BYBLOCK' ? LTYPES[el.ltype] : null;
+            let a = s;
+            if (own) a = a.replace(/stroke="[^"]*"/, `stroke="${printColor(el.color)}"`);
+            if (lt) a = a.replace(/ stroke-dasharray="[^"]*"/, '') + (lt.pat.length ? ` stroke-dasharray="${lt.pat.map(v => n5(Math.abs(v) * doc.settings.ltscale) || 0.2).join(' ')}"` : '');
+            out.push(`<${g.closed ? 'polygon' : 'polyline'} points="${pts(el.pts)}" ${a}/>`);
+          }
+          if (g.lines.length || g.arcs.length) out.push(`<path d="${g.lines.map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}${g.arcs.map(arcD).join('')}" ${s}/>`);
+          break;
+        }
         case 'dim': {
           const d = dimParts(e);
           out.push(`<path d="${d.lines.map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}${d.arcs.map(arcD).join('')}" ${s}/>`);

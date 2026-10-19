@@ -6,13 +6,17 @@ import { updateDim, dropMissing, dimRefIds } from './assoc.js';
 import { remapDyn } from './dynblock.js';
 import { solve, consValid, refIds } from './constraints.js';
 import { cleanGroups } from './groups.js';
+import { DEFAULT_MLINESTYLE } from './mline.js';
+import { localPath, pathable } from './arrays.js';
 
 export const DEFAULT_SETTINGS = {
   gridX: 10, snapX: 10, polarInc: 15, ltscale: 1, coordDec: 4,
   textH: 2.5, filletR: 0, chamferA: 0, chamferB: 0, offsetD: 10, lastRadius: 10, polySides: 4,
   hatchPat: 'ANSI31', hatchScale: 1, hatchAng: 0, hatchAssoc: true, iso: false, isoPlane: 'top', splineMethod: 'fit',
   dimAssoc: true, mleaderContent: 'mtext', balloonNum: 0, insBase: { x: 0, y: 0 },
+  mlScale: 20, mlJust: 'top', arrayAssoc: true, xclipFrame: 2, boundaryType: 'pline', boundaryIslands: true,
 };
+const newMlStyle = () => JSON.parse(JSON.stringify(DEFAULT_MLINESTYLE));
 export const PAPERS = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841], Carta: [279.4, 215.9], Oficio: [355.6, 215.9] };
 
 const newLayer = (name, color = '#ffffff') => ({ name, color, ltype: 'CONTINUOUS', lw: 'DEFAULT', on: true, lock: false });
@@ -39,9 +43,10 @@ export class Doc {
     this.dimStyles = [{ ...DEFAULT_DIMSTYLE }];
     this.mleaderStyles = [{ ...DEFAULT_MLSTYLE }];
     this.tableStyles = [{ ...DEFAULT_TBLSTYLE }];
+    this.mlineStyles = [newMlStyle()];
     this.byId = new Map();
     this.nextId = 1;
-    this.cur = { layer: '0', color: 'BYLAYER', ltype: 'BYLAYER', lw: 'BYLAYER', textStyle: 'Standard', dimStyle: 'ISO-25', mleaderStyle: 'Standard', tableStyle: 'Standard' };
+    this.cur = { layer: '0', color: 'BYLAYER', ltype: 'BYLAYER', lw: 'BYLAYER', textStyle: 'Standard', dimStyle: 'ISO-25', mleaderStyle: 'Standard', tableStyle: 'Standard', mlineStyle: 'STANDARD' };
     this.settings = { ...DEFAULT_SETTINGS };
     this.undoS = []; this.redoS = []; this.tx = null;
     this.touched = new Set(); // entidades añadidas, modificadas o borradas en la transacción
@@ -62,11 +67,11 @@ export class Doc {
 
   // ----- Deshacer / rehacer por instantáneas -----
   state() {
-    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns });
+    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns });
   }
   loadState(s) {
     const o = JSON.parse(s);
-    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {} });
+    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {} });
     if (this.bedit) this.space = 'bedit';
     else if (this.space === 'bedit') this.space = 'model';
     else if (this.space !== 'model' && this.space !== 'bedit' && !this.layouts[this.space]) this.space = 'model';
@@ -142,6 +147,13 @@ export class Doc {
       for (const h of arr) {
         const moved = h._xf;
         if (moved) delete h._xf;
+        if (h.type === 'array' && h.pathId != null) { // matriz a lo largo de un recorrido: sigue al objeto del recorrido
+          const src = get(h.pathId);
+          if (!src || !pathable(src)) delete h.pathId;
+          else if (t.has(h.pathId)) h.path = localPath(h, src);
+          else if (moved) delete h.pathId; // la matriz se movió sin su recorrido
+          continue;
+        }
         if (!h.assoc) continue;
         if (h.type === 'dim') {
           dropMissing(h, get);
@@ -178,6 +190,7 @@ export class Doc {
   previewDeps(clones) {
     const map = new Map(clones.map(e => [e.id, e])), get = id => map.get(id) || this.byId.get(id), out = [];
     for (const h of this.ents) {
+      if (h.type === 'array' && map.has(h.pathId) && !map.has(h.id)) { out.push({ ...h, path: localPath(h, map.get(h.pathId)) }); continue; }
       if (!h.assoc || map.has(h.id)) continue;
       if (h.type === 'dim' && dimRefIds(h).some(id => map.has(id))) {
         const n = cloneEnt(h);
@@ -208,6 +221,7 @@ export class Doc {
   dimStyle(name) { return this.dimStyles.find(s => s.name === name) || this.dimStyles[0]; }
   mleaderStyle(name) { return this.mleaderStyles.find(s => s.name === name) || this.mleaderStyles[0]; }
   tableStyle(name) { return this.tableStyles.find(s => s.name === name) || this.tableStyles[0]; }
+  mlineStyle(name) { return this.mlineStyles.find(s => s.name === name) || this.mlineStyles[0]; }
   defineBlock(name, base, ents, extra = {}) {
     const old = this.blocks[name];
     this.blocks[name] = { name, base, ents, ver: (old?.ver || 0) + 1, ...extra };
@@ -216,6 +230,7 @@ export class Doc {
   // ¿Las entidades (o los bloques que insertan, recursivamente) hacen referencia al bloque `target`?
   refersTo(ents, target, seen = new Set()) {
     for (const e of ents) {
+      if (e.type === 'array') { if (this.refersTo(e.src, target, seen)) return true; continue; }
       if (e.type !== 'insert') continue;
       if (e.name === target) return true;
       if (seen.has(e.name)) continue;
@@ -237,7 +252,7 @@ export class Doc {
     this.changed();
   }
   beditContent() {
-    return this.bedit.ents.map(e => { const c = cloneEnt(e); for (const k of ['id', 'assoc', 'seed', '_xf']) delete c[k]; return c; });
+    return this.bedit.ents.map(e => { const c = cloneEnt(e); for (const k of ['id', 'assoc', 'seed', '_xf', 'pathId']) delete c[k]; return c; });
   }
   beditChanged() {
     const b = this.blocks[this.bedit.name];
@@ -279,8 +294,8 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 6, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
-      textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, cur: this.cur, settings: this.settings, nextId: this.nextId,
+      app: 'TrazoCAD', version: 7, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, cur: this.cur, settings: this.settings, nextId: this.nextId,
     };
   }
   fromJSON(o) {
@@ -302,6 +317,7 @@ export class Doc {
     this.patterns = o.patterns || {};
     if (o.mleaderStyles?.length) this.mleaderStyles = o.mleaderStyles;
     if (o.tableStyles?.length) this.tableStyles = o.tableStyles;
+    if (o.mlineStyles?.length) this.mlineStyles = o.mlineStyles;
     this.cur = { ...this.cur, ...o.cur };
     this.settings = { ...DEFAULT_SETTINGS, ...o.settings };
     this.reindex();

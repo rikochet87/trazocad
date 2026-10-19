@@ -1,6 +1,7 @@
 // Dibujado en canvas: capa base (rejilla, modelo, presentaciones) y capa superpuesta (cursor, selección, vistas previas).
 import * as G from './geom.js';
-import { TYPES, gripsOf, blockEnts, ENV, textBox, dimParts, bboxOf, bbUnion } from './entities.js';
+import { TYPES, gripsOf, blockEnts, ENV, textBox, dimParts, bboxOf, bbUnion, insertClip, applyDash } from './entities.js';
+const arrayEntsOf = e => ENV.arrayEnts?.(e) || [];
 import { linsOf, rotsOf } from './dynblock.js';
 import { evalParams, refGeom, consDim, refIds, DIM_TYPES } from './constraints.js';
 
@@ -33,16 +34,28 @@ export function vpModelRect(vp) {
 // st: {color, px, pat, ltscale}; sty: función entidad → st (para las entidades de los bloques);
 // vis: función entidad → visible, aplicada también a las entidades de los bloques
 export function paintEntity(c, e, R, st, sty, vis) {
-  if (e.type === 'insert') { for (const v of blockEnts(e)) if (!vis || vis(v)) paintEntity(c, v, R, sty ? sty(v) : st, sty, vis); return; }
+  if (e.type === 'insert') {
+    const k = insertClip(e);
+    if (k) { // delimitación (XCLIP): recorte del contorno, o de todo lo de fuera si está invertida
+      c.save();
+      c.beginPath();
+      if (k.invert) { const b = bboxOf({ ...e, clip: null }), m = Math.max(b.x2 - b.x1, b.y2 - b.y1) + 1; c.rect(b.x1 - m, b.y1 - m, b.x2 - b.x1 + 2 * m, b.y2 - b.y1 + 2 * m); }
+      k.poly.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y)));
+      c.closePath();
+      c.clip('evenodd');
+    }
+    for (const v of blockEnts(e)) if (!vis || vis(v)) paintEntity(c, v, R, sty ? sty(v) : st, sty, vis);
+    if (k) {
+      c.restore();
+      const fr = ENV.doc?.settings?.xclipFrame ?? 2; // 0: oculto, 1: visible e impreso, 2: sólo en pantalla
+      if (fr === 1 || (fr === 2 && ENV.onScreen) || st.hl) paintEntity(c, { type: 'pline', pts: k.poly, closed: true }, R, { ...st, pat: [] });
+    }
+    return;
+  }
+  if (e.type === 'array') { for (const v of arrayEntsOf(e)) if (!vis || vis(v)) paintEntity(c, v, R, sty && !st.hl ? sty(v) : st, st.hl ? null : sty, vis); return; }
   c.strokeStyle = st.color; c.fillStyle = st.color;
   c.lineWidth = st.px / R.scale;
-  let pat = [];
-  if (st.pat && st.pat.length) {
-    const k = st.ltscale || 1, sc = st.pat.map(v => Math.abs(v) * k);
-    if (sc.reduce((a, b) => a + b, 0) * R.scale > 4) pat = sc.map(v => v || 0.5 / R.scale);
-  }
-  c.setLineDash(pat);
-  c.lineCap = pat.length && st.pat.includes(0) ? 'round' : 'butt';
+  applyDash(c, st.pat, st.ltscale || 1, R);
   const T = TYPES[e.type];
   if (T.draw) T.draw(c, e, R, st);
   else { c.beginPath(); T.path(c, e, R); c.stroke(); }
@@ -114,7 +127,9 @@ export class Renderer {
     ENV.layout = prev;
   }
 
-  drawBase() {
+  // ENV.onScreen: dibujo en pantalla (los marcos de delimitación con XCLIPFRAME = 2 sólo se ven aquí)
+  drawBase() { ENV.onScreen = true; try { this.drawScene(); } finally { ENV.onScreen = false; } }
+  drawScene() {
     const c = this.cb, app = this.app, R = this.R();
     c.setTransform(1, 0, 0, 1, 0, 0);
     const lay = app.layoutShown();

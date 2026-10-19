@@ -10,6 +10,7 @@ import { findCmd, suggest } from './commands.js';
 import { UI } from './ui.js';
 import { IO } from './io.js';
 import './dynblock.js'; // registra los bloques dinámicos
+import './arrays.js'; // registra las matrices asociativas
 import { parseExpr, evalParams } from './constraints.js';
 import { PAT_ENV } from './patterns.js';
 import { expandGroups } from './groups.js';
@@ -83,7 +84,7 @@ class App {
     const st = this.doc.style(e), paper = this.tab !== 'model';
     const color = paper && st.color.toLowerCase() === '#ffffff' ? '#000000' : st.color;
     const px = this.T.lwt ? Math.max(1, st.lw * (paper ? this.paperView.scale : 4)) : 1;
-    return { color, px, pat: st.pat, ltscale: this.doc.settings.ltscale };
+    return { color, px, pat: st.pat, ltscale: this.doc.settings.ltscale, paper };
   }
   idx() { return this.spatial.of(this.doc.ents, this.doc.ver); }
   layoutShown() { return this.tab === 'model' ? null : this.doc.layouts[this.tab] || null; }

@@ -7,6 +7,9 @@ import { isDynamic } from './dynblock.js';
 import { hasCodes, richPlain } from './richtext.js';
 import { PATTERNS, famsOf, hatchSegments, GRADIENTS, GRAD_DEFAULT, baseFams } from './patterns.js';
 import { splinePts, interpolate, rebuild as rebuildSpline } from './spline.js';
+import { mlGeom, insertMatrix, tableGeom, DEFAULT_TBLSTYLE } from './entities.js';
+import { sortedElems, justShift, DEFAULT_MLINESTYLE } from './mline.js';
+import { arrayEnts } from './arrays.js';
 const { P } = G;
 
 const num = v => (Math.abs(v) < 1e-12 ? 0 : +(+v).toFixed(10));
@@ -52,14 +55,22 @@ export function writeDXF(doc, version = '2000') {
   const dimBlocks = new Map(); // cota → [nombre del bloque anónimo, identificador del registro]
   if (!R12) {
     let nd = 0;
-    for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if (e.type === 'dim') dimBlocks.set(e, [`*D${++nd}`, H()]);
+    for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if (e.type === 'dim' && (V07 || (e.kind !== 'arc' && e.kind !== 'jog'))) dimBlocks.set(e, [`*D${++nd}`, H()]);
   }
   // Referencias a bloques dinámicos: cada una se escribe como bloque anónimo (*U1…) con su geometría según su estado
+  // Las matrices asociativas se escriben igual: un bloque anónimo con todos sus elementos
   const dynIns = new Map();
   if (!R12) {
     let nu = 0;
-    for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if (e.type === 'insert' && isDynamic(doc.blocks[e.name])) dynIns.set(e, [`*U${++nu}`, H()]);
+    for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if ((e.type === 'insert' && isDynamic(doc.blocks[e.name])) || e.type === 'array') dynIns.set(e, [`*U${++nu}`, H()]);
   }
+  const anonEnts = e => (e.type === 'array' ? arrayEnts(e) : blockEnts(e));
+  // Tablas (DXF 2007): entidad ACAD_TABLE con su bloque anónimo *T y sus estilos (TABLESTYLE)
+  const tblBlocks = new Map(), tsDict = V07 ? H() : null, tsH = V07 ? Object.fromEntries(doc.tableStyles.map(st => [st.name, H()])) : {};
+  if (V07) { let nt = 0; for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if (e.type === 'table') tblBlocks.set(e, [`*T${++nt}`, H()]); }
+  // Estilos de línea múltiple (MLINESTYLE) y delimitaciones de referencias (SPATIAL_FILTER en el diccionario de extensión)
+  const mlstDict = R12 ? null : H(), mlstH = R12 ? {} : Object.fromEntries(doc.mlineStyles.map(st => [st.name, H()]));
+  const clips = [], clipsPlanned = !R12 && [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)].some(list => list.some(e => e.type === 'insert' && e.clip?.pts?.length > 2));
   // Globos (directrices con contenido de bloque) en DXF 2007: un bloque _TrazoGlobo (círculo de radio 1 y atributo NUM)
   // por cada proporción altura de texto / radio, que el MULTILEADER inserta escalado al radio del globo
   const balloonBlk = new Map();
@@ -75,7 +86,7 @@ export function writeDXF(doc, version = '2000') {
   const lastVp = [];
   let ps = false; // escribiendo entidades del espacio papel
 
-  const common = (type, e, owner, subclass, fh) => {
+  const common = (type, e, owner, subclass, fh, xdict) => {
     g(0, type);
     let h = null;
     if (!R12) {
@@ -83,6 +94,7 @@ export function writeDXF(doc, version = '2000') {
       h = fh || (own && entH.get(own.id)) || H(); g(5, h);
       const reac = !fh && own && entGrp.get(own.id);
       if (reac) { g(102, '{ACAD_REACTORS'); for (const r of reac) g(330, r); g(102, '}'); }
+      if (xdict) { g(102, '{ACAD_XDICTIONARY'); g(360, xdict(h)); g(102, '}'); }
       g(330, owner); g(100, 'AcDbEntity');
     }
     if (ps) g(67, 1);
@@ -192,8 +204,10 @@ export function writeDXF(doc, version = '2000') {
       common('INSERT', e, ow, 'AcDbBlockReference'); g(2, dynIns.get(e)[0]); xy(0, P(0, 0)); g(41, 1); g(42, 1); g(43, 1);
       return;
     }
-    const atts = insertAttribs(e);
-    common('INSERT', e, ow, 'AcDbBlockReference');
+    const atts = insertAttribs(e), b = doc.blocks[e.name];
+    // Delimitación: diccionario de extensión → ACAD_FILTER → SPATIAL (filtro con el contorno en coordenadas del bloque)
+    const clip = !R12 && e.clip?.pts?.length > 2 && b ? { xd: H(), fd: H(), sf: H(), pts: e.clip.pts, M: insertMatrix(e, b), invert: !!e.clip.invert, off: !!e.clip.off } : null;
+    common('INSERT', e, ow, 'AcDbBlockReference', null, clip ? h => { clip.ins = h; clips.push(clip); return clip.xd; } : null);
     if (atts.length) g(66, 1);
     g(2, nm(e.name)); xy(0, e.p);
     g(41, num(e.sx ?? 1)); g(42, num(e.sy ?? 1)); g(43, 1);
@@ -257,6 +271,55 @@ export function writeDXF(doc, version = '2000') {
         break;
     }
   };
+  // Cotas de longitud de arco y de radio con recodo (DXF 2007): ARC_DIMENSION y LARGE_RADIAL_DIMENSION
+  const arcDimension = (e, ow) => {
+    const d = dimParts(e), [bname] = dimBlocks.get(e), box = textBox(d.text);
+    common('ARC_DIMENSION', e, ow, 'AcDbDimension');
+    g(2, bname); xy(0, e.p3); xy(1, G.mid(box[0], box[2])); g(70, 8 | 32 | 128); g(71, 5);
+    if (e.text) g(1, fieldText(e.text));
+    g(42, num(d.val)); g(3, nm(doc.dimStyle(e.style).name));
+    g(100, 'AcDbArcDimension'); xy(3, e.p1); xy(4, e.p2); xy(5, e.c);
+    g(40, num(G.normAng(G.ang(e.c, e.p1)))); g(41, num(G.normAng(G.ang(e.c, e.p2)))); g(70, e.partial ? 1 : 0); g(71, 0); xy(6, e.p1); xy(7, e.p2);
+  };
+  const jogDimension = (e, ow) => {
+    const d = dimParts(e), [bname] = dimBlocks.get(e), u = G.norm(G.sub(e.p3, e.p1));
+    common('LARGE_RADIAL_DIMENSION', e, ow, 'AcDbDimension');
+    g(2, bname); xy(0, e.p1); xy(1, e.p3); g(70, 9 | 32 | 128); g(71, 5);
+    if (e.text) g(1, fieldText(e.text));
+    g(42, num(d.val)); g(3, nm(doc.dimStyle(e.style).name));
+    g(100, 'AcDbRadialDimensionLarge'); xy(3, e.p4); xy(4, e.p5); xy(5, G.add(e.p1, G.mul(u, d.val))); g(40, num(Math.PI / 4));
+  };
+  // Línea múltiple: vértices con la dirección de su tramo y el vector de inglete; cada elemento, su distancia sobre el inglete
+  const mline = (e, ow) => {
+    if (R12) { for (const x of explodeEntity(e)) writeEnt(x, ow); return; }
+    const st = doc.mlineStyle(e.mlstyle), gm = mlGeom(e), els = sortedElems(st), sh = justShift(st, e.just || 'top'), s = e.scale ?? 1;
+    const caps = st.caps || {}, flags = 1 | (gm.closed ? 2 : 0) | (caps.sLine || caps.sOuter || caps.sInner ? 0 : 4) | (caps.eLine || caps.eOuter || caps.eInner ? 0 : 8);
+    common('MLINE', e, ow, 'AcDbMline');
+    g(2, nm(st.name)); g(340, mlstH[st.name]); g(40, num(s)); g(70, { top: 0, zero: 1, bottom: 2 }[e.just || 'top']); g(71, flags); g(72, e.pts.length); g(73, els.length);
+    xy(0, e.pts[0]); g(210, 0); g(220, 0); g(230, 1);
+    gm.frames.forEach((f, i) => {
+      xy(1, e.pts[i]); xy(2, f.dir); xy(3, f.miter);
+      for (const el of els) { g(74, 2); g(41, num((el.off + sh) * s * f.k)); g(41, 0); g(75, 0); }
+    });
+  };
+  // Tabla (DXF 2007): referencia a su bloque *T, filas, columnas, alturas, anchuras y texto de cada celda
+  const acadTable = (e, ow) => {
+    const [bname, brh] = tblBlocks.get(e), gm = tableGeom(e), nr = e.rows.length, nc = e.cols.length;
+    common('ACAD_TABLE', e, ow, 'AcDbBlockReference');
+    g(2, bname); xy(0, e.p);
+    g(100, 'AcDbTable'); g(280, 0); g(342, tsH[doc.tableStyle(e.tstyle).name]); g(343, brh);
+    xy(1, P(Math.cos(e.rot || 0), Math.sin(e.rot || 0))); g(90, 22); g(91, nr); g(92, nc); g(93, 0); g(94, 0); g(95, 0); g(96, 0);
+    for (let r = 0; r < nr; r++) g(141, num(gm.rowY[r] - gm.rowY[r + 1]));
+    for (const w of e.cols) g(142, num(w));
+    for (let r = 0; r < nr; r++) for (let k = 0; k < nc; k++) {
+      const title = e.title && r === 0, merged = title && k > 0;
+      g(171, 1); g(172, 0); g(173, merged ? 1 : 0); g(174, 0); g(175, title && !k ? nc : 1); g(176, 1); g(91, 0); g(178, 0); g(145, 0);
+      let str = merged ? '' : mtextEsc(fieldText(String(e.cells[r]?.[k] ?? '')));
+      while (str.length > 250) { g(3, str.slice(0, 250)); str = str.slice(250); }
+      g(1, str);
+    }
+    g(1001, 'TRAZOCAD'); g(1000, 'TABLA'); g(1070, (e.title ? 1 : 0) | (e.header ? 2 : 0)); if (e.th != null) g(1040, num(e.th));
+  };
   // Directriz múltiple: LEADER (con la flecha del estilo de cota actual) + MTEXT enlazado, o globo (círculo + texto)
   const leader = (e, ow) => {
     const gm = mleaderGeom(e);
@@ -314,7 +377,13 @@ export function writeDXF(doc, version = '2000') {
   const writeEnt = (e, ow) => {
     switch (e.type) {
       case 'mleader': if (V07 && (e.content !== 'block' || balloonBlk.size)) multileader(e, ow); else leader(e, ow); break;
-      case 'table': for (const x of explodeEntity(e)) writeEnt(x, ow); break;
+      case 'table': if (tblBlocks.has(e)) acadTable(e, ow); else for (const x of explodeEntity(e)) writeEnt(x, ow); break;
+      case 'mline': mline(e, ow); break;
+      case 'region': for (const l of e.loops) poly(e, l.pts, true, l.bulges, ow); break;
+      case 'array':
+        if (R12 || !dynIns.has(e)) { for (const x of arrayEnts(e)) writeEnt(x, ow); break; }
+        common('INSERT', e, ow, 'AcDbBlockReference'); g(2, dynIns.get(e)[0]); xy(0, P(0, 0)); g(41, 1); g(42, 1); g(43, 1);
+        break;
       case 'line': line(e, e.p1, e.p2, ow); break;
       case 'circle': common('CIRCLE', e, ow, 'AcDbCircle'); xy(0, e.c); g(40, num(e.r)); break;
       case 'arc': arc(e, e.c, e.r, e.a1, e.a2, ow); break;
@@ -336,7 +405,9 @@ export function writeDXF(doc, version = '2000') {
       case 'hatch': hatch(e, ow); break;
       case 'insert': insert(e, ow); break;
       case 'dim': {
-        if (!R12) { dimension(e, ow); break; }
+        if (V07 && e.kind === 'arc' && dimBlocks.has(e)) { arcDimension(e, ow); break; }
+        if (V07 && e.kind === 'jog' && dimBlocks.has(e)) { jogDimension(e, ow); break; }
+        if (!R12 && dimBlocks.has(e)) { dimension(e, ow); break; }
         const d = dimParts(e);
         for (const [a, b] of d.lines) line(e, a, b, ow);
         for (const [c, r, a1, a2] of d.arcs) arc(e, c, r, a1, a2, ow);
@@ -383,7 +454,12 @@ export function writeDXF(doc, version = '2000') {
     if (V07) { // clases de los objetos de directriz múltiple
       g(0, 'CLASS'); g(1, 'MLEADERSTYLE'); g(2, 'AcDbMLeaderStyle'); g(3, 'ACDB_MLEADERSTYLE_CLASS'); g(90, 4095); g(91, doc.mleaderStyles.length); g(280, 0); g(281, 0);
       g(0, 'CLASS'); g(1, 'MULTILEADER'); g(2, 'AcDbMLeader'); g(3, 'ACDB_MLEADER_CLASS'); g(90, 3071); g(91, 0); g(280, 0); g(281, 1);
+      // Tablas, estilos de tabla, cotas de longitud de arco y de radio con recodo
+      for (const [n, cls, fl, ent] of [['ACAD_TABLE', 'AcDbTable', 1025, 1], ['TABLESTYLE', 'AcDbTableStyle', 4095, 0], ['ARC_DIMENSION', 'AcDbArcDimension', 1025, 1], ['LARGE_RADIAL_DIMENSION', 'AcDbRadialDimensionLarge', 1025, 1]]) {
+        g(0, 'CLASS'); g(1, n); g(2, cls); g(3, 'ObjectDBX Classes'); g(90, fl); g(91, 0); g(280, 0); g(281, ent);
+      }
     }
+    if (clipsPlanned) { g(0, 'CLASS'); g(1, 'SPATIAL_FILTER'); g(2, 'AcDbSpatialFilter'); g(3, 'ObjectDBX Classes'); g(90, 1153); g(91, 0); g(280, 0); g(281, 0); }
     g(0, 'ENDSEC');
   }
 
@@ -435,7 +511,10 @@ export function writeDXF(doc, version = '2000') {
   });
   table('VIEW', 0, () => {});
   table('UCS', 0, () => {});
-  table('APPID', 1, th => { rec('APPID', th, 'AcDbRegAppTableRecord'); g(2, 'ACAD'); g(70, 0); });
+  table('APPID', R12 ? 1 : 2, th => {
+    rec('APPID', th, 'AcDbRegAppTableRecord'); g(2, 'ACAD'); g(70, 0);
+    if (!R12) { rec('APPID', th, 'AcDbRegAppTableRecord'); g(2, 'TRAZOCAD'); g(70, 0); } // datos extendidos propios (tablas y delimitaciones)
+  });
   const dstyles = doc.dimStyles;
   table('DIMSTYLE', dstyles.length, th => {
     for (const d of dstyles) {
@@ -449,7 +528,7 @@ export function writeDXF(doc, version = '2000') {
     }
   }, 'AcDbDimStyleTable');
   if (!R12) {
-    table('BLOCK_RECORD', 2 + Math.max(0, layouts.length - 1) + userBlocks.length + dimBlocks.size + dynIns.size + balloonBlk.size, th => {
+    table('BLOCK_RECORD', 2 + Math.max(0, layouts.length - 1) + userBlocks.length + dimBlocks.size + dynIns.size + balloonBlk.size + tblBlocks.size, th => {
       const br = (h, name, lay) => { g(0, 'BLOCK_RECORD'); g(5, h); g(330, th); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbBlockTableRecord'); g(2, name); if (lay) g(340, lay); };
       br(brMS, '*Model_Space', layouts.length ? layModel : null);
       br(brPS, '*Paper_Space', layH[0]);
@@ -458,6 +537,7 @@ export function writeDXF(doc, version = '2000') {
       for (const [name, h] of dimBlocks.values()) br(h, name);
       for (const [name, h] of dynIns.values()) br(h, name);
       for (const b of balloonBlk.values()) br(b.br, b.name);
+      for (const [name, h] of tblBlocks.values()) br(h, name);
     });
   }
   g(0, 'ENDSEC');
@@ -487,7 +567,8 @@ export function writeDXF(doc, version = '2000') {
   for (const b of userBlocks) block(nm(b.name), b.base, brUser[b.name], () => { for (const e of b.ents) writeEnt(e, brUser[b.name]); });
   // Bloques anónimos con la geometría de cada cota (*D1, *D2…)
   for (const [e, [name, h]] of dimBlocks) block(name, P(0, 0), h, () => dimGeometry(e, h), false, 1);
-  for (const [e, [name, h]] of dynIns) block(name, P(0, 0), h, () => { for (const x of blockEnts(e)) writeEnt(x, h); }, false, 1);
+  for (const [e, [name, h]] of dynIns) block(name, P(0, 0), h, () => { for (const x of anonEnts(e)) writeEnt(x, h); }, false, 1);
+  for (const [e, [name, h]] of tblBlocks) block(name, P(0, 0), h, () => { for (const x of explodeEntity(e)) writeEnt(x, h); }, false, 1);
   for (const b of balloonBlk.values()) block(b.name, P(0, 0), b.br, () => {
     const st = { layer: '0', color: 'BYBLOCK', ltype: 'BYBLOCK', lw: 'BYBLOCK' };
     common('CIRCLE', st, b.br, 'AcDbCircle'); xy(0, P(0, 0)); g(40, 1);
@@ -510,7 +591,51 @@ export function writeDXF(doc, version = '2000') {
     g(0, 'DICTIONARY'); g(5, root); g(330, 0); g(100, 'AcDbDictionary'); g(281, 1);
     g(3, 'ACAD_GROUP'); g(350, grp);
     if (layouts.length) { g(3, 'ACAD_LAYOUT'); g(350, layDict); }
-    if (V07) { g(3, 'ACAD_MLEADERSTYLE'); g(350, mlsDict); }
+    if (V07) { g(3, 'ACAD_MLEADERSTYLE'); g(350, mlsDict); g(3, 'ACAD_TABLESTYLE'); g(350, tsDict); }
+    g(3, 'ACAD_MLINESTYLE'); g(350, mlstDict);
+    // Estilos de línea múltiple
+    g(0, 'DICTIONARY'); g(5, mlstDict); g(330, root); g(100, 'AcDbDictionary'); g(281, 1);
+    for (const st of doc.mlineStyles) { g(3, nm(st.name)); g(350, mlstH[st.name]); }
+    const colCode = c => (!c || c === 'BYLAYER' ? 256 : c === 'BYBLOCK' ? 0 : hexToAci(c));
+    const ltName = l => (!l || l === 'BYLAYER' ? 'BYLAYER' : l === 'BYBLOCK' ? 'BYBLOCK' : l === 'CONTINUOUS' ? 'Continuous' : l);
+    for (const st of doc.mlineStyles) {
+      const c = st.caps || {}, fl = (st.fill ? 1 : 0) | (st.joints ? 2 : 0) | (c.sLine ? 16 : 0) | (c.sInner ? 32 : 0) | (c.sOuter ? 64 : 0) | (c.eLine ? 256 : 0) | (c.eInner ? 512 : 0) | (c.eOuter ? 1024 : 0);
+      g(0, 'MLINESTYLE'); g(5, mlstH[st.name]); g(102, '{ACAD_REACTORS'); g(330, mlstDict); g(102, '}'); g(330, mlstDict); g(100, 'AcDbMlineStyle');
+      g(2, nm(st.name)); g(70, fl); g(3, st.desc || ''); g(62, st.fill ? hexToAci(st.fill) : 256); if (st.fill) g(420, tcolor(st.fill)); g(51, 90); g(52, 90);
+      const els = sortedElems(st);
+      g(71, els.length);
+      for (const el of els) { g(49, num(el.off)); g(62, colCode(el.color)); if (el.color?.startsWith('#')) g(420, tcolor(el.color)); g(6, ltName(el.ltype)); }
+    }
+    // Delimitaciones de referencias: diccionario de extensión de la referencia → ACAD_FILTER → SPATIAL
+    for (const k of clips) {
+      g(0, 'DICTIONARY'); g(5, k.xd); g(330, k.ins); g(100, 'AcDbDictionary'); g(280, 1); g(281, 1); g(3, 'ACAD_FILTER'); g(360, k.fd);
+      g(0, 'DICTIONARY'); g(5, k.fd); g(330, k.xd); g(100, 'AcDbDictionary'); g(280, 1); g(281, 1); g(3, 'SPATIAL'); g(360, k.sf);
+      g(0, 'SPATIAL_FILTER'); g(5, k.sf); g(102, '{ACAD_REACTORS'); g(330, k.fd); g(102, '}'); g(330, k.fd); g(100, 'AcDbFilter'); g(100, 'AcDbSpatialFilter');
+      g(70, k.pts.length); for (const p of k.pts) { g(10, num(p.x)); g(20, num(p.y)); }
+      g(210, 0); g(220, 0); g(230, 1); g(11, 0); g(21, 0); g(31, 0); g(71, 1); g(72, 0); g(73, 0);
+      // Matriz inversa de la referencia y matriz del contorno (3 × 4, por filas)
+      const m = k.M, d = m[0] * m[3] - m[1] * m[2], iv = [m[3] / d, -m[1] / d, -m[2] / d, m[0] / d, (m[2] * m[5] - m[3] * m[4]) / d, (m[1] * m[4] - m[0] * m[5]) / d];
+      for (const v of [iv[0], iv[2], 0, iv[4], iv[1], iv[3], 0, iv[5], 0, 0, 1, 0]) g(40, num(v));
+      for (const v of [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]) g(40, num(v));
+      if (k.invert || k.off) { g(1001, 'TRAZOCAD'); g(1000, 'XCLIP'); g(1070, (k.invert ? 1 : 0) | (k.off ? 2 : 0)); }
+    }
+    // Estilos de tabla (DXF 2007): estilo de celda de datos, de encabezado y de título
+    if (V07) {
+      g(0, 'DICTIONARY'); g(5, tsDict); g(330, root); g(100, 'AcDbDictionary'); g(281, 1);
+      for (const st of doc.tableStyles) { g(3, nm(st.name)); g(350, tsH[st.name]); }
+      for (const st of doc.tableStyles) {
+        const s = { ...DEFAULT_TBLSTYLE, ...st }, ts = nm(doc.textStyle(s.textStyle).name), al = { l: 4, c: 5, r: 6, auto: 4 }[s.align] || 4;
+        g(0, 'TABLESTYLE'); g(5, tsH[st.name]); g(102, '{ACAD_REACTORS'); g(330, tsDict); g(102, '}'); g(330, tsDict); g(100, 'AcDbTableStyle');
+        g(3, ''); g(70, 0); g(71, 0); g(40, num(s.th * s.margin)); g(41, num(s.th * s.margin)); g(280, 0); g(281, 0);
+        for (const [hgt, a] of [[s.th, al], [s.th, 5], [s.th * s.titleScale, 5]]) {
+          g(7, ts); g(140, num(hgt)); g(170, a); g(62, 256); g(63, 7); g(283, 0); g(90, 4); g(91, 0); g(1, '');
+          for (let k = 274; k <= 279; k++) g(k, -2);
+          for (let k = 284; k <= 289; k++) g(k, 1);
+          for (let k = 64; k <= 69; k++) g(k, 0);
+        }
+        g(1001, 'TRAZOCAD'); g(1000, s.align);
+      }
+    }
     g(0, 'DICTIONARY'); g(5, grp); g(330, root); g(100, 'AcDbDictionary'); g(281, 1);
     groups.forEach((gr, i) => { g(3, gr.name); g(350, grpH[i]); });
     groups.forEach((gr, i) => {
@@ -920,7 +1045,35 @@ export function readDXF(text) {
           if (e) push(xformEnt(e, M)); else skipped++;
           break;
         }
+        case 'MLINE': {
+          const pts = [];
+          for (const [c, v] of gr.d) { if (c === 11) pts.push(P(parseFloat(v), 0)); else if (c === 21 && pts.length) pts[pts.length - 1].y = parseFloat(v); }
+          if (pts.length < 2) { skipped++; break; }
+          const sn = val(gr, 2, 'STANDARD'), st = mlineStyles.find(s => s.name.toUpperCase() === String(sn).toUpperCase());
+          push(xformEnt({ type: 'mline', pts, closed: !!(parseInt(val(gr, 71, '0'), 10) & 2), just: ['top', 'zero', 'bottom'][parseInt(val(gr, 70, '0'), 10)] || 'top', scale: numv(gr, 40, 1) || 1, mlstyle: st ? st.name : 'STANDARD' }, M));
+          break;
+        }
+        case 'ARC_DIMENSION': case 'LARGE_RADIAL_DIMENSION': {
+          const k = gr.d.findIndex(x => x[0] === 100 && (x[1] === 'AcDbArcDimension' || x[1] === 'AcDbRadialDimensionLarge')), t = { d: k >= 0 ? gr.d.slice(k) : [] };
+          const pt = (g2, n) => (val(g2, 10 + n) === undefined ? null : P(numv(g2, 10 + n), numv(g2, 20 + n)));
+          const raw = val(gr, 1, ''), text = raw && raw !== '<>' && raw.trim() !== '' ? mtextPlain(specials(raw)) : '';
+          let dm = null;
+          if (gr.type === 'ARC_DIMENSION') {
+            const a = pt(t, 3), b = pt(t, 4), c = pt(t, 5), loc = pt(gr, 0) || pt(gr, 1);
+            if (a && b && c && loc) dm = { type: 'dim', kind: 'arc', c, p1: a, p2: b, p3: loc, ...(val(t, 70) === '1' ? { partial: true } : {}) };
+          } else {
+            const c = pt(gr, 0), loc = pt(gr, 1), oc = pt(t, 3), jg = pt(t, 4), ch = pt(t, 5);
+            if (c && loc && oc && jg && ch) dm = { type: 'dim', kind: 'jog', p1: c, p2: ch, p3: loc, p4: oc, p5: jg };
+          }
+          if (!dm) { const b = rawBlocks.get(val(gr, 2, '')); if (b && depth <= 8) convert(b.items, M, depth + 1, layer, out); else skipped++; break; }
+          if (text) dm.text = text;
+          dm.style = dimStyleName(val(gr, 3, ''));
+          push(xformEnt(dm, M));
+          break;
+        }
         case 'ACAD_TABLE': {
+          const tb = tableFrom(gr);
+          if (tb) { push(xformEnt(tb, M)); break; }
           const b = rawBlocks.get(val(gr, 2, ''));
           if (!b || depth > 8) { skipped++; break; }
           const ins = P(numv(gr, 10), numv(gr, 20)), r = Math.atan2(numv(gr, 21, 0), numv(gr, 11, 1));
@@ -945,8 +1098,9 @@ export function readDXF(text) {
           if (gr.type === 'INSERT' && uniform && depth === 0 && !name.startsWith('*')) {
             defineBlock(name);
             const e = { type: 'insert', name, p: ins, sx, sy, rot: r };
-            const av = attribValues(atts);
+            const av = attribValues(atts), cl = clipOf(gr);
             if (av) e.attribs = av;
+            if (cl) e.clip = cl;
             push(e);
             break;
           }
@@ -1056,8 +1210,9 @@ export function readDXF(text) {
             const aci = parseInt(val(gr, 62, '256'), 10);
             flush();
             const ins = { type: 'insert', name: nm, p: P(numv(gr, 10), numv(gr, 20)), sx, sy, rot: G.rad(numv(gr, 50)), layer, color: aci === 0 ? 'BYBLOCK' : aci > 0 && aci < 256 ? aciToHex(aci) : 'BYLAYER', ltype: 'BYLAYER', lw: 'BYLAYER' };
-            const av = attribValues(atts);
+            const av = attribValues(atts), cl = clipOf(gr);
             if (av) ins.attribs = av;
+            if (cl) ins.clip = cl;
             ents.push(ins);
             i = j - 1;
             continue;
@@ -1100,6 +1255,78 @@ export function readDXF(text) {
       groupsOut.push({ name, desc: val(gr, 300, '') || '', sel: val(gr, 71, '1') !== '0', handles: gr.d.filter(x => x[0] === 340).map(x => x[1]) });
     }
   }
+  // Objetos por identificador; estilos de línea múltiple y de tabla
+  const objByHandle = new Map((sections.OBJECTS || []).filter(gr => val(gr, 5)).map(gr => [val(gr, 5), gr]));
+  const dictEntries = gr => { const out = {}; let key = null; for (const [c, v] of gr?.d || []) { if (c === 3) key = v; else if ((c === 350 || c === 360) && key != null) { out[key] = v; key = null; } } return out; };
+  const xdataOf = (gr, app = 'TRAZOCAD') => { const i = gr.d.findIndex(x => x[0] === 1001 && x[1] === app); if (i < 0) return null; const out = []; for (let k = i + 1; k < gr.d.length && gr.d[k][0] !== 1001; k++) out.push(gr.d[k]); return out; };
+  const colorIn = (aci, tc) => (tc != null ? '#' + ((+tc >>> 0) & 0xffffff).toString(16).padStart(6, '0') : aci === 256 ? 'BYLAYER' : aci === 0 ? 'BYBLOCK' : aciToHex(Math.abs(aci) || 7));
+  const mlineStyles = [], tableStyleByHandle = new Map(), tableStyles = [];
+  for (const gr of sections.OBJECTS || []) {
+    if (gr.type === 'MLINESTYLE') {
+      const name = dictName.get(val(gr, 5)) || val(gr, 2, '') || 'STANDARD';
+      if (mlineStyles.some(s => s.name === name)) continue;
+      const fl = parseInt(val(gr, 70, '0'), 10) || 0, d = gr.d, k = d.findIndex(x => x[0] === 71), elems = [];
+      let fill = null;
+      if (fl & 1) { const i62 = d.findIndex(x => x[0] === 62); fill = colorIn(parseInt(d[i62]?.[1] ?? '7', 10), d[i62 + 1]?.[0] === 420 ? d[i62 + 1][1] : null); if (!fill.startsWith('#')) fill = '#808080'; }
+      for (let i = k + 1; k >= 0 && i < d.length; i++) {
+        const [c, v] = d[i];
+        if (c === 49) elems.push({ off: parseFloat(v), color: 'BYLAYER', ltype: 'BYLAYER' });
+        else if (c === 62 && elems.length) elems[elems.length - 1].color = colorIn(parseInt(v, 10), d[i + 1]?.[0] === 420 ? d[i + 1][1] : null);
+        else if (c === 6 && elems.length) { const t = String(v).toUpperCase(); elems[elems.length - 1].ltype = t === 'BYLAYER' || t === 'BYBLOCK' ? t : LTYPES[t] ? t : 'CONTINUOUS'; }
+        else if (c === 1001) break;
+      }
+      const caps = { sLine: !!(fl & 16), sInner: !!(fl & 32), sOuter: !!(fl & 64), eLine: !!(fl & 256), eInner: !!(fl & 512), eOuter: !!(fl & 1024) };
+      mlineStyles.push({ name, desc: val(gr, 3, '') || '', elems: elems.length ? elems : JSON.parse(JSON.stringify(DEFAULT_MLINESTYLE.elems)), caps, joints: !!(fl & 2), fill });
+    } else if (gr.type === 'TABLESTYLE') {
+      const name = dictName.get(val(gr, 5)) || 'Standard', hs = gr.d.filter(x => x[0] === 140).map(x => parseFloat(x[1])), th = hs[0] || DEFAULT_TBLSTYLE.th;
+      const xd = xdataOf(gr), al = xd?.find(x => x[0] === 1000)?.[1] || { 1: 'l', 4: 'l', 7: 'l', 2: 'c', 5: 'c', 8: 'c', 3: 'r', 6: 'r', 9: 'r' }[parseInt(val(gr, 170, '4'), 10)] || 'auto';
+      tableStyleByHandle.set(val(gr, 5), name);
+      if (!tableStyles.some(s => s.name === name)) tableStyles.push({ ...DEFAULT_TBLSTYLE, name, th, textStyle: val(gr, 7, 'Standard') || 'Standard', margin: +(numv(gr, 40, th * DEFAULT_TBLSTYLE.margin) / th).toFixed(6), titleScale: hs[2] ? +(hs[2] / th).toFixed(6) : DEFAULT_TBLSTYLE.titleScale, align: ['l', 'c', 'r', 'auto'].includes(al) ? al : 'auto' });
+    }
+  }
+  // Delimitación (XCLIP) de una referencia: diccionario de extensión → ACAD_FILTER → SPATIAL (SPATIAL_FILTER)
+  function clipOf(gr) {
+    const i = gr.d.findIndex(x => x[0] === 102 && x[1] === '{ACAD_XDICTIONARY');
+    if (i < 0) return null;
+    const xd = gr.d[i + 1]?.[0] === 360 ? gr.d[i + 1][1] : null, fd = dictEntries(objByHandle.get(xd)).ACAD_FILTER, sf = objByHandle.get(dictEntries(objByHandle.get(fd)).SPATIAL);
+    if (!sf || sf.type !== 'SPATIAL_FILTER') return null;
+    const k = sf.d.findIndex(x => x[0] === 100 && x[1] === 'AcDbSpatialFilter'), pts = [];
+    for (const [c, v] of sf.d.slice(k + 1)) { if (c === 10) pts.push(P(parseFloat(v), 0)); else if (c === 20 && pts.length) pts[pts.length - 1].y = parseFloat(v); else if (c === 210) break; }
+    const poly = pts.length === 2 ? [pts[0], P(pts[1].x, pts[0].y), pts[1], P(pts[0].x, pts[1].y)] : pts; // dos puntos: rectángulo
+    if (poly.length < 3) return null;
+    const fl = +(xdataOf(sf)?.find(x => x[0] === 1070)?.[1] || 0);
+    return { pts: poly, ...(fl & 1 ? { invert: true } : {}), ...(fl & 2 ? { off: true } : {}) };
+  }
+  // ACAD_TABLE → tabla (filas, columnas, alturas, anchuras, textos y estilo); null si no tiene los datos de AcDbTable
+  function tableFrom(gr) {
+    const k = gr.d.findIndex(x => x[0] === 100 && x[1] === 'AcDbTable');
+    if (k < 0) return null;
+    let nr = 0, nc = 0, dir = P(1, 0), style = null, cur = null, chunks = '';
+    const rows = [], cols = [], cells = [];
+    for (const [c, v] of gr.d.slice(k + 1)) {
+      if (c === 1001) break;
+      if (!cur) {
+        if (c === 91 && !nr) nr = parseInt(v, 10);
+        else if (c === 92 && !nc) nc = parseInt(v, 10);
+        else if (c === 141) rows.push(parseFloat(v));
+        else if (c === 142) cols.push(parseFloat(v));
+        else if (c === 11) dir.x = parseFloat(v); else if (c === 21) dir.y = parseFloat(v);
+        else if (c === 342) style = v;
+      }
+      if (c === 171) { cur = { text: '', span: 1 }; cells.push(cur); chunks = ''; }
+      else if (!cur) continue;
+      else if (c === 175) cur.span = parseInt(v, 10) || 1;
+      else if (c === 3) chunks += v;
+      else if (c === 1) cur.text = chunks + v;
+    }
+    if (!(nr > 0 && nc > 0) || rows.length !== nr || cols.length !== nc || cells.length < nr * nc) return null;
+    const xd = xdataOf(gr), fl = xd?.find(x => x[0] === 1070), th = xd?.find(x => x[0] === 1040);
+    const title = fl ? !!(+fl[1] & 1) : nc > 1 ? cells[0].span === nc : true;
+    const tb = { type: 'table', p: P(numv(gr, 10), numv(gr, 20)), rot: Math.atan2(dir.y, dir.x), cols, rows, title, header: fl ? !!(+fl[1] & 2) : true, tstyle: tableStyleByHandle.get(style) || 'Standard',
+      cells: Array.from({ length: nr }, (_, r) => Array.from({ length: nc }, (_, c) => mtextPlain(specials(cells[r * nc + c].text || '')))) };
+    if (th) tb.th = parseFloat(th[1]);
+    return tb;
+  }
   // Las directrices LEADER enlazan su MTEXT por identificador: se indexan los MTEXT de cada lista
   const linkCtx = (list, ctx = {}) => ({ ...ctx, used: new Set(), mtexts: new Map(list.filter(x => x.type === 'MTEXT' && val(x, 5)).map(x => [val(x, 5), x])) });
   const ents = [];
@@ -1134,7 +1361,7 @@ export function readDXF(text) {
     const paper = Object.entries(PAPERS_MM).find(([, [a, b]]) => Math.abs(Math.max(a, b) - Math.max(l.w, l.h)) < 1 && Math.abs(Math.min(a, b) - Math.min(l.w, l.h)) < 1)?.[0] || 'A4';
     outLayouts.push({ name: l.name, paper, w: l.w, h: l.h, ents: le });
   }
-  return { layers: [...layers.values()], ents, blocks: outBlocks, textStyles, dimStyles, mleaderStyles, layouts: outLayouts, groups: groupsOut, patterns, insBase: headerPoint(pairs, '$INSBASE') || P(0, 0), skipped };
+  return { layers: [...layers.values()], ents, blocks: outBlocks, textStyles, dimStyles, mleaderStyles, mlineStyles, tableStyles, layouts: outLayouts, groups: groupsOut, patterns, insBase: headerPoint(pairs, '$INSBASE') || P(0, 0), skipped };
 }
 
 // Punto de una variable de cabecera (código 9 seguido de 10/20)

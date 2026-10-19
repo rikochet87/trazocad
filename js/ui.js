@@ -8,6 +8,7 @@ import { groupsOf, isAnonGroup } from './groups.js';
 import { LS_PROPS, LS_ALL, layerStateMatches, renameLayerInStates } from './layerstates.js';
 import { linsOf, rotsOf } from './dynblock.js';
 import { PAPERS } from './document.js';
+import { CAP_KEYS, samplePts } from './mline.js';
 import { makeRV, setWorld, paintEntity } from './render.js';
 import * as G from './geom.js';
 import { parseRich, buildRich, baseFmt } from './richtext.js';
@@ -30,8 +31,9 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 
 const RIBBON = [
   { tab: 'Inicio', groups: [
-    { name: 'Dibujo', items: [['LINE', 'Línea', 'line'], ['PLINE', 'Polilínea', 'pline'], ['CIRCLE', 'Círculo', 'circle'], ['ARC', 'Arco', 'arc'], ['RECTANG', 'Rectángulo', 'rect'], ['POLYGON', 'Polígono', 'polygon'], ['ELLIPSE', 'Elipse', 'ellipse'], ['SPLINE', 'Spline', 'spline'], ['HATCH', 'Sombreado', 'hatch'], ['DIVIDE', 'Dividir', 'divide'], ['MEASURE', 'Graduar', 'measure']] },
-    { name: 'Modificar', items: [['MOVE', 'Desplazar', 'move'], ['COPY', 'Copiar', 'copy'], ['ROTATE', 'Girar', 'rotate'], ['SCALE', 'Escala', 'scale'], ['MIRROR', 'Simetría', 'mirror'], ['OFFSET', 'Desfase', 'offset'], ['TRIM', 'Recortar', 'trim'], ['EXTEND', 'Alargar', 'extend'], ['FILLET', 'Empalme', 'fillet'], ['CHAMFER', 'Chaflán', 'chamfer'], ['BREAK', 'Partir', 'break'], ['LENGTHEN', 'Longitud', 'lengthen'], ['STRETCH', 'Estirar', 'stretch'], ['ARRAYRECT', 'Matriz', 'arrayrect'], ['ARRAYPOLAR', 'M. polar', 'arraypolar'], ['EXPLODE', 'Descomp.', 'explode'], ['JOIN', 'Unir', 'join'], ['ERASE', 'Borrar', 'erase']] },
+    { name: 'Dibujo', items: [['LINE', 'Línea', 'line'], ['PLINE', 'Polilínea', 'pline'], ['CIRCLE', 'Círculo', 'circle'], ['ARC', 'Arco', 'arc'], ['RECTANG', 'Rectángulo', 'rect'], ['POLYGON', 'Polígono', 'polygon'], ['ELLIPSE', 'Elipse', 'ellipse'], ['SPLINE', 'Spline', 'spline'], ['HATCH', 'Sombreado', 'hatch'], ['DIVIDE', 'Dividir', 'divide'], ['MEASURE', 'Graduar', 'measure'], ['MLINE', 'Línea múlt.', 'mline'], ['MLSTYLE', 'Estilo LM', 'mlstyle']] },
+    { name: 'Modificar', items: [['MOVE', 'Desplazar', 'move'], ['COPY', 'Copiar', 'copy'], ['ROTATE', 'Girar', 'rotate'], ['SCALE', 'Escala', 'scale'], ['MIRROR', 'Simetría', 'mirror'], ['OFFSET', 'Desfase', 'offset'], ['TRIM', 'Recortar', 'trim'], ['EXTEND', 'Alargar', 'extend'], ['FILLET', 'Empalme', 'fillet'], ['CHAMFER', 'Chaflán', 'chamfer'], ['BREAK', 'Partir', 'break'], ['LENGTHEN', 'Longitud', 'lengthen'], ['STRETCH', 'Estirar', 'stretch'], ['ARRAYRECT', 'Matriz', 'arrayrect'], ['ARRAYPOLAR', 'M. polar', 'arraypolar'], ['ARRAYPATH', 'M. recorrido', 'arraypath'], ['ARRAYEDIT', 'Editar matriz', 'arrayedit'], ['EXPLODE', 'Descomp.', 'explode'], ['JOIN', 'Unir', 'join'], ['ERASE', 'Borrar', 'erase']] },
+    { name: 'Regiones', items: [['REGION', 'Región', 'region'], ['BOUNDARY', 'Contorno', 'boundary'], ['UNION', 'Unión', 'union'], ['SUBTRACT', 'Diferencia', 'subtract'], ['INTERSECT', 'Intersección', 'intersect']] },
     { name: 'Anotación', items: [['MTEXT', 'Texto', 'mtext'], ['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table']] },
     { name: 'Bloque', items: [['BLOCK', 'Crear', 'block'], ['INSERT', 'Insertar', 'insert'], ['BEDIT', 'Editar', 'bedit'], ['ATTDEF', 'Atributo', 'attdef']] },
     { name: 'Grupos', items: [['GROUP', 'Agrupar', 'group'], ['UNGROUP', 'Desagrupar', 'ungroup'], ['GROUPEDIT', 'Editar grupo', 'groupedit'], ['CLASSICGROUP', 'Grupos', 'groups']] },
@@ -42,13 +44,13 @@ const RIBBON = [
   { tab: 'Insertar', groups: [
     { name: 'Bloque', items: [['BLOCK', 'Crear bloque', 'block'], ['INSERT', 'Insertar', 'insert'], ['BEDIT', 'Editor de bloques', 'bedit'], ['EXPLODE', 'Descomponer', 'explode'], ['PURGE', 'Limpiar', 'trash']] },
     { name: 'Bloque dinámico', items: [['BPARAMETER', 'Parámetro', 'bparam'], ['BVSTATE', 'Estados', 'bvstate'], ['BVHIDE', 'Ocultar', 'bvhide'], ['BVSHOW', 'Mostrar', 'bvshow'], ['BLOOKUPTABLE', 'Tabla consulta', 'lookup']] },
-    { name: 'Referencia', items: [['XATTACH', 'Enlazar', 'xattach'], ['XREF', 'Referencias externas', 'xref']] },
+    { name: 'Referencia', items: [['XATTACH', 'Enlazar', 'xattach'], ['XREF', 'Referencias externas', 'xref'], ['XCLIP', 'Delimitar', 'xclip']] },
     { name: 'Atributos', items: [['ATTDEF', 'Definir atributo', 'attdef'], ['ATTEDIT', 'Editar atributos', 'attedit']] },
     { name: 'Importar', items: [['OPEN', 'Abrir DXF', 'dxf'], ['PASTECLIP', 'Pegar', 'copy']] },
   ] },
   { tab: 'Anotar', groups: [
     { name: 'Texto', items: [['MTEXT', 'Líneas múltiples', 'mtext'], ['TEXT', 'Una línea', 'text'], ['FIELD', 'Campo', 'field'], ['STYLE', 'Estilo de texto', 'textstyle']] },
-    { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMORDINATE', 'Coordenada', 'dimord'], ['DIMREASSOCIATE', 'Reasociar', 'dimassoc'], ['DIMDISASSOCIATE', 'Desasociar', 'unlink'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
+    { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMORDINATE', 'Coordenada', 'dimord'], ['DIMARC', 'Long. de arco', 'dimarc'], ['DIMJOGGED', 'Recodo', 'dimjog'], ['DIMREASSOCIATE', 'Reasociar', 'dimassoc'], ['DIMDISASSOCIATE', 'Desasociar', 'unlink'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
     { name: 'Series', items: [['DIMCONTINUE', 'Continua', 'dimcont'], ['DIMBASELINE', 'Línea base', 'dimbase'], ['QDIM', 'Rápida', 'qdim']] },
     { name: 'Directrices y tablas', items: [['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table'], ['MLEADERSTYLE', 'Estilo dir.', 'mlstyle'], ['TABLESTYLE', 'Estilo tabla', 'tblstyle']] },
     { name: 'Sombreado', items: [['HATCH', 'Sombreado', 'hatch'], ['GRADIENT', 'Degradado', 'gradient'], ['PATTERNS', 'Patrones', 'patlib']] },
@@ -576,8 +578,8 @@ export class UI {
   // ---------- Diálogos ----------
   modal(title, content, buttons) {
     return new Promise(res => {
-      const root = $('#modal-root');
-      const close = v => { root.replaceChildren(); root.hidden = true; res(v); };
+      const root = $('#modal-root'), under = root.hidden ? [] : [...root.childNodes]; // diálogo abierto desde otro: al cerrarse vuelve el anterior
+      const close = v => { root.replaceChildren(...under); root.hidden = !under.length; res(v); };
       const box = h('div', { class: 'modal', role: 'dialog', 'aria-label': title },
         h('div', { class: 'modal-head' }, h('span', {}, title), h('button', { class: 'ib', html: icon('close', 16), onclick: () => close(null) })),
         h('div', { class: 'modal-body' }, content),
@@ -989,9 +991,9 @@ export class UI {
         : h('p', { class: 'hint' }, 'No hay estados de capa. «Nuevo…» guarda la configuración actual de las capas (activadas, bloqueadas, color, tipo y grosor de línea) con un nombre.'),
       h('fieldset', {}, h('legend', {}, 'Propiedades que se restauran'), h('div', { class: 'grid2' }, ...checks, h('label', { class: 'chk', title: 'Las capas creadas después de guardar el estado se desactivan al restaurarlo' }, offMissing, 'Desactivar las capas que no están en el estado'))));
     const opts = () => { const p = [...box.querySelectorAll('[data-p]')].filter(x => x.checked).map(x => x.dataset.p); S.lsProps = p; S.lsOffMissing = offMissing.checked; return { props: p, offMissing: offMissing.checked }; };
-    const act = a => () => (a === 'new' || sel ? { action: a, name: sel, opts: opts() } : null);
-    return this.modal('Estados de capa', box, [{ label: 'Cerrar', value: null }, { label: 'Nuevo…', value: act('new') },
-      ...(doc.layerStates.length ? [{ label: 'Actualizar', value: act('update') }, { label: 'Renombrar…', value: act('rename') }, { label: 'Descripción…', value: act('desc') }, { label: 'Eliminar', value: act('delete') }, { label: 'Restaurar', value: act('restore'), primary: true }] : [])]);
+    const act = a => () => (a === 'new' || a === 'import' || sel ? { action: a, name: sel, opts: opts() } : null);
+    return this.modal('Estados de capa', box, [{ label: 'Cerrar', value: null }, { label: 'Nuevo…', value: act('new') }, { label: 'Importar .las…', value: act('import') },
+      ...(doc.layerStates.length ? [{ label: 'Exportar .las…', value: act('export') }, { label: 'Actualizar', value: act('update') }, { label: 'Renombrar…', value: act('rename') }, { label: 'Descripción…', value: act('desc') }, { label: 'Eliminar', value: act('delete') }, { label: 'Restaurar', value: act('restore'), primary: true }] : [])]);
   }
 
   // Editor de la tabla de consulta de un bloque dinámico. cols: claves de los parámetros ('lin:Nombre', 'rot:Nombre', 'vis', 'flip').
@@ -1076,6 +1078,7 @@ export class UI {
       list.value = String(idx);
       const s = work[idx];
       form.replaceChildren(...fields.map(f => {
+        if (f.render) return h('div', { class: 'fld wide' }, f.label, f.render(s, () => prev.replaceChildren(preview(s))));
         let inp;
         if (f.options) { inp = h('select', {}, ...(typeof f.options === 'function' ? f.options() : f.options).map(([v, l]) => h('option', { value: v }, l))); inp.value = String(s[f.key]); }
         else inp = h('input', { type: f.type || 'number', step: 'any', value: s[f.key] ?? '' });
@@ -1107,7 +1110,7 @@ export class UI {
     doc[listKey] = work;
     doc.cur[curKey] = current;
     // Las referencias a estilos eliminados pasan al estilo base
-    const refs = { textStyles: [['text', 'mtext', 'attdef', 'mleader', 'table'], 'style'], dimStyles: [['dim'], 'style'], mleaderStyles: [['mleader'], 'mstyle'], tableStyles: [['table'], 'tstyle'] }[listKey];
+    const refs = { textStyles: [['text', 'mtext', 'attdef', 'mleader', 'table'], 'style'], dimStyles: [['dim'], 'style'], mleaderStyles: [['mleader'], 'mstyle'], tableStyles: [['table'], 'tstyle'], mlineStyles: [['mline'], 'mlstyle'] }[listKey];
     for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (refs[0].includes(e.type) && e[refs[1]] != null && !names.has(e[refs[1]])) e[refs[1]] = work[0].name;
     if (listKey === 'textStyles') for (const d of [...doc.dimStyles, ...doc.mleaderStyles, ...doc.tableStyles]) if (!names.has(d.textStyle)) d.textStyle = work[0].name;
     for (const b of Object.values(doc.blocks)) b.ver = (b.ver || 0) + 1;
@@ -1145,6 +1148,50 @@ export class UI {
         const P = G.P, base = { type: 'mleader', mstyle: name, w: 0, layer: '0', color: '#ffffff', ltype: 'BYLAYER', lw: 'BYLAYER' };
         const cv = this.thumb([{ ...base, pts: [P(0, 0), P(15, 12)], content: 'mtext', text: 'Texto de nota' }, { ...base, pts: [P(40, 0), P(52, 12)], content: 'block', text: '1' }], 260, 120, 0.1);
         doc.mleaderStyles = saved;
+        return cv;
+      },
+    });
+  }
+
+  // Estilos de línea múltiple: elementos (desfase, color, tipo de línea), remates, ingletes y relleno
+  mlineStyleManager() {
+    const doc = this.app.doc;
+    const ltOpts = [['BYLAYER', 'PorCapa'], ['BYBLOCK', 'PorBloque'], ...Object.entries(LTYPES).map(([k, v]) => [k, `${k} · ${v.desc}`])];
+    const elemsEditor = (s, changed) => {
+      const box = h('div', { class: 'ml-elems' });
+      const draw = () => {
+        s.elems.sort((a, b) => b.off - a.off);
+        box.replaceChildren(h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...['Desfase', 'Color', 'Tipo de línea', ''].map(t => h('th', {}, t)))),
+          h('tbody', {}, ...s.elems.map((el, i) => {
+            const off = h('input', { type: 'number', step: 'any', value: el.off, onchange: ev => { const v = parseFloat(ev.target.value); if (Number.isFinite(v)) { el.off = v; draw(); changed(); } } });
+            const own = el.color !== 'BYLAYER' && el.color !== 'BYBLOCK';
+            const col = h('select', { onchange: async ev => { let v = ev.target.value; if (v === '__custom') v = (await this.pickColor(own ? el.color : '#ffffff')) || el.color; el.color = v; draw(); changed(); } },
+              h('option', { value: 'BYLAYER' }, 'PorCapa'), h('option', { value: 'BYBLOCK' }, 'PorBloque'), ...COLORS.map(([v, l]) => h('option', { value: v }, l)), ...(own && !COLORS.some(([v]) => v === el.color) ? [h('option', { value: el.color }, el.color)] : []), h('option', { value: '__custom' }, 'Otro…'));
+            col.value = el.color;
+            const lt = h('select', { onchange: ev => { el.ltype = ev.target.value; changed(); } }, ...ltOpts.map(([v, l]) => h('option', { value: v }, l)));
+            lt.value = el.ltype || 'BYLAYER';
+            const del = h('button', { class: 'btn', title: 'Eliminar elemento', onclick: () => { if (s.elems.length > 1) { s.elems.splice(i, 1); draw(); changed(); } } }, '×');
+            return h('tr', {}, h('td', {}, off), h('td', {}, col), h('td', {}, lt), h('td', {}, del));
+          }))),
+          h('button', { class: 'btn', onclick: () => { if (s.elems.length < 16) { s.elems.push({ off: 0, color: 'BYLAYER', ltype: 'BYLAYER' }); draw(); changed(); } } }, h('span', { html: icon('plus', 16) }), 'Añadir elemento'));
+      };
+      draw();
+      return box;
+    };
+    const capsEditor = (s, changed) => h('div', { class: 'grid2' }, ...Object.entries(CAP_KEYS).map(([k, l]) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!s.caps?.[k], onchange: ev => { s.caps = { ...s.caps, [k]: ev.target.checked }; changed(); } }), l)),
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!s.joints, onchange: ev => { s.joints = ev.target.checked; changed(); } }), 'Mostrar uniones (ingletes)'));
+    const fillEditor = (s, changed) => {
+      const col = h('input', { type: 'color', value: s.fill || '#4a6fa5', class: 'prop-color', disabled: !s.fill, onchange: ev => { s.fill = ev.target.value; changed(); } });
+      return h('div', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!s.fill, onchange: ev => { s.fill = ev.target.checked ? col.value : null; col.disabled = !ev.target.checked; changed(); } }), 'Relleno', col);
+    };
+    return this.styleManager({
+      title: 'Estilos de línea múltiple', listKey: 'mlineStyles', curKey: 'mlineStyle', make: s => JSON.parse(JSON.stringify(s)),
+      fields: [{ key: 'desc', label: 'Descripción', type: 'text' }, { label: 'Elementos', render: elemsEditor }, { label: 'Remates', render: capsEditor }, { label: 'Relleno', render: fillEditor }],
+      preview: s => {
+        const name = '__prev__', saved = doc.mlineStyles, offs = s.elems.map(x => x.off), w = Math.max(...offs) - Math.min(...offs) || 1;
+        doc.mlineStyles = [{ ...s, name }];
+        const cv = this.thumb([{ type: 'mline', pts: samplePts(12 * w), closed: false, just: 'zero', scale: 1, mlstyle: name, layer: '0', color: '#ffffff', ltype: 'BYLAYER', lw: 'BYLAYER' }], 260, 110, 0.12);
+        doc.mlineStyles = saved;
         return cv;
       },
     });
@@ -1275,6 +1322,15 @@ export class UI {
         <li>Pestañas <b>Modelo / Presentación</b> abajo a la izquierda; <b>+</b> crea una presentación con marco, cajetín y una ventana gráfica a escala estándar.</li>
         <li>Doble clic dentro de una ventana gráfica: trabaja en el modelo a través de ella (zoom y encuadre cambian su vista). Doble clic fuera: vuelve al papel.</li>
         <li>La escala de la ventana se cambia en la paleta de Propiedades. Imprimir, SVG y PNG de una presentación salen a escala real en milímetros.</li>
+      </ul>
+      <h4>Novedades de la v0.7</h4>
+      <ul>
+        <li><b>Líneas múltiples</b>: MLINE (<code>ML</code>) dibuja elementos paralelos (muros, calzadas…) con justificación superior, cero o inferior y escala; ESTILOLM (MLSTYLE) define sus elementos (desfase, color, tipo de línea), remates de línea o de arco, ingletes y relleno. Pinzamientos en los vértices; se descomponen en líneas y arcos.</li>
+        <li><b>Matrices asociativas</b>: ARRAYRECT, ARRAYPOLAR y <b>ARRAYPATH</b> (a lo largo de una línea, arco, polilínea o spline, dividiendo o con separación fija) crean un único objeto editable con ARRAYEDIT, sus pinzamientos cian o la paleta de Propiedades. La matriz de recorrido sigue al recorrido cuando éste cambia. Opción ASOciativa = No para obtener copias sueltas.</li>
+        <li><b>Regiones</b>: REGION convierte objetos cerrados o cadenas de líneas y arcos en regiones; UNION, SUBTRACT (DIFERENCIA) e INTERSECT (INTERSEC) operan con ellas conservando los arcos. CONTORNO (BOUNDARY, <code>BO</code>) crea una polilínea o una región con el contorno que rodea un punto, con sus islas.</li>
+        <li><b>Cotas</b>: DIMARC (longitud de arco, completa o parcial, con el símbolo de arco) y DIMJOGGED (radio con recodo y centro desplazado para arcos grandes). Las dos son asociativas.</li>
+        <li><b>XCLIP</b>: delimita referencias a bloques y referencias externas con un contorno rectangular, poligonal o una polilínea, normal o invertido; activar, desactivar, suprimir o generar la polilínea. XCLIPFRAME muestra u oculta el marco.</li>
+        <li><b>DXF 2007</b>: las tablas se escriben como ACAD_TABLE con sus estilos (TABLESTYLE), las líneas múltiples como MLINE con MLINESTYLE (también en DXF 2000), las cotas nuevas como ARC_DIMENSION y LARGE_RADIAL_DIMENSION y las delimitaciones como SPATIAL_FILTER; todo se vuelve a leer. <b>Estados de capa</b> en archivos <code>.las</code>: botones Importar y Exportar de LAYERSTATE y opciones de -LAYERSTATE.</li>
       </ul>
       <h4>Novedades de la v0.6</h4>
       <ul>

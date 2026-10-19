@@ -1,0 +1,146 @@
+// Matrices asociativas: rectangular, polar y a lo largo de un recorrido (ARRAYPATH), editables como un único objeto.
+// Entidad: {type: 'array', kind: 'rect'|'polar'|'path', src: [entidades de origen], base: punto base del origen, M: matriz local → dibujo,
+//   rect:  rows, cols, dx (entre columnas), dy (entre filas)
+//   polar: c (centro), n, fill (ángulo a rellenar, con signo), rot (girar los elementos)
+//   path:  path (copia del recorrido en coordenadas locales), pathId (recorrido asociado), method: 'divide'|'measure', n, sp, align}
+// Todo se guarda en coordenadas locales; M recoge los desplazamientos, giros, escalas y simetrías aplicados después.
+import * as G from './geom.js';
+import { ENV, cloneEnt, xformEnt, bboxOf, bbUnion } from './entities.js';
+import { pathOf } from './ops.js';
+const { P, Mx } = G;
+
+export const ARRAY_KINDS = { rect: 'Rectangular', polar: 'Polar', path: 'Recorrido' };
+export const pathable = e => ['line', 'arc', 'circle', 'pline', 'spline', 'ellipse'].includes(e?.type);
+export const PATH_METHODS = [['measure', 'Medir (separación fija)'], ['divide', 'Dividir (repartir en todo el recorrido)']];
+const inv = m => { const d = m[0] * m[3] - m[1] * m[2]; return [m[3] / d, -m[1] / d, -m[2] / d, m[0] / d, (m[2] * m[5] - m[3] * m[4]) / d, (m[1] * m[4] - m[0] * m[5]) / d]; };
+export const arrayM = e => e.M || Mx.I();
+export const toLocal = (e, p) => Mx.ap(inv(arrayM(e)), p);
+export const toWorld = (e, p) => Mx.ap(arrayM(e), p);
+// Centro de la caja de las entidades de origen (punto base por defecto)
+export function srcCenter(ents) {
+  const b = ents.reduce((r, x) => bbUnion(r, bboxOf(x)), null);
+  return b ? P((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2) : P(0, 0);
+}
+// Recorrido local (copia del objeto del dibujo llevada a las coordenadas de la matriz)
+export const localPath = (e, pathEnt) => { const c = cloneEnt(pathEnt); delete c.id; return xformEnt(c, inv(arrayM(e))); };
+
+// Posiciones del recorrido (distancias desde su inicio) según el método
+export function pathStations(e, pt = pathOf(e.path)) {
+  if (!pt || !(pt.len > 1e-12)) return [];
+  const n = Math.max(1, e.n | 0);
+  if (e.method === 'divide') {
+    if (n === 1) return [0];
+    return Array.from({ length: n }, (_, k) => (pt.len * k) / (pt.closed ? n : n - 1));
+  }
+  const sp = Math.abs(e.sp) || pt.len;
+  const max = Math.floor(pt.len / sp + 1e-9) + (pt.closed ? 0 : 1);
+  return Array.from({ length: Math.min(n, Math.max(1, max)) }, (_, k) => k * sp);
+}
+// Número máximo de elementos que caben con la separación actual (Medir)
+export function pathFit(e) { const pt = pathOf(e.path), sp = Math.abs(e.sp); return pt && sp > 0 ? Math.floor(pt.len / sp + 1e-9) + (pt.closed ? 0 : 1) : 1; }
+
+// Matrices locales de cada elemento
+export function itemMatrices(e) {
+  switch (e.kind) {
+    case 'rect': {
+      const out = [];
+      for (let i = 0; i < Math.max(1, e.rows | 0); i++) for (let j = 0; j < Math.max(1, e.cols | 0); j++) out.push(Mx.T(j * e.dx, i * e.dy));
+      return out;
+    }
+    case 'polar': {
+      const n = Math.max(1, e.n | 0), full = Math.abs(Math.abs(e.fill) - G.TAU) < 1e-9, step = n > 1 ? e.fill / (full ? n : n - 1) : 0;
+      return Array.from({ length: n }, (_, k) => {
+        const R = Mx.R(k * step, e.c);
+        if (e.rot !== false) return R;
+        const q = Mx.ap(R, e.base);
+        return Mx.T(q.x - e.base.x, q.y - e.base.y);
+      });
+    }
+    case 'path': {
+      const pt = pathOf(e.path);
+      if (!pt) return [Mx.I()];
+      const a0 = pt.at(0).a;
+      return pathStations(e, pt).map(s => {
+        const { p, a } = pt.at(s);
+        return Mx.mul(Mx.T(p.x, p.y), Mx.mul(Mx.R(e.align !== false ? a - a0 : 0), Mx.T(-e.base.x, -e.base.y)));
+      });
+    }
+  }
+  return [Mx.I()];
+}
+
+// Entidades de todos los elementos, en coordenadas del dibujo (con el identificador de la matriz)
+const cache = new WeakMap();
+export function arrayEnts(e) {
+  const key = JSON.stringify([e.kind, e.rows, e.cols, e.dx, e.dy, e.c, e.n, e.fill, e.rot, e.method, e.sp, e.align, e.base, e.M, e.path, e.layer, e.src.length, e.ver || 0]);
+  const hit = cache.get(e);
+  if (hit && hit.key === key && hit.src === e.src) return hit.ents;
+  const M = arrayM(e), ents = [];
+  for (const L of itemMatrices(e)) {
+    const W = Mx.mul(M, L);
+    for (const s of e.src) { const v = xformEnt(cloneEnt(s), W); v.id = e.id; ents.push(v); }
+  }
+  cache.set(e, { key, src: e.src, ents });
+  return ents;
+}
+export const itemCount = e => itemMatrices(e).length;
+
+// ---------- Pinzamientos ----------
+// rect: base (desplaza), elemento (0,1) → separación entre columnas, elemento (1,0) → entre filas, último elemento → recuento
+// polar: centro (desplaza), segundo elemento → ángulo entre elementos; path: base sobre el recorrido (desplaza)
+export function arrayGrips(e) {
+  const W = p => toWorld(e, p), b = e.base;
+  if (e.kind === 'rect') {
+    const out = [{ p: W(b), kind: '' }];
+    if (e.cols > 1) out.push({ p: W(G.add(b, P(e.dx, 0))), kind: 'cols' });
+    if (e.rows > 1) out.push({ p: W(G.add(b, P(0, e.dy))), kind: 'rows' });
+    out.push({ p: W(G.add(b, P((e.cols - 1) * e.dx + (e.cols > 1 ? 0 : e.dx || 1), (e.rows - 1) * e.dy + (e.rows > 1 ? 0 : e.dy || 1)))), kind: 'count' });
+    return out;
+  }
+  if (e.kind === 'polar') {
+    const ms = itemMatrices(e), out = [{ p: W(e.c), kind: '' }];
+    if (ms.length > 1) out.push({ p: W(Mx.ap(ms[1], b)), kind: 'step' });
+    return out;
+  }
+  const ms = itemMatrices(e);
+  return [{ p: W(Mx.ap(ms[0], b)), kind: '' }];
+}
+export function arrayMoveGrip(e, i, p) {
+  const g = arrayGrips(e)[i];
+  if (!g) return;
+  if (!g.kind) { const d = G.sub(p, g.p); e.M = Mx.mul(Mx.T(d.x, d.y), arrayM(e)); e._xf = true; return; }
+  const q = G.sub(toLocal(e, p), e.base);
+  if (g.kind === 'cols') { if (Math.abs(q.x) > 1e-9) e.dx = q.x; }
+  else if (g.kind === 'rows') { if (Math.abs(q.y) > 1e-9) e.dy = q.y; }
+  else if (g.kind === 'count') {
+    if (Math.abs(e.dx) > 1e-12) e.cols = Math.max(1, Math.min(1000, Math.round(q.x / e.dx) + 1));
+    if (Math.abs(e.dy) > 1e-12) e.rows = Math.max(1, Math.min(1000, Math.round(q.y / e.dy) + 1));
+  } else if (g.kind === 'step') {
+    const full = Math.abs(Math.abs(e.fill) - G.TAU) < 1e-9, a = G.ang(e.c, toLocal(e, p)) - G.ang(e.c, e.base);
+    let step = Math.atan2(Math.sin(a), Math.cos(a));
+    if (Math.abs(step) < 1e-6) return;
+    if (full && Math.abs(step * e.n) > G.TAU) step = Math.sign(step) * G.TAU / e.n;
+    e.fill = step * (full ? e.n : e.n - 1);
+  }
+}
+
+// ---------- Propiedades ----------
+const num = (label, get, set) => ({ label, type: 'num', get, set });
+const int = (label, key, max = 1000) => ({ label, type: 'num', get: e => e[key], set: (e, v) => { const k = Math.round(v); if (k >= 1 && k <= max) e[key] = k; } });
+export function arrayProps(e) {
+  const out = [{ label: 'Tipo', type: 'text', get: x => ARRAY_KINDS[x.kind], ro: true }, { label: 'Elementos', type: 'int', get: x => itemCount(x), ro: true }];
+  if (e.kind === 'rect') out.push(int('Columnas', 'cols'), num('Separación entre columnas', x => x.dx, (x, v) => { if (v) x.dx = v; }), int('Filas', 'rows'), num('Separación entre filas', x => x.dy, (x, v) => { if (v) x.dy = v; }));
+  else if (e.kind === 'polar') out.push(int('Número de elementos', 'n'), num('Ángulo a rellenar (°)', x => G.deg(x.fill), (x, v) => { if (v) x.fill = G.rad(Math.max(-360, Math.min(360, v))); }),
+    { label: 'Girar elementos', type: 'bool', get: x => x.rot !== false, set: (x, v) => { x.rot = v; } });
+  else out.push({ label: 'Método', type: 'select', options: PATH_METHODS, get: x => x.method, set: (x, v) => { x.method = v; if (v === 'measure' && x.n > pathFit(x)) x.n = pathFit(x); } },
+    int('Número de elementos', 'n', 10000), num('Separación', x => x.sp, (x, v) => { if (v > 0) { x.sp = v; if (x.method === 'measure') x.n = Math.min(x.n, pathFit(x)); } }),
+    { label: 'Alinear elementos', type: 'bool', get: x => x.align !== false, set: (x, v) => { x.align = v; } },
+    { label: 'Asociada al recorrido', type: 'text', get: x => (x.pathId != null && ENV.doc?.get(x.pathId) ? 'Sí' : 'No'), ro: true });
+  out.push({ label: 'Objetos de origen', type: 'int', get: x => x.src.length, ro: true });
+  return out;
+}
+
+ENV.arrayEnts = arrayEnts;
+ENV.arrayGrips = arrayGrips;
+ENV.arrayMoveGrip = arrayMoveGrip;
+ENV.arrayProps = arrayProps;

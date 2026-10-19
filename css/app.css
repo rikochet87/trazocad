@@ -281,3 +281,6 @@ input.full { width: 100%; }
 .xref-list.params input.num { text-align: right; }
 .lay-bar { flex-wrap: wrap; align-items: center; }
 .modal-body fieldset .grid2 { margin-top: 4px; }
+.fld.wide { grid-column: 1 / -1; }
+.ml-elems { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.ml-elems input[type=number] { width: 80px; }

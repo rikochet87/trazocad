@@ -3,6 +3,8 @@ import * as G from './geom.js';
 import { PATTERNS, famsOf, famLines, gradientSpec, GRADIENTS, GRAD_DEFAULT, USER_DEFAULT } from './patterns.js';
 import { splinePts, rebuild as rebuildSpline } from './spline.js';
 import { parseRich, baseFmt, richPlain } from './richtext.js';
+import { mlineGeom, mlinePrims, mlStyleOf, ML_JUST } from './mline.js';
+import { clipActive, clipKeeps, clipPrims } from './xclip.js';
 const { P, Mx, TAU } = G;
 
 export const ENV = { doc: null, layout: null };
@@ -120,8 +122,8 @@ export function formatDate(d, f) {
 }
 // Propiedades de objeto disponibles en campos: nombre → función (null si no se aplica a la entidad)
 export const FIELD_PROPS = {
-  'Área': e => ({ circle: () => Math.PI * e.r * e.r, ellipse: () => Math.PI * e.rx * e.ry, pline: () => (e.closed ? Math.abs(plArea(e)) : null), hatch: () => hatchArea(e), spline: () => (e.closed ? Math.abs(G.polyArea(splinePts(e))) : null) })[e.type]?.() ?? null,
-  'Longitud': e => ({ line: () => G.dist(e.p1, e.p2), arc: () => e.r * G.sweep(e.a1, e.a2), circle: () => TAU * e.r, pline: () => plLength(e), spline: () => G.polyLen(splinePts(e), e.closed) })[e.type]?.() ?? null,
+  'Área': e => ({ circle: () => Math.PI * e.r * e.r, ellipse: () => Math.PI * e.rx * e.ry, pline: () => (e.closed ? Math.abs(plArea(e)) : null), hatch: () => hatchArea(e), spline: () => (e.closed ? Math.abs(G.polyArea(splinePts(e))) : null), region: () => Math.abs(regArea(e)) })[e.type]?.() ?? null,
+  'Longitud': e => ({ line: () => G.dist(e.p1, e.p2), arc: () => e.r * G.sweep(e.a1, e.a2), circle: () => TAU * e.r, pline: () => plLength(e), spline: () => G.polyLen(splinePts(e), e.closed), mline: () => mlLen(e) })[e.type]?.() ?? null,
   'Radio': e => (e.type === 'circle' || e.type === 'arc' ? e.r : null),
   'Diámetro': e => (e.type === 'circle' || e.type === 'arc' ? 2 * e.r : null),
   'Medida': e => (e.type === 'dim' ? dimParts(e).val : null),
@@ -256,6 +258,51 @@ export function dimParts(e) {
       ? { p: G.add(q, P(h / 2, s * gap)), rot: Math.PI / 2, align: s > 0 ? 'l' : 'r' }
       : { p: G.add(q, P(s * gap, -h / 2)), rot: 0, align: s > 0 ? 'l' : 'r' };
     return { lines, arrows, dots, arcs, val, axis, text: { ...text, h, str: label(num(val)), style: ds.textStyle } };
+  }
+  if (e.kind === 'arc') {
+    // Longitud de arco: centro c, arco de p1 a p2 en sentido antihorario, p3 sitúa el arco de cota. Con menos de 90° las líneas
+    // de referencia son paralelas a la bisectriz; si no, radiales. El símbolo de arco va encima del texto.
+    const c = e.c, r = G.dist(c, e.p1), a1 = G.ang(c, e.p1), sw = G.sweep(a1, G.ang(c, e.p2)), R = Math.max(G.dist(c, e.p3), 1e-9);
+    const am = a1 + sw / 2, um = P(Math.cos(am), Math.sin(am)), out = R >= r;
+    const foot = p => {
+      if (sw >= Math.PI / 2) return G.polar(c, G.ang(c, p), R);
+      const b = G.dot(um, G.sub(p, c)), disc = b * b - (G.dot(G.sub(p, c), G.sub(p, c)) - R * R);
+      if (disc < 0) return G.polar(c, G.ang(c, p), R);
+      return G.add(p, G.mul(um, out ? -b + Math.sqrt(disc) : -b - Math.sqrt(disc)));
+    };
+    const q1 = foot(e.p1), q2 = foot(e.p2);
+    for (const [p, q] of [[e.p1, q1], [e.p2, q2]]) {
+      const v = G.sub(q, p), L = G.len(v);
+      if (L < 1e-9) continue;
+      const u = G.mul(v, 1 / L);
+      lines.push([L > exo ? G.add(p, G.mul(u, exo)) : q, G.add(q, G.mul(u, exe))]);
+    }
+    const s = G.ang(c, q1), t = G.ang(c, q2);
+    arcs.push([c, R, s, t]);
+    arrow(q1, P(-Math.sin(s), Math.cos(s)));
+    arrow(q2, P(Math.sin(t), -Math.cos(t)));
+    const mid = s + G.sweep(s, t) / 2;
+    let ta = Math.atan2(Math.sin(mid - Math.PI / 2), Math.cos(mid - Math.PI / 2)), flip = false;
+    if (ta > Math.PI / 2 + 1e-9) { ta -= Math.PI; flip = true; } else if (ta <= -Math.PI / 2 + 1e-9) { ta += Math.PI; flip = true; }
+    // Símbolo: arco pequeño sobre el texto (en el sistema del texto: x a lo largo, y hacia arriba). Con el texto girado,
+    // su parte superior mira al arco de cota: se aleja para dejar sitio al símbolo
+    const sw2 = 0.45 * h, sag = 0.28 * h, y0 = 1.2 * h, rho = (sw2 * sw2 + sag * sag) / (2 * sag), cy = y0 + sag - rho, ar = Math.atan2(y0 - cy, sw2);
+    const val = r * sw, tp = G.polar(c, mid, R + gap + (flip ? y0 + sag + 0.1 * h : 0));
+    arcs.push([G.add(tp, G.rot(P(0, cy), ta)), rho, ar + ta, Math.PI - ar + ta]);
+    return { lines, arrows, dots, arcs, val, text: { p: tp, rot: ta, h, str: label(num(val)), align: 'c', style: ds.textStyle } };
+  }
+  if (e.kind === 'jog') {
+    // Radio con recodo: p1 centro, p2 en el arco (radio), p3 ubicación de la línea de cota, p4 centro desplazado, p5 recodo
+    const c = e.p1, r = G.dist(c, e.p2), u = G.norm(G.sub(e.p3, c)), n = G.perp(u), a = G.add(c, G.mul(u, r));
+    const d = G.dot(G.sub(e.p4, c), n), ad = Math.abs(d), k0 = G.dot(G.sub(e.p4, c), u);
+    const sj = Math.min(r - ad / 2, Math.max(k0 + ad / 2, G.dot(G.sub(e.p5, c), u)));
+    const J2 = G.add(c, G.mul(u, sj + ad / 2)), J1 = G.add(G.add(c, G.mul(n, d)), G.mul(u, sj - ad / 2));
+    const end = G.dist(c, e.p3) > r ? e.p3 : a;
+    if (G.dot(G.sub(J1, e.p4), u) > 1e-9) lines.push([e.p4, J1]);
+    lines.push([J1, J2], [J2, end]);
+    arrow(a, G.mul(u, -1));
+    const right = u.x >= 0;
+    return { lines, arrows, dots, arcs, val: r, text: { p: G.add(end, P(right ? gap : -gap, -h / 2)), rot: 0, h, str: label('R' + num(r)), align: right ? 'l' : 'r', style: ds.textStyle } };
   }
   if (e.kind === 'rad' || e.kind === 'dia') {
     const r = G.dist(e.p1, e.p2), u = G.norm(G.sub(e.p3, e.p1)), a = G.add(e.p1, G.mul(u, r));
@@ -951,9 +998,9 @@ TYPES.attdef = {
 };
 
 const dimSegs = d => [...d.lines.map(([a, b]) => ({ k: 's', a, b })), ...d.arcs.map(([c, r, a1, a2]) => ({ k: 'a', c, r, a1, a2 }))];
-const DIM_GRIPS = { ang: ['p3', 'c'], ord: ['p1', 'p3'] };
+const DIM_GRIPS = { ang: ['p3', 'c'], ord: ['p1', 'p3'], arc: ['p3', 'p1', 'p2'], jog: ['p3', 'p4', 'p5'] };
 const dimGripKeys = e => DIM_GRIPS[e.kind] || ['p1', 'p2', 'p3'];
-export const DIM_KINDS = { lin: 'Lineal', ali: 'Alineada', rad: 'Radio', dia: 'Diámetro', ang: 'Angular', ord: 'Coordenada' };
+export const DIM_KINDS = { lin: 'Lineal', ali: 'Alineada', rad: 'Radio', dia: 'Diámetro', ang: 'Angular', ord: 'Coordenada', arc: 'Longitud de arco', jog: 'Radio con recodo' };
 TYPES.dim = {
   name: 'Cota',
   prims: e => dimSegs(dimParts(e)),
@@ -968,6 +1015,8 @@ TYPES.dim = {
   grips: e => dimGripKeys(e).map(k => e[k]),
   moveGrip(e, i, p) {
     const k = dimGripKeys(e)[i];
+    if (e.kind === 'arc' && k !== 'p3') { e[k] = G.polar(e.c, G.ang(e.c, p), G.dist(e.c, e.p1)); e.partial = true; return; } // longitud de arco parcial
+    if (e.kind === 'jog') { e[k] = p; return; }
     if (e.assoc && k !== 'p3') { // el punto movido deja de estar asociado a la geometría
       delete e.assoc[k];
       if (k === 'c' || e.kind === 'rad' || e.kind === 'dia') { delete e.assoc.obj; delete e.assoc.l1; delete e.assoc.l2; }
@@ -978,7 +1027,8 @@ TYPES.dim = {
   },
   // _xf: la cota se ha transformado; si su geometría no cambió a la vez, deja de ser asociativa (document.js)
   xform(e, m) {
-    for (const k of ['p1', 'p2', 'p3', 'c']) if (e[k]) e[k] = Mx.ap(m, e[k]);
+    for (const k of ['p1', 'p2', 'p3', 'p4', 'p5', 'c']) if (e[k]) e[k] = Mx.ap(m, e[k]);
+    if (e.kind === 'arc' && Mx.det(m) < 0) [e.p1, e.p2] = [e.p2, e.p1]; // el arco sigue en sentido antihorario
     if (e.l1) { e.l1 = e.l1.map(q => Mx.ap(m, q)); e.l2 = e.l2.map(q => Mx.ap(m, q)); }
     if (e.kind === 'lin') { const v = Mx.apV(m, P(Math.cos(e.rot), Math.sin(e.rot))); e.rot = Math.atan2(v.y, v.x); }
     if (e.assoc) e._xf = true;
@@ -1084,15 +1134,28 @@ TYPES.hatch = {
 };
 
 // ---------- Referencia a bloque ----------
+// Contorno de delimitación (XCLIP) en coordenadas del dibujo: {poly, invert} o null
+export function insertClip(e) {
+  const b = D()?.blocks?.[e.name];
+  if (!b || !clipActive(e)) return null;
+  const M = insertMatrix(e, b);
+  return { poly: e.clip.pts.map(q => Mx.ap(M, q)), invert: !!e.clip.invert };
+}
+const clipList = (e, list) => { const k = insertClip(e); return k ? clipPrims(list, k.poly, k.invert) : list; };
 TYPES.insert = {
   name: 'Referencia a bloque',
-  prims: e => blockEnts(e).flatMap(v => TYPES[v.type].prims(v)),
-  selPrims: e => blockEnts(e).flatMap(v => { const T = TYPES[v.type]; return T.selPrims ? T.selPrims(v) : T.prims(v); }),
-  bbox: e => blockEnts(e).reduce((b, v) => bbUnion(b, bboxOf(v)), null) || bbPts([e.p]),
-  hit: (e, p) => blockEnts(e).reduce((d, v) => Math.min(d, hitDist(v, p)), Infinity),
+  prims: e => clipList(e, blockEnts(e).flatMap(v => TYPES[v.type].prims(v))),
+  selPrims: e => clipList(e, blockEnts(e).flatMap(v => { const T = TYPES[v.type]; return T.selPrims ? T.selPrims(v) : T.prims(v); })),
+  bbox: e => {
+    const b = blockEnts(e).reduce((r, v) => bbUnion(r, bboxOf(v)), null) || bbPts([e.p]), k = insertClip(e);
+    if (!k || k.invert) return b;
+    const c = bbPts(k.poly), x1 = Math.max(b.x1, c.x1), y1 = Math.max(b.y1, c.y1), x2 = Math.min(b.x2, c.x2), y2 = Math.min(b.y2, c.y2);
+    return x1 <= x2 && y1 <= y2 ? { x1, y1, x2, y2 } : bbPts([e.p]);
+  },
+  hit: (e, p) => { const k = insertClip(e); if (k && !clipKeeps(k.poly, k.invert)(p)) return Infinity; return blockEnts(e).reduce((d, v) => Math.min(d, hitDist(v, p)), Infinity); },
   snaps: e => {
-    const out = { ins: [e.p] };
-    for (const v of blockEnts(e)) { const s = snapsOf(v); for (const k in s) (out[k] ||= []).push(...s[k]); }
+    const out = { ins: [e.p] }, k = insertClip(e), keep = k ? clipKeeps(k.poly, k.invert) : null;
+    for (const v of blockEnts(e)) { const s = snapsOf(v); for (const kk in s) (out[kk] ||= []).push(...(keep ? s[kk].filter(keep) : s[kk])); }
     return out;
   },
   grips: e => [e.p, ...(ENV.dynGrips?.(e) || []).map(g => g.p)],
@@ -1111,12 +1174,138 @@ TYPES.insert = {
     const xr = D()?.blocks?.[e.name]?.xref;
     const base = [ro('Nombre', x => x.name, 'text'), ...(xr ? [ro('Referencia externa', () => xr.file, 'text')] : []), ...ptProps('Posición', 'p'),
       num('Escala', x => Math.abs(x.sx ?? 1), (x, v) => { if (v > 0) { x.sx = Math.sign(x.sx || 1) * v; x.sy = Math.sign(x.sy || 1) * v; } }),
-      angp('Rotación', x => x.rot || 0, (x, v) => { x.rot = v; })];
+      angp('Rotación', x => x.rot || 0, (x, v) => { x.rot = v; }),
+      ...(e.clip ? [{ label: 'Delimitación (XCLIP)', type: 'bool', get: x => !x.clip.off, set: (x, v) => { x.clip = { ...x.clip, off: !v }; } }] : [])];
     const defs = blockAttdefs(e.name);
     const dyn = ENV.dynProps?.(e) || [];
     if (!defs.length) return [...base, ...dyn];
     return [...base, ...dyn, { sec: 'Atributos' }, ...defs.map(a => ({ label: a.tag, type: 'text', get: x => attVal(x, a), set: (x, v) => { x.attribs = { ...x.attribs, [a.tag]: v }; } }))];
   },
+};
+
+// Discontinuidad de un tipo de línea en pantalla (k: escala de tipos de línea); se ignora si el trazo sería demasiado pequeño
+export function applyDash(c, pat, k, R) {
+  let d = [];
+  if (pat && pat.length) {
+    const sc = pat.map(v => Math.abs(v) * (k || 1));
+    if (sc.reduce((a, b) => a + b, 0) * R.scale > 4) d = sc.map(v => v || 0.5 / R.scale);
+  }
+  c.setLineDash(d);
+  c.lineCap = d.length && pat.includes(0) ? 'round' : 'butt';
+}
+
+// ---------- Línea múltiple ----------
+const mlStyle = e => mlStyleOf(D(), e.mlstyle);
+const mlcacheG = new WeakMap();
+export function mlGeom(e) {
+  const st = mlStyle(e), key = JSON.stringify([e.pts, e.closed, e.just, e.scale, st]);
+  const hit = mlcacheG.get(e);
+  if (hit && hit.key === key) return hit.g;
+  const g = mlineGeom(e, st);
+  mlcacheG.set(e, { key, g });
+  return g;
+}
+const mlLen = e => G.polyLen(e.pts, e.closed);
+TYPES.mline = {
+  name: 'Línea múltiple',
+  prims: e => mlinePrims(mlGeom(e)),
+  bbox: e => { const g = mlGeom(e); return g.arcs.reduce((b, [c, r, a1, a2]) => bbUnion(b, arcBB(c, r, a1, a2)), bbPts(g.elems.flatMap(x => x.pts))); },
+  snaps: e => {
+    const g = mlGeom(e), mid = [];
+    for (const el of g.elems) for (let i = 0; i < (g.closed ? el.pts.length : el.pts.length - 1); i++) mid.push(G.mid(el.pts[i], el.pts[(i + 1) % el.pts.length]));
+    return { end: g.elems.flatMap(x => x.pts), mid };
+  },
+  grips: e => e.pts,
+  moveGrip(e, i, p) { e.pts = e.pts.map((q, j) => (j === i ? p : q)); },
+  // Simetría: se invierte el sentido para que los elementos sigan al mismo lado
+  xform(e, m) { e.pts = e.pts.map(q => Mx.ap(m, q)); e.scale = (e.scale ?? 1) * Mx.scaleOf(m); if (Mx.det(m) < 0) e.pts.reverse(); },
+  draw(c, e, R, st) {
+    const g = mlGeom(e), base = c.getLineDash(), doc = D();
+    if (g.fill && !st?.hl) {
+      c.save(); c.fillStyle = mlStyle(e).fill; c.beginPath();
+      for (const l of g.fill) { l.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); c.closePath(); }
+      c.fill('evenodd'); c.restore();
+    }
+    const strokeEl = (pts, closed) => { c.beginPath(); pts.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); if (closed) c.closePath(); c.stroke(); };
+    for (const el of g.elems) {
+      const own = !st?.hl && el.color && el.color !== 'BYLAYER' && el.color !== 'BYBLOCK';
+      c.strokeStyle = own ? (st?.paper && el.color.toLowerCase() === '#ffffff' ? '#000000' : el.color) : st.color;
+      if (!st?.hl && el.ltype && el.ltype !== 'BYLAYER' && el.ltype !== 'BYBLOCK') applyDash(c, (LTYPES[el.ltype] || LTYPES.CONTINUOUS).pat, st.ltscale ?? doc?.settings?.ltscale, R);
+      else c.setLineDash(base);
+      strokeEl(el.pts, g.closed);
+    }
+    c.strokeStyle = st.color; c.setLineDash(base);
+    c.beginPath();
+    for (const [a, b] of g.lines) { c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); }
+    for (const [q, r, a1, a2] of g.arcs) { c.moveTo(q.x + r * Math.cos(a1), q.y + r * Math.sin(a1)); c.arc(q.x, q.y, r, a1, a1 + G.sweep(a1, a2)); }
+    c.stroke();
+  },
+  props: [
+    { label: 'Estilo', type: 'select', options: () => (D()?.mlineStyles || []).map(s => [s.name, s.name]), get: e => mlStyle(e).name, set: (e, v) => { e.mlstyle = v; } },
+    sel('Justificación', ML_JUST, e => e.just || 'top', (e, v) => { e.just = v; }),
+    num('Escala', e => e.scale ?? 1, (e, v) => { if (v) e.scale = v; }),
+    { label: 'Cerrada', type: 'bool', get: e => !!e.closed, set: (e, v) => { e.closed = v && e.pts.length > 2; } },
+    ro('Vértices', e => e.pts.length, 'int'),
+    ro('Elementos', e => mlStyle(e).elems.length, 'int'),
+    ro('Longitud (eje)', mlLen),
+  ],
+};
+
+// ---------- Región ----------
+// {loops: [{pts, bulges?}]}: contornos cerrados con el interior a su izquierda (exteriores antihorarios, huecos horarios)
+const loopPl = l => ({ pts: l.pts, bulges: l.bulges, closed: true });
+const regArea = e => e.loops.reduce((s, l) => s + plArea(loopPl(l)), 0);
+const regCentroid = e => { const b = bbPts(e.loops.flatMap(l => l.pts)); return P((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2); };
+TYPES.region = {
+  name: 'Región',
+  prims: e => e.loops.flatMap(l => plSegs(loopPl(l))),
+  bbox: e => e.loops.reduce((b, l) => bbUnion(b, TYPES.pline.bbox(loopPl(l))), null),
+  snaps: e => {
+    const pcs = e.loops.flatMap(l => plPieces(loopPl(l)));
+    return { end: e.loops.flatMap(l => l.pts), mid: pcs.map(pc => pieceAt(pc, 0.5)), cen: pcs.filter(pc => pc.bulge).map(pc => pc.prim.c) };
+  },
+  grips: e => [regCentroid(e)],
+  moveGrip(e, i, p) { const d = G.sub(p, regCentroid(e)); e.loops = e.loops.map(l => ({ ...l, pts: l.pts.map(q => G.add(q, d)) })); },
+  xform(e, m) {
+    const mir = Mx.det(m) < 0;
+    e.loops = e.loops.map(l => {
+      const pts = l.pts.map(q => Mx.ap(m, q)), b = l.bulges ? l.bulges.map(x => (mir ? -x : x)) : null;
+      if (!mir) return b ? { pts, bulges: b } : { pts };
+      // Una simetría invierte el sentido de los contornos: se recorren al revés para que el interior quede a la izquierda
+      const n = pts.length;
+      return { pts: [pts[0], ...pts.slice(1).reverse()], ...(b ? { bulges: pts.map((_, k) => -(b[n - 1 - k] || 0)) } : {}) };
+    });
+  },
+  path(c, e) { for (const l of e.loops) TYPES.pline.path(c, loopPl(l)); },
+  props: [
+    ro('Contornos', e => e.loops.length, 'int'),
+    ro('Huecos', e => e.loops.filter(l => plArea(loopPl(l)) < 0).length, 'int'),
+    ro('Área', e => Math.abs(regArea(e))),
+    ro('Perímetro', e => e.loops.reduce((s, l) => s + plLength(loopPl(l)), 0)),
+    ro('Centro X', e => regCentroid(e).x), ro('Centro Y', e => regCentroid(e).y),
+  ],
+};
+
+// ---------- Matriz asociativa (arrays.js) ----------
+const arrEnts = e => ENV.arrayEnts?.(e) || [];
+TYPES.array = {
+  name: 'Matriz asociativa',
+  prims: e => arrEnts(e).flatMap(v => TYPES[v.type].prims(v)),
+  selPrims: e => arrEnts(e).flatMap(v => { const T = TYPES[v.type]; return T.selPrims ? T.selPrims(v) : T.prims(v); }),
+  bbox: e => arrEnts(e).reduce((b, v) => bbUnion(b, bboxOf(v)), null) || bbPts([e.base]),
+  hit: (e, p) => arrEnts(e).reduce((d, v) => Math.min(d, hitDist(v, p)), Infinity),
+  snaps: e => {
+    const out = {};
+    for (const v of arrEnts(e)) { const s = snapsOf(v); for (const k in s) (out[k] ||= []).push(...s[k]); }
+    return out;
+  },
+  grips: e => (ENV.arrayGrips?.(e) || []).map(g => g.p),
+  gripKinds: e => (ENV.arrayGrips?.(e) || []).map(g => (g.kind ? 'array' : '')),
+  moveGrip(e, i, p) { ENV.arrayMoveGrip?.(e, i, p); },
+  // La transformación se acumula en la matriz M (las entidades de origen y el recorrido quedan en coordenadas locales)
+  xform(e, m) { e.M = Mx.mul(m, e.M || Mx.I()); e._xf = true; },
+  draw() { /* lo dibuja render.js expandiendo los elementos */ },
+  props: e => ENV.arrayProps?.(e) || [],
 };
 
 // ---------- Ventana gráfica (espacio papel) ----------

@@ -3,14 +3,15 @@
 import * as G from './geom.js';
 import { primsOf, ellPts, plPolygon } from './entities.js';
 import { splinePts } from './spline.js';
+import { exactLoop } from './region.js';
 const { P } = G;
 
-// Segmentos [a, b, id de la entidad de origen]
+// Segmentos [a, b, id de la entidad de origen, primitiva de origen]
 function primSegs(q, out, src) {
-  if (q.k === 's') { if (G.dist(q.a, q.b) > 1e-12) out.push([q.a, q.b, src]); return; }
+  if (q.k === 's') { if (G.dist(q.a, q.b) > 1e-12) out.push([q.a, q.b, src, q]); return; }
   const sw = G.sweep(q.a1, q.a2), n = Math.max(2, Math.ceil(sw / (G.TAU / 96)));
   let prev = G.polar(q.c, q.a1, q.r);
-  for (let i = 1; i <= n; i++) { const p = G.polar(q.c, q.a1 + sw * i / n, q.r); out.push([prev, p, src]); prev = p; }
+  for (let i = 1; i <= n; i++) { const p = G.polar(q.c, q.a1 + sw * i / n, q.r); out.push([prev, p, src, q]); prev = p; }
 }
 const NO_BOUNDARY = new Set(['hatch', 'text', 'mtext', 'attdef', 'point', 'dim', 'mleader', 'table']);
 
@@ -22,6 +23,7 @@ export function loopsOfEntity(e) {
     case 'pline': return e.closed && e.pts.length > 2 ? [plPolygon(e)] : null;
     case 'spline': return e.closed ? [splinePts(e)] : null;
     case 'hatch': return e.loops.map(l => [...l]);
+    case 'region': return e.loops.map(l => plPolygon({ pts: l.pts, bulges: l.bulges, closed: true }));
   }
   return null;
 }
@@ -69,7 +71,7 @@ export function findBoundary(ents, Pt) {
     return id;
   };
   const H = [], ekeys = new Set();
-  segs.forEach(([a, b, src], i) => {
+  segs.forEach(([a, b, src, prim], i) => {
     const ts = [...new Set(cuts[i].map(t => Math.min(1, Math.max(0, t))))].sort((x, y) => x - y);
     for (let k = 1; k < ts.length; k++) {
       const u = vid(G.lerp(a, b, ts[k - 1])), v = vid(G.lerp(a, b, ts[k]));
@@ -78,7 +80,7 @@ export function findBoundary(ents, Pt) {
       if (ekeys.has(key)) continue;
       ekeys.add(key);
       const h1 = H.length;
-      H.push({ from: u, to: v, twin: h1 + 1, src }, { from: v, to: u, twin: h1, src });
+      H.push({ from: u, to: v, twin: h1 + 1, src, prim }, { from: v, to: u, twin: h1, src, prim });
       V[u].out.push(h1); V[v].out.push(h1 + 1);
     }
   });
@@ -87,10 +89,10 @@ export function findBoundary(ents, Pt) {
   const next = h => { const v = V[H[h].to], tw = H[h].twin; return v.out[(H[tw].idx - 1 + v.out.length) % v.out.length]; };
   const used = new Set();
   const trace = h0 => {
-    const loop = [], vs = [];
+    const loop = [], vs = [], edges = [];
     let h = h0, guard = 0;
-    do { loop.push(V[H[h].from].p); vs.push(H[h].from); used.add(H[h].src); h = next(h); } while (h !== h0 && ++guard < 200000);
-    return { loop, vs };
+    do { loop.push(V[H[h].from].p); vs.push(H[h].from); edges.push({ a: V[H[h].from].p, b: V[H[h].to].p, prim: H[h].prim }); used.add(H[h].src); h = next(h); } while (h !== h0 && ++guard < 200000);
+    return { loop, vs, edges };
   };
   // Rayo horizontal hacia +x: primera semiarista con el punto a su izquierda
   const castRay = (O, allowed) => {
@@ -121,7 +123,7 @@ export function findBoundary(ents, Pt) {
     nc++;
   }
   const outerComp = new Set(outer.vs.map(v => comp[v]));
-  const loops = [outer.loop], seen = new Set();
+  const loops = [outer.loop], seen = new Set(), traced = [outer];
   for (let v = 0; v < V.length; v++) {
     const c = comp[v];
     if (outerComp.has(c) || seen.has(c)) continue;
@@ -131,9 +133,11 @@ export function findBoundary(ents, Pt) {
     for (let w = 0; w < V.length; w++) if (comp[w] === c && V[w].p.x < V[left].p.x) left = w;
     const Q = P(V[left].p.x - size * 1e-6, V[left].p.y + size * 1.2345e-7);
     const hh = castRay(Q, x => comp[x] === c);
-    if (hh >= 0) loops.push(trace(hh).loop);
+    if (hh >= 0) { const t = trace(hh); loops.push(t.loop); traced.push(t); }
   }
   loops.ids = [...used].filter(id => id != null);
+  // Contornos exactos (con los arcos de origen) para CONTORNO y REGION: se calculan al pedirlos
+  Object.defineProperty(loops, 'exact', { get: () => traced.map(t => exactLoop(t.edges, size * 2e-3)) });
   return loops;
 }
 

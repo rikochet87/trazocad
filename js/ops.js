@@ -1,6 +1,7 @@
 // Operaciones de edición geométrica: recortar, alargar, partir, longitud, desfase, empalme, chaflán, descomponer, unir, estirar.
 import * as G from './geom.js';
-import { primsOf, bboxOf, dimParts, plPieces, pieceAt, pieceParam, pieceLen, plLength, cloneEnt, inWindow, xformEnt, blockEnts, mtextGeom, mleaderGeom, tableGeom, ellPts } from './entities.js';
+import { primsOf, bboxOf, dimParts, plPieces, pieceAt, pieceParam, pieceLen, plLength, cloneEnt, inWindow, xformEnt, blockEnts, mtextGeom, mleaderGeom, tableGeom, ellPts, mlGeom, ENV } from './entities.js';
+import { mlineParts, mlStyleOf } from './mline.js';
 import { hatchSegments } from './patterns.js';
 import { splinePts, rebuild as rebuildSpline, deBoor, domain, nearestParam, tangentAt, subSpline, joinSplines, reverseSpline, lineSpline, interpolate } from './spline.js';
 const { TAU } = G;
@@ -468,6 +469,13 @@ export function chamferPline(e, d1, d2) {
 // ---------- DESCOMPONER ----------
 export function explodeEntity(e) {
   const b = props(e);
+  if (e.type === 'mline') {
+    const st = mlStyleOf(ENV.doc, e.mlstyle);
+    return mlineParts(mlGeom(e)).map(x => ({ ...b, ...x, color: x.color && x.color !== 'BYLAYER' ? x.color : b.color, ltype: x.ltype && x.ltype !== 'BYLAYER' ? x.ltype : b.ltype }))
+      .concat(st.fill ? mlGeom(e).fill.map(l => ({ ...b, type: 'hatch', pattern: 'SOLID', scale: 1, angle: 0, loops: [l], color: st.fill })) : []);
+  }
+  if (e.type === 'region') return e.loops.flatMap(l => plPieces({ pts: l.pts, bulges: l.bulges, closed: true }).map(pc => (pc.bulge ? { ...b, type: 'arc', c: pc.prim.c, r: pc.prim.r, a1: pc.prim.a1, a2: pc.prim.a2 } : { ...b, type: 'line', p1: pc.a, p2: pc.b })));
+  if (e.type === 'array') return (ENV.arrayEnts?.(e) || []).map(v => { const c = cloneEnt(v); delete c.id; return c; });
   if (e.type === 'pline') return plPieces(e).map(pc => (pc.bulge ? { ...b, type: 'arc', c: pc.prim.c, r: pc.prim.r, a1: pc.prim.a1, a2: pc.prim.a2 } : { ...b, type: 'line', p1: pc.a, p2: pc.b }));
   if (e.type === 'dim') {
     const d = dimParts(e);
@@ -552,8 +560,12 @@ export function stretchEntity(e, r, d) {
   switch (e.type) {
     case 'line': c.p1 = mv(e.p1); c.p2 = mv(e.p2); return c;
     case 'pline': c.pts = e.pts.map(mv); return c;
+    case 'mline': c.pts = e.pts.map(mv); return c;
+    case 'region': c.loops = e.loops.map(l => ({ ...l, pts: l.pts.map(mv) })); return c;
+    case 'array': return G.inRect(G.Mx.ap(e.M || G.Mx.I(), e.base), r) ? xformEnt(c, G.Mx.T(d.x, d.y)) : null;
     case 'dim':
       c.p1 = mv(e.p1); c.p2 = mv(e.p2); c.p3 = mv(e.p3);
+      if (e.p4) { c.p4 = mv(e.p4); c.p5 = mv(e.p5); }
       if (e.c) c.c = mv(e.c);
       if (e.l1) { c.l1 = e.l1.map(mv); c.l2 = e.l2.map(mv); }
       return c;
