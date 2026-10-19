@@ -320,3 +320,193 @@ export function consDim(doc, c, label) {
 }
 export const GEOM_NAMES = { horizontal: 'Horizontal', vertical: 'Vertical', parallel: 'Paralela', perpendicular: 'Perpendicular', coincident: 'Coincidente', concentric: 'Concéntrica', equal: 'Igual', fix: 'Fija', tangent: 'Tangente', collinear: 'Colineal' };
 export const DIM_TYPES = new Set(['dist', 'radius', 'diameter', 'angle']);
+
+// ---------- Restricciones automáticas (AUTOCONSTRAIN) ----------
+// Tipos en el orden de prioridad de AutoCAD. Las tolerancias son la distancia y el ángulo (grados) dentro de los que se
+// considera que la geometría ya cumple la restricción.
+export const AUTO_TYPES = { coincident: 'Coincidente', collinear: 'Colineal', parallel: 'Paralela', perpendicular: 'Perpendicular', tangent: 'Tangente', concentric: 'Concéntrica', horizontal: 'Horizontal', vertical: 'Vertical', equal: 'Igual' };
+export const AUTO_DEFAULT = { tol: 0.05, angTol: 1, off: [] };
+export const AUTO_MAX_VARS = 2400; // variables (coordenadas) como máximo en una designación: el cálculo crece con su cubo
+
+// Busca las restricciones geométricas que la geometría designada ya cumple (dentro de las tolerancias) y que no se deducen
+// de otras: cada candidata se acepta sólo si aumenta el rango del jacobiano de las restricciones (las existentes incluidas),
+// así no quedan restricciones redundantes. No modifica el documento. o: {tol, angTol, off: [tipos desactivados]}
+// Devuelve {cons: [restricciones nuevas], counts: {tipo: n}}
+export function autoConstrain(doc, ids, o = {}) {
+  const tol = o.tol ?? AUTO_DEFAULT.tol, at = G.rad(o.angTol ?? AUTO_DEFAULT.angTol), off = new Set(o.off || []);
+  const sel = [...new Set(ids)].map(id => doc.get(id)).filter(constrainable);
+  const counts = {};
+  if (!sel.length) return { cons: [], counts };
+  const selIds = new Set(sel.map(e => e.id));
+  // Variables: las entidades designadas y las unidas a ellas por restricciones existentes
+  const ents = new Map(sel.map(e => [e.id, e]));
+  const existing = (doc.constraints || []).filter(c => refIds(c).some(id => selIds.has(id)) && consValid(doc, c));
+  for (const c of existing) for (const id of refIds(c)) ents.set(id, doc.get(id));
+  const off2 = new Map(), x = [], kinds = [];
+  for (const [id, e] of ents) { off2.set(id, x.length); VARS[e.type](e).forEach((v, k) => { x.push(v); kinds.push(e.type === 'arc' && k >= 3 ? 'a' : 'd'); }); }
+  const n = x.length;
+  if (n > AUTO_MAX_VARS) return { cons: [], counts, tooMany: true };
+  let bb = null;
+  for (const e of ents.values()) for (const p of e.type === 'circle' || e.type === 'arc' ? [e.c] : e.type === 'line' ? [e.p1, e.p2] : e.type === 'point' ? [e.p] : e.pts) bb = bb ? { x1: Math.min(bb.x1, p.x), y1: Math.min(bb.y1, p.y), x2: Math.max(bb.x2, p.x), y2: Math.max(bb.y2, p.y) } : { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+  const S = Math.max(1, bb.x2 - bb.x1, bb.y2 - bb.y1);
+  const { vals } = evalParams(doc);
+  const R = readers(ents, x, off2);
+  R.raw = (id, k) => x[off2.get(id) + k];
+  const F = c => residuals(c, R, ents, S, vals);
+  // Filas del jacobiano (diferencias centradas sobre las variables de las entidades de la restricción)
+  const jac = c => {
+    const m = F(c).length, rows = Array.from({ length: m }, () => new Float64Array(n));
+    for (const id of refIds(c)) {
+      const o0 = off2.get(id), len = VARS[ents.get(id).type](ents.get(id)).length;
+      for (let j = o0; j < o0 + len; j++) {
+        const h = kinds[j] === 'a' ? 1e-7 : 1e-6 * S, v = x[j];
+        x[j] = v + h; const a = F(c);
+        x[j] = v - h; const b = F(c);
+        x[j] = v;
+        for (let k = 0; k < m; k++) rows[k][j] = (a[k] - b[k]) / (2 * h);
+      }
+    }
+    return rows;
+  };
+  // Base ortonormal de las filas aceptadas (Gram-Schmidt con reortogonalización)
+  const basis = [];
+  const dot = (a, b) => { let s = 0; for (let i = 0; i < n; i++) s += a[i] * b[i]; return s; };
+  const take = rows => {
+    const keep = basis.length;
+    for (const v of rows) {
+      const n0 = Math.sqrt(dot(v, v));
+      if (n0 < 1e-12) { basis.length = keep; return false; }
+      for (let pass = 0; pass < 2; pass++) for (const b of basis) { const k = dot(v, b); if (k) for (let i = 0; i < n; i++) v[i] -= k * b[i]; }
+      const nn = Math.sqrt(dot(v, v));
+      if (nn < 1e-6 * n0) { basis.length = keep; return false; }
+      for (let i = 0; i < n; i++) v[i] /= nn;
+      basis.push(v);
+    }
+    return true;
+  };
+  for (const c of existing) take(jac(c));
+
+  // ---- Geometría de las entidades designadas ----
+  const pts = [], lines = [], circs = [];
+  for (const e of sel) {
+    if (e.type === 'line') { pts.push({ ref: { id: e.id, k: 'p1' }, p: e.p1, id: e.id }, { ref: { id: e.id, k: 'p2' }, p: e.p2, id: e.id }); lines.push({ ref: { id: e.id }, a: e.p1, b: e.p2, id: e.id }); }
+    else if (e.type === 'arc') { pts.push({ ref: { id: e.id, k: 's' }, p: G.polar(e.c, e.a1, e.r), id: e.id }, { ref: { id: e.id, k: 'e' }, p: G.polar(e.c, e.a2, e.r), id: e.id }); circs.push({ ref: { id: e.id }, e }); }
+    else if (e.type === 'circle') circs.push({ ref: { id: e.id }, e });
+    else if (e.type === 'point') pts.push({ ref: { id: e.id, k: 'p' }, p: e.p, id: e.id });
+    else if (e.type === 'pline') {
+      const np = e.pts.length, closed = !!e.closed && np > 2;
+      e.pts.forEach((p, i) => pts.push({ ref: { id: e.id, k: 'v', i }, p, id: e.id, i, np, closed }));
+      for (let j = 0; j < (closed ? np : np - 1); j++) if (!e.bulges?.[j]) lines.push({ ref: { id: e.id, seg: j }, a: e.pts[j], b: e.pts[(j + 1) % np], id: e.id });
+    }
+  }
+  for (const l of lines) { l.len = G.dist(l.a, l.b); l.th = G.normAng(G.ang(l.a, l.b)) % Math.PI; }
+  const valid = lines.filter(l => l.len > tol);
+  const cands = [];
+  const add = (type, c) => { if (!off.has(type)) cands.push({ type, ...c }); };
+  const angDiff = (a, b) => { const d = Math.abs(a - b) % Math.PI; return Math.min(d, Math.PI - d); };
+  const onArc = (k, p) => k.e.type === 'circle' || G.angIn(G.ang(k.e.c, p), k.e.a1 - 1e-6, k.e.a2 + 1e-6);
+  // Grupos por una relación de equivalencia (unión de pares cercanos): cada miembro se relaciona con el primero
+  const clusters = (list, near) => {
+    const par = list.map((_, i) => i), f = i => (par[i] === i ? i : (par[i] = f(par[i])));
+    for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) if (near(list[i], list[j])) par[f(j)] = f(i);
+    const out = new Map();
+    list.forEach((it, i) => { const r = f(i); if (!out.has(r)) out.set(r, []); out.get(r).push(it); });
+    return [...out.values()];
+  };
+
+  // 1. Coincidentes: punto con punto (de objetos distintos, o los extremos de una polilínea abierta) y punto sobre objeto
+  const pairs = [];
+  for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+    const a = pts[i], b = pts[j];
+    if (a.id === b.id && !(a.np && !a.closed && a.np > 2 && ((a.i === 0 && b.i === a.np - 1) || (b.i === 0 && a.i === a.np - 1)))) continue;
+    const d = G.dist(a.p, b.p);
+    if (d <= tol) pairs.push([d, a, b]);
+  }
+  pairs.sort((u, v) => u[0] - v[0]).forEach(([, a, b]) => add('coincident', { refs: [a.ref, b.ref] }));
+  for (const q of pts) {
+    for (const l of valid) {
+      if (l.id === q.id) continue;
+      const r = G.nearSeg(q.p, l.a, l.b);
+      if (G.dist(r.p, q.p) <= tol && G.dist(q.p, l.a) > tol && G.dist(q.p, l.b) > tol) add('coincident', { refs: [q.ref, l.ref] });
+    }
+    for (const k of circs) {
+      if (k.e.id === q.id) continue;
+      if (Math.abs(G.dist(q.p, k.e.c) - k.e.r) <= tol && onArc(k, q.p) && !pts.some(o => o.id === k.e.id && G.dist(o.p, q.p) <= tol)) add('coincident', { refs: [q.ref, k.ref] });
+    }
+  }
+  // 2-4. Colineales, paralelas y perpendiculares: grupos de direcciones
+  const dirs = clusters(valid, (a, b) => angDiff(a.th, b.th) <= at);
+  for (const g of dirs) {
+    const u = P(Math.cos(g[0].th), Math.sin(g[0].th)), nn = G.perp(u);
+    const offs = clusters(g, (a, b) => Math.abs(G.dot(G.sub(b.a, a.a), nn)) <= tol && Math.abs(G.dot(G.sub(b.b, a.a), nn)) <= tol);
+    for (const c of offs) for (const l of c.slice(1)) add('collinear', { refs: [c[0].ref, l.ref] });
+    g.reps = offs.map(c => c[0]);
+  }
+  for (const g of dirs) for (const l of g.reps.slice(1)) add('parallel', { refs: [g.reps[0].ref, l.ref] });
+  for (let i = 0; i < dirs.length; i++) for (let j = i + 1; j < dirs.length; j++) {
+    if (Math.abs(angDiff(dirs[i][0].th, dirs[j][0].th) - Math.PI / 2) <= at) add('perpendicular', { refs: [dirs[i][0].ref, dirs[j][0].ref] });
+  }
+  // 5. Tangentes: línea con arco o círculo, y arcos o círculos entre sí, si el punto de contacto está sobre ambos
+  for (const l of valid) for (const k of circs) {
+    if (l.id === k.e.id) continue;
+    const f = G.nearSeg(k.e.c, l.a, l.b), dl = Math.abs(distLine(k.e.c, [l.a, l.b]));
+    if (Math.abs(dl - k.e.r) <= tol && G.dist(f.p, k.e.c) - dl <= tol && onArc(k, f.p)) add('tangent', { refs: [l.ref, k.ref] });
+  }
+  for (let i = 0; i < circs.length; i++) for (let j = i + 1; j < circs.length; j++) {
+    const a = circs[i].e, b = circs[j].e, d = G.dist(a.c, b.c);
+    if (d <= tol) continue;
+    const outer = Math.abs(d - (a.r + b.r)) <= tol, inner = !outer && Math.abs(d - Math.abs(a.r - b.r)) <= tol;
+    if (!outer && !inner) continue;
+    const u = G.norm(G.sub(b.c, a.c)), p = G.add(a.c, G.mul(u, inner && a.r < b.r ? -a.r : a.r));
+    if (onArc(circs[i], p) && onArc(circs[j], p)) add('tangent', { refs: [circs[i].ref, circs[j].ref], inner });
+  }
+  // 6. Concéntricas
+  for (const g of clusters(circs, (a, b) => G.dist(a.e.c, b.e.c) <= tol)) for (const k of g.slice(1)) add('concentric', { refs: [g[0].ref, k.ref] });
+  // 7-8. Horizontales y verticales
+  for (const l of valid) { if (Math.abs(Math.sin(l.th)) <= Math.sin(at)) add('horizontal', { refs: [l.ref] }); }
+  for (const l of valid) { if (Math.abs(Math.cos(l.th)) <= Math.sin(at)) add('vertical', { refs: [l.ref] }); }
+  // 9. Iguales: longitudes de líneas y radios
+  for (const g of clusters([...valid].sort((a, b) => a.len - b.len), (a, b) => Math.abs(a.len - b.len) <= tol)) for (const l of g.slice(1)) add('equal', { refs: [g[0].ref, l.ref] });
+  for (const g of clusters(circs, (a, b) => Math.abs(a.e.r - b.e.r) <= tol)) for (const k of g.slice(1)) add('equal', { refs: [g[0].ref, k.ref] });
+
+  // Ajuste de cambio mínimo de las variables locales para cumplir `list` (como solve, con el jacobiano disperso).
+  // Así el rango de las restricciones siguientes se mide sobre la geometría ya ajustada: fuera de ella, restricciones
+  // que se deducen de otras (vertical de dos líneas paralelas, por ejemplo) parecerían independientes.
+  const norm = v => Math.sqrt(v.reduce((a, b) => a + b * b, 0));
+  const relax = list => {
+    const saved = [...x], tolR = 1e-10 * S;
+    let r = list.flatMap(F);
+    for (let it = 0; it < 40 && norm(r) > tolR; it++) {
+      const rows = list.flatMap(jac), m = rows.length, nz = rows.map(v => { const ix = []; for (let j = 0; j < n; j++) if (v[j]) ix.push(j); return ix; });
+      const byVar = new Map();
+      nz.forEach((ix, k) => { for (const j of ix) (byVar.get(j) || byVar.set(j, []).get(j)).push(k); });
+      const A = Array.from({ length: m }, () => new Float64Array(m));
+      for (const [j, ks] of byVar) for (const a of ks) for (const b of ks) A[a][b] += rows[a][j] * rows[b][j];
+      const tr = A.reduce((t, row, k) => t + row[k], 0) / m || 1;
+      for (let k = 0; k < m; k++) A[k][k] += 1e-10 * tr;
+      const y = solveLin(A.map(row => [...row]), r.map(v => -v));
+      if (!y) break;
+      const dx = new Float64Array(n);
+      nz.forEach((ix, k) => { for (const j of ix) dx[j] += rows[k][j] * y[k]; });
+      const x0 = [...x], n0 = norm(r);
+      let t = 1, rn;
+      for (let k = 0; k < 12; k++) { for (let j = 0; j < n; j++) x[j] = x0[j] + t * dx[j]; rn = list.flatMap(F); if (norm(rn) < n0) break; t /= 2; }
+      if (norm(rn) >= n0) { for (let j = 0; j < n; j++) x[j] = x0[j]; break; }
+      r = rn;
+    }
+    if (norm(r) <= Math.max(1e-7, 1e-9 * S)) return true;
+    for (let j = 0; j < n; j++) x[j] = saved[j];
+    return false;
+  };
+  // Por tipos, en orden de prioridad. Si la geometría aún no cumple exactamente una restricción aceptada, se ajusta
+  // (con todas las aceptadas) y se rehace la base antes de seguir; si no se puede cumplir con las anteriores, se descarta.
+  const cons = [];
+  const rebuild = () => { basis.length = 0; for (const c of [...existing, ...cons]) take(jac(c)); };
+  for (const type of Object.keys(AUTO_TYPES)) for (const c of cands) {
+    if (c.type !== type || !take(jac(c))) continue;
+    cons.push(c);
+    if (norm(F(c)) > 1e-9 * S) { if (!relax([...existing, ...cons])) cons.pop(); rebuild(); }
+  }
+  for (const c of cons) counts[c.type] = (counts[c.type] || 0) + 1;
+  return { cons, counts };
+}

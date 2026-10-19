@@ -12,14 +12,14 @@ export const cleanXrefName = s => String(s).replace(/\.[^.]+$/, '').replace(/[|<
 export function parseSource(text, fileName) {
   if (/\.dxf$/i.test(fileName)) {
     const r = readDXF(text);
-    return { ents: r.ents, layers: r.layers, blocks: r.blocks, textStyles: r.textStyles, dimStyles: r.dimStyles || [], base: r.insBase || { x: 0, y: 0 } };
+    return { ents: r.ents, layers: r.layers, blocks: r.blocks, textStyles: r.textStyles, dimStyles: r.dimStyles || [], patterns: r.patterns || {}, base: r.insBase || { x: 0, y: 0 } };
   }
   const o = JSON.parse(text);
   if (o.app !== 'TrazoCAD') throw new Error('El archivo no es un dibujo de TrazoCAD ni un DXF');
-  return { ents: o.model || o.ents || [], layers: o.layers || [], blocks: o.blocks || {}, textStyles: o.textStyles || [], dimStyles: o.dimStyles || [], base: o.settings?.insBase || { x: 0, y: 0 } };
+  return { ents: o.model || o.ents || [], layers: o.layers || [], blocks: o.blocks || {}, textStyles: o.textStyles || [], dimStyles: o.dimStyles || [], patterns: o.patterns || {}, base: o.settings?.insBase || { x: 0, y: 0 } };
 }
 
-const STRIP = ['id', 'assoc', 'seed', '_xf'];
+const STRIP = ['id', 'assoc', 'seed', '_xf', '_h'];
 // Define (o actualiza) la referencia `name` con el contenido `src`. Devuelve el número de objetos.
 export function defineXref(doc, name, src, fileName) {
   const pre = n => `${name}|${n}`;
@@ -42,6 +42,7 @@ export function defineXref(doc, name, src, fileName) {
   }
   for (const s of src.textStyles) if (!doc.textStyles.some(t => t.name === pre(s.name))) doc.textStyles.push({ ...s, name: pre(s.name) });
   for (const s of src.dimStyles) if (!doc.dimStyles.some(t => t.name === pre(s.name))) doc.dimStyles.push({ ...s, name: pre(s.name), textStyle: tsty.has(s.textStyle) ? pre(s.textStyle) : s.textStyle });
+  for (const [n, p] of Object.entries(src.patterns || {})) doc.patterns[n] ??= p; // patrones personalizados de sus sombreados
   // Bloques anidados de la referencia (las referencias externas anidadas quedan como bloques dependientes)
   for (const k of Object.keys(doc.blocks)) if (doc.blocks[k].xrefDep === name) delete doc.blocks[k];
   for (const [bn, b] of Object.entries(src.blocks)) {

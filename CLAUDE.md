@@ -28,7 +28,7 @@ node run.mjs tests/restricciones.js               # una sola
 node run.mjs tests/captura-v05.js out/c.png 1500 900   # captura
 ```
 
-Una prueba es el cuerpo de una función async que recibe `app` (= `window.app`) y devuelve un objeto que se imprime como JSON. `run.mjs` también muestra los errores de la consola. Los archivos `pdf`, `d2000` y `d12` que devuelva se guardan en `tools/out/`. Cada prueba define al principio sus utilidades (cópialas de una existente):
+Una prueba es el cuerpo de una función async que recibe `app` (= `window.app`) y devuelve un objeto que se imprime como JSON. `run.mjs` también muestra los errores de la consola. Los archivos `pdf`, `d2007`, `d2000` y `d12` que devuelva se guardan en `tools/out/`. Cada prueba define al principio sus utilidades (cópialas de una existente):
 
 - `cmd('LINE', '0,0', '10,0', '')` ejecuta una orden y responde a sus peticiones. Si la orden se queda esperando, devuelve `'ESPERANDO <petición>'`.
 - `pick(ent, punto)` designa un objeto cuando la orden lo pide.

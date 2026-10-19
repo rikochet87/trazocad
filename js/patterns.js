@@ -1,5 +1,16 @@
 // Patrones de sombreado en formato acad.pat: [ángulo, origen x, origen y, desplazamiento, separación, ...trazos]
+// Además de los predefinidos, el dibujo guarda sus patrones personalizados (doc.patterns, leídos de archivos .pat)
+// y admite el patrón «definido por el usuario» (pattern 'USER', e.user = {sp, dbl}): líneas paralelas, opcionalmente cruzadas.
 import * as G from './geom.js';
+
+// Documento cuyos patrones personalizados se consultan (lo fija app.js)
+export const PAT_ENV = { doc: null };
+export const USER_DEFAULT = { sp: 3.175, dbl: false };
+// Definición de un patrón por su nombre: personalizado del dibujo o predefinido (null si no existe)
+export const patternDef = name => PAT_ENV.doc?.patterns?.[name] || PATTERNS[name] || null;
+export const isCustomPattern = name => !!PAT_ENV.doc?.patterns?.[name] && !PATTERNS[name];
+// Familias base del patrón definido por el usuario
+export const userFams = u => { const { sp, dbl } = { ...USER_DEFAULT, ...u }; return dbl ? [[0, 0, 0, 0, sp], [90, 0, 0, 0, sp]] : [[0, 0, 0, 0, sp]]; };
 
 export const PATTERNS = {
   SOLID: { desc: 'Relleno sólido', fam: [] },
@@ -38,8 +49,9 @@ export function gradientSpec(e, bb) {
 
 // Familias de líneas del patrón de un sombreado, ya giradas y escaladas
 export function famsOf(e) {
-  const pat = PATTERNS[e.pattern] || PATTERNS.ANSI31, A = G.rad(e.angle || 0), S = e.scale || 1;
-  return pat.fam.map(([ang, ox, oy, dx, dy, ...dash]) => {
+  const fam = e.pattern === 'USER' ? userFams(e.user) : (patternDef(e.pattern) || PATTERNS.ANSI31).fam;
+  const A = G.rad(e.angle || 0), S = e.scale || 1;
+  return fam.map(([ang, ox, oy, dx, dy, ...dash]) => {
     const a = G.rad(ang) + A, u = G.P(Math.cos(a), Math.sin(a));
     return { ang: a, u, n: G.perp(u), o: G.mul(G.rot(G.P(ox, oy), A), S), dx: dx * S, dy: dy * S, dash: dash.map(d => d * S), base: [ang, ox, oy, dx, dy, ...dash] };
   });
@@ -100,4 +112,48 @@ export function hatchSegments(e, bb, maxLines = 20000) {
     }
   }
   return out;
+}
+
+// ---------- Archivos .pat ----------
+const RESERVED = new Set(['SOLID', 'GRADIENT', 'USER', '_USER']);
+// Lee un archivo de patrones de AutoCAD (acad.pat, acadiso.pat o uno propio): «*NOMBRE, descripción» seguido de una línea
+// por familia «ángulo, x origen, y origen, desplazamiento, separación[, trazos…]». k: factor de unidades (25,4 si el archivo
+// está en pulgadas, como acad.pat). Los nombres de los patrones predefinidos se omiten.
+// Devuelve {pats: {NOMBRE: {desc, fam}}, skipped: [nombres omitidos], errors: [texto]}
+export function parsePat(text, k = 1) {
+  const pats = {}, skipped = [], errors = [];
+  let cur = null;
+  String(text).replace(/^﻿/, '').split(/\r?\n/).forEach((raw, i) => {
+    const line = raw.replace(/;.*$/, '').trim();
+    if (!line) return;
+    if (line.startsWith('*')) {
+      const [name, ...rest] = line.slice(1).split(',');
+      const nm = name.trim().toUpperCase();
+      cur = null;
+      if (!nm || !/^[\wÁÉÍÓÚÑ$\-]+$/i.test(nm)) { errors.push(`línea ${i + 1}: nombre de patrón no válido`); return; }
+      if (PATTERNS[nm] || RESERVED.has(nm)) { skipped.push(nm); return; }
+      cur = pats[nm] = { desc: rest.join(',').trim(), fam: [] };
+      return;
+    }
+    if (!cur) { if (!skipped.length || !/^[-\d.,\s+e]+$/i.test(line)) errors.push(`línea ${i + 1}: familia fuera de un patrón`); return; }
+    const v = line.split(',').map(s => s.trim()).filter(s => s !== '').map(Number);
+    if (v.length < 5 || v.some(x => !Number.isFinite(x))) { errors.push(`línea ${i + 1}: familia no válida`); return; }
+    if (Math.abs(v[4]) < 1e-12) { errors.push(`línea ${i + 1}: la separación entre líneas no puede ser 0`); return; }
+    const [ang, ...rest] = v;
+    cur.fam.push([ang, ...rest.map(x => x * k)]);
+  });
+  for (const [n, p] of Object.entries(pats)) if (!p.fam.length) { delete pats[n]; errors.push(`el patrón ${n} no tiene familias de líneas`); }
+  return { pats, skipped, errors };
+}
+// Texto .pat de un patrón (para exportarlo)
+const pn = v => String(+(+v).toFixed(8));
+export const patText = (name, p) => [`*${name}${p.desc ? `, ${p.desc}` : ''}`, ...p.fam.map(f => f.map(pn).join(', '))].join('\n');
+// Patrón base a partir de familias ya giradas y escaladas (las de un HATCH de DXF): deshace el ángulo A (grados) y la escala S
+export function baseFams(fams, A, S) {
+  const a = G.rad(A), s = S || 1;
+  return fams.map(f => {
+    const u = G.P(Math.cos(G.rad(f.ang)), Math.sin(G.rad(f.ang))), n = G.perp(u), o = G.rot(f.o, -a), off = f.off;
+    const r = v => (Math.abs(v) < 1e-9 ? 0 : +v.toFixed(9)); // sin el ruido de los decimales del DXF
+    return [r(f.ang - A), r(o.x / s), r(o.y / s), r(G.dot(off, u) / s), r(G.dot(off, n) / s), ...f.dash.map(d => r(d / s))];
+  });
 }

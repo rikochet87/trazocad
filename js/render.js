@@ -1,6 +1,7 @@
 // Dibujado en canvas: capa base (rejilla, modelo, presentaciones) y capa superpuesta (cursor, selección, vistas previas).
 import * as G from './geom.js';
-import { TYPES, gripsOf, blockEnts, ENV, textBox, dimParts } from './entities.js';
+import { TYPES, gripsOf, blockEnts, ENV, textBox, dimParts, bboxOf, bbUnion } from './entities.js';
+import { linsOf, rotsOf } from './dynblock.js';
 import { evalParams, refGeom, consDim, refIds, DIM_TYPES } from './constraints.js';
 
 export const BG = '#212830';
@@ -208,13 +209,21 @@ export class Renderer {
     c.setTransform(dp, 0, 0, dp, 0, 0); c.lineWidth = 1.2; c.font = '11px sans-serif';
     c.strokeStyle = c.fillStyle = '#14b8a6';
     const label = (p, t) => { const s = v.toScreen(p); c.fillText(t, s.x + 8, s.y - 8); };
-    if (d.lin) {
-      const a = v.toScreen(d.lin.p1), b = v.toScreen(d.lin.p2), r1 = v.toScreen({ x: d.lin.rect.x1, y: d.lin.rect.y2 }), r2 = v.toScreen({ x: d.lin.rect.x2, y: d.lin.rect.y1 });
+    for (const l of linsOf(d)) {
+      const a = v.toScreen(l.p1), b = v.toScreen(l.p2), r1 = v.toScreen({ x: l.rect.x1, y: l.rect.y2 }), r2 = v.toScreen({ x: l.rect.x2, y: l.rect.y1 });
       c.setLineDash([]); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
       c.beginPath(); c.arc(b.x, b.y, 4, 0, G.TAU); c.fill(); c.strokeRect(a.x - 3, a.y - 3, 6, 6);
       c.setLineDash([4, 3]); c.strokeRect(r1.x, r1.y, r2.x - r1.x, r2.y - r1.y); c.setLineDash([]);
-      label(G.mid(d.lin.p1, d.lin.p2), `${d.lin.name} (${d.lin.ents.length} obj.)`);
+      label(G.mid(l.p1, l.p2), `${l.name} (${l.ents.length} obj.)`);
     }
+    for (const r of rotsOf(d)) { // centro, radio hasta el pinzamiento y arco de giro
+      const a = v.toScreen(r.c), b = v.toScreen(r.p), R = Math.hypot(b.x - a.x, b.y - a.y), a0 = Math.atan2(b.y - a.y, b.x - a.x);
+      c.setLineDash([]); c.beginPath(); c.moveTo(a.x - 5, a.y); c.lineTo(a.x + 5, a.y); c.moveTo(a.x, a.y - 5); c.lineTo(a.x, a.y + 5); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
+      c.setLineDash([4, 3]); c.beginPath(); c.arc(a.x, a.y, R, a0 - 0.6, a0 + 0.6); c.stroke(); c.setLineDash([]);
+      c.beginPath(); c.arc(b.x, b.y, 4, 0, G.TAU); c.fill();
+      label(r.p, `${r.name} (${r.ents.length} obj.)`);
+    }
+    if (d.look) { const s = v.toScreen(d.look.pos || be.base); c.beginPath(); c.moveTo(s.x, s.y - 5); c.lineTo(s.x + 5, s.y + 4); c.lineTo(s.x - 5, s.y + 4); c.closePath(); c.fill(); label(d.look.pos || be.base, `${d.look.name || 'Consulta'}: ${d.look.rows.length} fila(s)`); }
     if (d.flip) { const a = v.toScreen(d.flip.a), b = v.toScreen(d.flip.b); c.setLineDash([8, 3, 2, 3]); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); c.setLineDash([]); label(d.flip.b, 'Simetría'); }
     if (d.vis) label(d.vis.pos || be.base, `Visibilidad: ${be.visCur} (${d.vis.states.length} estados)`);
   }
@@ -288,6 +297,19 @@ export class Renderer {
     const hl = new Set(app.sel);
     if (req?.set) for (const id of req.set) hl.add(id);
     for (const id of hl) { const e = doc.get(id); if (e && doc.visible(e)) this.highlight(c, e, R, true); }
+    // Grupos designados enteros: recuadro discontinuo alrededor del grupo
+    if (doc.groups.length && hl.size > 1) {
+      c.save(); c.setTransform(d, 0, 0, d, 0, 0); c.strokeStyle = 'rgba(156,203,255,0.8)'; c.lineWidth = 1; c.setLineDash([5, 4]);
+      for (const g of doc.groups) {
+        if (g.ids.length < 2 || !g.ids.every(id => hl.has(id))) continue;
+        let b = null;
+        for (const id of g.ids) { const e = doc.get(id); if (e && doc.visible(e)) b = bbUnion(b, bboxOf(e)); }
+        if (!b) continue;
+        const a = app.view.toScreen({ x: b.x1, y: b.y2 }), q = app.view.toScreen({ x: b.x2, y: b.y1 });
+        c.strokeRect(Math.round(a.x) - 4.5, Math.round(a.y) - 4.5, q.x - a.x + 9, q.y - a.y + 9);
+      }
+      c.restore();
+    }
     if (app.hover && !hl.has(app.hover)) { const e = doc.get(app.hover); if (e) this.highlight(c, e, R, false); }
 
     const base = req && (req.opts.base || req.tmpBase);

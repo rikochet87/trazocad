@@ -1,6 +1,6 @@
 // Operaciones de edición geométrica: recortar, alargar, partir, longitud, desfase, empalme, chaflán, descomponer, unir, estirar.
 import * as G from './geom.js';
-import { primsOf, bboxOf, dimParts, plPieces, pieceAt, pieceParam, plLength, cloneEnt, inWindow, xformEnt, blockEnts, mtextGeom, mleaderGeom, tableGeom } from './entities.js';
+import { primsOf, bboxOf, dimParts, plPieces, pieceAt, pieceParam, pieceLen, plLength, cloneEnt, inWindow, xformEnt, blockEnts, mtextGeom, mleaderGeom, tableGeom, ellPts } from './entities.js';
 import { hatchSegments } from './patterns.js';
 import { splinePts, rebuild as rebuildSpline, deBoor, domain, nearestParam, tangentAt, subSpline, joinSplines, reverseSpline, lineSpline, interpolate } from './spline.js';
 const { TAU } = G;
@@ -249,6 +249,55 @@ export function lengthOf(e) {
   }
   return null;
 }
+// ---------- Recorrido por longitud (GRADUA, DIVIDE) ----------
+// Curva parametrizada por la longitud recorrida desde su inicio: {len, closed, start, end, at(s) → {p, a}} (a: ángulo de la
+// tangente en el sentido de avance). Las elipses y splines se recorren sobre su teselado. null si el objeto no es una curva.
+function polyPath(pts, closed) {
+  const P2 = closed ? [...pts, pts[0]] : pts, cum = [0];
+  for (let i = 1; i < P2.length; i++) cum.push(cum[i - 1] + G.dist(P2[i - 1], P2[i]));
+  const len = cum[cum.length - 1];
+  return {
+    len, closed, start: P2[0], end: P2[P2.length - 1],
+    at: s => {
+      s = Math.max(0, Math.min(len, s));
+      let lo = 0, hi = cum.length - 1;
+      while (hi - lo > 1) { const m = (lo + hi) >> 1; if (cum[m] <= s) lo = m; else hi = m; }
+      const L = cum[hi] - cum[lo], t = L > 0 ? (s - cum[lo]) / L : 0;
+      return { p: G.lerp(P2[lo], P2[hi], t), a: G.ang(P2[lo], P2[hi]) };
+    },
+  };
+}
+export function pathOf(e) {
+  switch (e.type) {
+    case 'line': { const len = G.dist(e.p1, e.p2), a = G.ang(e.p1, e.p2); return { len, closed: false, start: e.p1, end: e.p2, at: s => ({ p: G.lerp(e.p1, e.p2, len ? s / len : 0), a }) }; }
+    case 'arc': case 'circle': {
+      const a1 = e.type === 'arc' ? e.a1 : 0, sw = e.type === 'arc' ? G.sweep(e.a1, e.a2) : TAU;
+      return { len: e.r * sw, closed: e.type === 'circle', start: G.polar(e.c, a1, e.r), end: G.polar(e.c, a1 + sw, e.r), at: s => { const t = a1 + s / e.r; return { p: G.polar(e.c, t, e.r), a: t + Math.PI / 2 }; } };
+    }
+    case 'pline': {
+      const pcs = plPieces(e), cum = [0];
+      if (!pcs.length) return null;
+      for (const pc of pcs) cum.push(cum[cum.length - 1] + pieceLen(pc));
+      const len = cum[cum.length - 1], closed = !!e.closed && e.pts.length > 2;
+      return {
+        len, closed, start: pcs[0].a, end: pcs[pcs.length - 1].b,
+        at: s => {
+          s = Math.max(0, Math.min(len, s));
+          let i = 0;
+          while (i < pcs.length - 1 && cum[i + 1] <= s) i++;
+          const pc = pcs[i], L = cum[i + 1] - cum[i], p = pieceAt(pc, L > 0 ? (s - cum[i]) / L : 0);
+          return { p, a: pc.bulge ? G.ang(pc.prim.c, p) + (pc.bulge > 0 ? Math.PI / 2 : -Math.PI / 2) : G.ang(pc.a, pc.b) };
+        },
+      };
+    }
+    case 'spline': { const pts = splinePts(e); return polyPath(e.closed ? pts.slice(0, G.eqPt(pts[0], pts[pts.length - 1], 1e-9) ? -1 : undefined) : pts, !!e.closed); }
+    case 'ellipse': return polyPath(ellPts(e, 720), true);
+  }
+  return null;
+}
+// Recorrido en sentido contrario (GRADUA empieza por el extremo más próximo al punto designado)
+export function reversePath(pt) { return { ...pt, start: pt.end, end: pt.start, at: s => { const r = pt.at(pt.len - s); return { p: r.p, a: r.a + Math.PI }; } }; }
+
 // mode: 'delta' | 'percent' | 'total'
 export function lengthenEntity(e, pick, mode, val) {
   const L = lengthOf(e);

@@ -1,6 +1,6 @@
 // Tipos de entidad: geometría, referencias, pinzamientos, transformaciones y propiedades.
 import * as G from './geom.js';
-import { PATTERNS, famsOf, famLines, gradientSpec, GRADIENTS, GRAD_DEFAULT } from './patterns.js';
+import { PATTERNS, famsOf, famLines, gradientSpec, GRADIENTS, GRAD_DEFAULT, USER_DEFAULT } from './patterns.js';
 import { splinePts, rebuild as rebuildSpline } from './spline.js';
 import { parseRich, baseFmt, richPlain } from './richtext.js';
 const { P, Mx, TAU } = G;
@@ -1064,13 +1064,18 @@ TYPES.hatch = {
     c.restore();
   },
   props: e => [
-    sel('Patrón', () => [...Object.entries(PATTERNS).map(([k, v]) => [k, v.desc]), ['GRADIENT', 'Degradado']], x => x.pattern, (x, v) => { x.pattern = v; if (v === 'GRADIENT') x.grad = { ...GRAD_DEFAULT, ...x.grad }; }),
+    sel('Patrón', () => [...Object.entries(PATTERNS).map(([k, v]) => [k, v.desc]), ...Object.entries(D()?.patterns || {}).map(([k, v]) => [k, `${k} · ${v.desc || 'personalizado'}`]), ['USER', 'Definido por el usuario'], ['GRADIENT', 'Degradado']],
+      x => x.pattern, (x, v) => { x.pattern = v; if (v === 'GRADIENT') x.grad = { ...GRAD_DEFAULT, ...x.grad }; if (v === 'USER') { x.user = { ...USER_DEFAULT, ...x.user }; x.scale = 1; } }),
+    ...(e.pattern === 'USER' ? [
+      num('Separación', x => (x.user?.sp ?? USER_DEFAULT.sp) * (x.scale || 1), (x, v) => { if (v > 0) { x.user = { ...USER_DEFAULT, ...x.user, sp: v / (x.scale || 1) }; } }),
+      { label: 'Doble (cruzado)', type: 'bool', get: x => !!x.user?.dbl, set: (x, v) => { x.user = { ...USER_DEFAULT, ...x.user, dbl: v }; } },
+    ] : []),
     ...(e.pattern === 'GRADIENT' ? [
       sel('Tipo de degradado', () => Object.entries(GRADIENTS), x => x.grad?.type || 'LINEAR', (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, type: v }; }),
       { label: 'Color 1', type: 'color', get: x => x.grad?.c1 || GRAD_DEFAULT.c1, set: (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, c1: v }; } },
       { label: 'Color 2', type: 'color', get: x => x.grad?.c2 || GRAD_DEFAULT.c2, set: (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, c2: v }; } },
       { label: 'Centrado', type: 'bool', get: x => x.grad?.centered !== false, set: (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, centered: v }; } },
-    ] : [num('Escala', x => x.scale || 1, (x, v) => { if (v > 0) x.scale = v; })]),
+    ] : e.pattern === 'USER' ? [] : [num('Escala', x => x.scale || 1, (x, v) => { if (v > 0) x.scale = v; })]),
     num('Ángulo (°)', x => x.angle || 0, (x, v) => { x.angle = v; }),
     { label: 'Asociativo', type: 'bool', get: e => !!e.assoc, set: (e, v) => { if (!v) { delete e.assoc; delete e.seed; } } },
     ro('Contornos', e => e.loops.length, 'int'),

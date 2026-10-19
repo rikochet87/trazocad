@@ -117,6 +117,17 @@ const I = {
   delcon: '<rect x="6" y="11" width="12" height="9" rx="1"/><path d="M9 11V8a3 3 0 0 1 6 0"/><path d="M3 3l18 18"/>',
   params: '<path d="M4 6h10M4 12h16M4 18h7"/><circle cx="17" cy="6" r="2"/><circle cx="14" cy="18" r="2"/><text x="15" y="14.5" font-size="6" fill="currentColor" stroke="none">fx</text>',
   cbar: '<rect x="3" y="8" width="5" height="5"/><rect x="10" y="8" width="5" height="5"/><rect x="17" y="8" width="4" height="5"/><path d="M3 18h18"/>',
+  group: '<rect x="2.5" y="2.5" width="19" height="19" rx="1.5" stroke-dasharray="3 2"/><rect x="6" y="6" width="6" height="6"/><circle cx="15" cy="15" r="3.2"/>',
+  ungroup: '<rect x="3" y="3" width="7" height="7"/><circle cx="16.5" cy="16.5" r="3.5"/><path d="M14 4h6v6M10 20H4v-6" stroke-dasharray="2 2"/>',
+  groupedit: '<rect x="2.5" y="2.5" width="19" height="19" rx="1.5" stroke-dasharray="3 2"/><rect x="5.5" y="5.5" width="5" height="5"/><path d="m11 18 7-7 2 2-7 7h-2Z"/>',
+  groups: '<rect x="2.5" y="4" width="8" height="7" rx="1" stroke-dasharray="2 1.5"/><rect x="13.5" y="4" width="8" height="7" rx="1" stroke-dasharray="2 1.5"/><path d="M3 15h18M3 19h12"/>',
+  divide: '<path d="M3 17C8 5 16 5 21 17"/><circle cx="3" cy="17" r="1.3" fill="currentColor"/><path d="M7.5 9.5l-1-2M12 8V6M16.5 9.5l1-2"/><circle cx="21" cy="17" r="1.3" fill="currentColor"/>',
+  measure: '<path d="M3 16h18"/><path d="M3 13v6M8 14v4M13 14v4M18 14v4"/><path d="M3 8h5m0 0-2-2m2 2-2 2" /><text x="11" y="10" font-size="6" fill="currentColor" stroke="none">d</text>',
+  laystate: '<path d="m12 3 9 5-9 5-9-5Z"/><path d="m3 12 9 5 9-5"/><path d="M15 18.5h6M18 15.5v6"/>',
+  autocons: '<path d="M4 20V9h9"/><rect x="2.5" y="18.5" width="3" height="3" fill="currentColor"/><path d="M18 3v4M16 5h4M15 11l1.2 2.6 2.6 1.2-2.6 1.2L15 18.6l-1.2-2.6-2.6-1.2 2.6-1.2Z"/>',
+  lookup: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 9h18M9 4v16"/><path d="m13 14 3-3 3 3Z" fill="currentColor"/>',
+  bprot: '<circle cx="9" cy="15" r="1.4" fill="currentColor"/><path d="M9 15 19 9"/><path d="M19 15A10 10 0 0 0 16 6" stroke-dasharray="2 2"/><circle cx="19" cy="9" r="1.8"/>',
+  patlib: '<rect x="3" y="3" width="8" height="8"/><path d="m3 7 4-4M3 11l8-8M7 11l4-4"/><rect x="13" y="13" width="8" height="8"/><path d="M13 17h8M17 13v8"/><path d="M14 4h7M14 7h7M3 15h7M3 18h7"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
 };
 

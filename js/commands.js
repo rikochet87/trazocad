@@ -6,8 +6,11 @@ import { rebuild as rebuildSpline, splinePts } from './spline.js';
 import { angBase, remapDim, updateDim } from './assoc.js';
 import { parseSource, defineXref, detachXref, bindXref, xrefNames, xrefRefs, cleanXrefName } from './xref.js';
 import * as OPS from './ops.js';
-import { GRADIENTS, GRAD_DEFAULT } from './patterns.js';
-import { solve, evalParams, parseExpr, nearestPointRef, lineRefAt, refGeom, consDim, constrainable, entVals, refIds, GEOM_NAMES } from './constraints.js';
+import { GRADIENTS, GRAD_DEFAULT, USER_DEFAULT, PATTERNS, parsePat, patText } from './patterns.js';
+import { solve, evalParams, parseExpr, nearestPointRef, lineRefAt, refGeom, consDim, constrainable, entVals, refIds, GEOM_NAMES, autoConstrain, AUTO_TYPES, AUTO_DEFAULT } from './constraints.js';
+import { makeGroup, removeGroup, findGroup, groupsOf, copyGroups, validGroupName, isAnonGroup, groupsWithin, nextAnonGroup } from './groups.js';
+import { saveLayerState, restoreLayerState, findLayerState, validStateName, renameLayerState, deleteLayerState, LS_ALL } from './layerstates.js';
+import { linsOf, rotsOf, lookupCols } from './dynblock.js';
 const { P, Mx } = G;
 
 export const CMDS = {};
@@ -41,6 +44,7 @@ function applyX(c, ids, m, copy) {
     else c.doc.modify(id, x => xformEnt(x, m));
   }
   remapAssoc(made, map);
+  if (copy) copyGroups(c.doc, map); // un grupo copiado entero da lugar a un grupo sin nombre con las copias
 }
 // Un sombreado o una cota copiados junto con su geometría quedan asociados a las copias; copiados solos, dejan de ser asociativos
 function remapAssoc(ents, map) {
@@ -263,13 +267,59 @@ def('POINT', ['PO', 'PUNTO'], 'Crea objetos punto', async c => {
   }
 }, { group: 'Dibujo' });
 
+// ---- GRADUA y DIVIDE: puntos o bloques a lo largo de un objeto ----
+const measurable = e => ['line', 'arc', 'circle', 'pline', 'spline', 'ellipse'].includes(e.type);
+async function measureDivide(c, divide) {
+  const S = c.settings, doc = c.doc;
+  const o = await c.getEntity(divide ? 'Designe objeto a dividir' : 'Designe objeto a graduar', { filter: measurable });
+  let path = OPS.pathOf(o.e);
+  if (!path || !(path.len > 1e-9)) return c.print('El objeto no tiene longitud.');
+  // GRADUA empieza por el extremo más próximo al punto con el que se designó el objeto
+  if (!divide && !path.closed && G.dist(o.pt, path.end) < G.dist(o.pt, path.start)) path = OPS.reversePath(path);
+  let block = null, align = true, v;
+  for (;;) {
+    const opts = block ? [] : ['Bloque'];
+    v = divide
+      ? await c.getNumber('Indique número de segmentos', { options: opts, int: true, min: 2, max: 32767, def: S.divideN || undefined })
+      : await c.getDistance('Precise longitud de segmento', { options: opts, def: S.measureD || undefined });
+    if (v !== 'Bloque') break;
+    const name = (await c.getString('Indique nombre de bloque a insertar', { spaces: true })).trim();
+    if (!doc.blocks[name] || name.startsWith('*')) { c.print(`El bloque "${name}" no existe.`); continue; }
+    block = name;
+    align = (await c.getKeyword('¿Alinear bloque con objeto?', ['Sí', 'No'], 'Sí')) === 'Sí';
+  }
+  let at;
+  if (divide) {
+    S.divideN = v;
+    at = Array.from({ length: path.closed ? v : v - 1 }, (_, k) => (path.len * (path.closed ? k : k + 1)) / v);
+  } else {
+    if (!(v > 0)) return;
+    S.measureD = v;
+    const n = Math.floor(path.len / v + 1e-9);
+    if (n > 32767) return c.print('Demasiados segmentos: indique una longitud mayor.');
+    at = Array.from({ length: n }, (_, k) => v * (k + 1)).filter(s => s < path.len - 1e-9 * Math.max(1, path.len));
+  }
+  if (!at.length) return c.print('La longitud del segmento es mayor que la del objeto: no se crea ningún punto.');
+  const defs = block ? blockAttdefs(block) : [];
+  for (const s of at) {
+    const { p, a } = path.at(s);
+    if (!block) { c.add({ type: 'point', p }); continue; }
+    c.add({ type: 'insert', name: block, p, sx: 1, sy: 1, rot: align ? G.normAng(a) : 0, ...(defs.length ? { attribs: Object.fromEntries(defs.map(d => [d.tag, d.def || ''])) } : {}) });
+  }
+  c.print(`${at.length} ${block ? `referencia(s) al bloque "${block}"` : 'punto(s)'} creado(s)${divide ? ` (${v} segmentos de ${fmt(path.len / v, 4)})` : ''}.`);
+}
+def('DIVIDE', ['DIV', 'DIVIDIR'], 'Divide un objeto en partes iguales con puntos o bloques', c => measureDivide(c, true), { group: 'Dibujo' });
+def('MEASURE', ['ME', 'GRADUA', 'MEDIR'], 'Coloca puntos o bloques a lo largo de un objeto a intervalos de una longitud dada', c => measureDivide(c, false), { group: 'Dibujo' });
+
 // Sombreado con patrón o, con grad, relleno degradado (mismo flujo de designación de contornos)
 async function hatchLoop(c, grad) {
   const S = c.settings, made = [];
   const G0 = () => ({ ...GRAD_DEFAULT, ...S.gradient });
   for (;;) {
-    const g = G0(), info = grad ? `degradado ${GRADIENTS[g.type].toLowerCase()}, ${g.c1} → ${g.c2}, ${S.hatchAng}°` : `${S.hatchPat}, escala ${S.hatchScale}, ${S.hatchAng}°`;
-    const opts = grad ? ['Seleccionar objetos', 'Tipo', 'Colores', 'Ángulo', 'Centrado', 'asOciativo', 'desHacer'] : ['Seleccionar objetos', 'Patrón', 'Escala', 'Ángulo', 'asOciativo', 'desHacer'];
+    const g = G0(), u = { ...USER_DEFAULT, ...S.hatchUser };
+    const info = grad ? `degradado ${GRADIENTS[g.type].toLowerCase()}, ${g.c1} → ${g.c2}, ${S.hatchAng}°`
+      : S.hatchPat === 'USER' ? `definido por el usuario, separación ${fmt(u.sp, 4)}${u.dbl ? ', doble' : ''}, ${S.hatchAng}°` : `${S.hatchPat}, escala ${S.hatchScale}, ${S.hatchAng}°`;
+    const opts = grad ? ['Seleccionar objetos', 'Tipo', 'Colores', 'Ángulo', 'Centrado', 'asOciativo', 'desHacer'] : ['Seleccionar objetos', 'Patrón', 'Usuario', 'Escala', 'Ángulo', 'asOciativo', 'desHacer'];
     const r = await c.getPoint(`Designe punto interno [${info}, ${S.hatchAssoc ? 'asociativo' : 'no asociativo'}]`, { options: opts, allowEnter: true, noSnap: true });
     if (r === null) break;
     if (r === 'Tipo') {
@@ -281,7 +331,19 @@ async function hatchLoop(c, grad) {
     if (r === 'Colores') { const a = await c.app.ui.pickColor(g.c1), b = a ? await c.app.ui.pickColor(g.c2) : null; S.gradient = { ...g, ...(a ? { c1: a } : {}), ...(b ? { c2: b } : {}) }; continue; }
     if (r === 'Centrado') { S.gradient = { ...g, centered: !g.centered }; c.print(S.gradient.centered ? 'Degradado centrado.' : 'Degradado desplazado.'); continue; }
     if (r === 'asOciativo') { S.hatchAssoc = !S.hatchAssoc; c.print(S.hatchAssoc ? 'Los sombreados nuevos se actualizarán al modificar su contorno.' : 'Los sombreados nuevos no serán asociativos.'); continue; }
-    if (r === 'Patrón') { const p = await c.app.ui.pickPattern(S.hatchPat); if (p) S.hatchPat = p; continue; }
+    if (r === 'Patrón') {
+      const names = [...Object.keys(PATTERNS), ...Object.keys(c.doc.patterns)];
+      const p = c.app.ui.pickPattern ? await c.app.ui.pickPattern(S.hatchPat) : (await c.getString(`Indique nombre de patrón (${names.join(', ')})`, { def: S.hatchPat })).toUpperCase();
+      if (p && (p === 'USER' || PATTERNS[p] || c.doc.patterns[p])) S.hatchPat = p; else if (p) c.print(`El patrón "${p}" no existe. Cárguelo con PATRONES.`);
+      continue;
+    }
+    if (r === 'Usuario') { // patrón definido por el usuario: líneas paralelas (o cruzadas) con separación propia
+      const sp = await c.getDistance('Precise separación entre líneas', { def: u.sp });
+      if (!(sp > 0)) continue;
+      const k = await c.getKeyword('¿Doble sombreado (líneas cruzadas a 90°)?', ['Sí', 'No'], u.dbl ? 'Sí' : 'No');
+      S.hatchUser = { sp, dbl: k === 'Sí' }; S.hatchPat = 'USER';
+      continue;
+    }
     if (r === 'Escala') { const v = await c.getNumber('Indique escala del patrón', { def: S.hatchScale }); if (v > 0) S.hatchScale = v; continue; }
     if (r === 'Ángulo') { S.hatchAng = await c.getNumber('Indique ángulo del patrón', { def: S.hatchAng }); continue; }
     if (r === 'desHacer') { if (made.length) c.doc.remove(made.pop()); else c.print('Nada que deshacer.'); continue; }
@@ -298,7 +360,8 @@ async function hatchLoop(c, grad) {
       c.print(`Contorno encontrado${loops.length > 1 ? ` con ${loops.length - 1} isla(s)` : ''}.`);
       assoc = loops.ids; seed = r;
     }
-    const e = c.add({ type: 'hatch', loops: [...loops], pattern: grad ? 'GRADIENT' : S.hatchPat, scale: S.hatchScale, angle: S.hatchAng, ...(grad ? { grad: G0() } : {}) });
+    const user = !grad && S.hatchPat === 'USER';
+    const e = c.add({ type: 'hatch', loops: [...loops], pattern: grad ? 'GRADIENT' : S.hatchPat, scale: user ? 1 : S.hatchScale, angle: S.hatchAng, ...(grad ? { grad: G0() } : {}), ...(user ? { user: { ...USER_DEFAULT, ...S.hatchUser } } : {}) });
     if (S.hatchAssoc && assoc?.length) { e.assoc = assoc; if (seed) e.seed = seed; }
     sendToBack(c, e);
     made.push(e.id);
@@ -306,6 +369,39 @@ async function hatchLoop(c, grad) {
 }
 def('HATCH', ['H', 'BH', 'SOMBCONT', 'SOMBREADO'], 'Rellena un área cerrada con un patrón de sombreado', c => hatchLoop(c, false), { group: 'Dibujo' });
 def('GRADIENT', ['GD', 'DEGRADADO'], 'Rellena un área cerrada con un degradado de dos colores', c => hatchLoop(c, true), { group: 'Dibujo' });
+
+// ---- Patrones de sombreado personalizados ----
+// Añade al dibujo los patrones de un texto .pat. k: factor de unidades (25,4 si está en pulgadas). Devuelve los nombres cargados
+export function loadPatterns(c, text, k = 1, src = '') {
+  const r = parsePat(text, k), names = Object.keys(r.pats);
+  for (const n of names) c.doc.patterns[n] = r.pats[n];
+  if (names.length) c.doc.changed();
+  c.print(names.length ? `${names.length} patrón(es) cargado(s)${src ? ` de ${src}` : ''}: ${names.slice(0, 12).join(', ')}${names.length > 12 ? '…' : ''}.` : 'No se ha cargado ningún patrón.');
+  if (r.skipped.length) c.print(`Se omiten ${r.skipped.length} patrón(es) que ya son predefinidos (${r.skipped.slice(0, 6).join(', ')}${r.skipped.length > 6 ? '…' : ''}).`);
+  for (const e of r.errors.slice(0, 5)) c.app.print(`Aviso: ${e}.`, 'err');
+  if (r.errors.length > 5) c.print(`… y ${r.errors.length - 5} aviso(s) más.`);
+  return names;
+}
+const patternInUse = (doc, name) => [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)].some(e => e.type === 'hatch' && e.pattern === name);
+def('PATTERNS', ['PATRONES', 'PATSOMB'], 'Patrones de sombreado personalizados: cargar archivos .pat de AutoCAD, pegar definiciones, exportarlos o eliminarlos', async (c, arg) => {
+  const doc = c.doc, app = c.app;
+  if (arg?.text != null) { loadPatterns(c, arg.text, arg.k || 1, arg.src); return; }
+  for (;;) {
+    const r = await app.ui.patternManager();
+    if (!r) return;
+    if (r.action === 'load') {
+      const f = await app.io.pickFile('Patrones de sombreado', ['.pat']);
+      if (f) loadPatterns(c, await app.io.readText(f.file), r.k, f.file.name);
+    } else if (r.action === 'paste') { const t = await app.ui.patternPaste(); if (t) loadPatterns(c, t, r.k); }
+    else if (r.action === 'delete') {
+      if (patternInUse(doc, r.name)) c.print(`El patrón "${r.name}" lo usan sombreados del dibujo: no se puede eliminar.`);
+      else { delete doc.patterns[r.name]; if (doc.settings.hatchPat === r.name) doc.settings.hatchPat = 'ANSI31'; doc.changed(); c.print(`Patrón "${r.name}" eliminado.`); }
+    } else if (r.action === 'export') {
+      const names = Object.keys(doc.patterns);
+      if (names.length) await app.io.writeFile(names.map(n => patText(n, doc.patterns[n])).join('\n') + '\n', `${doc.name}.pat`, 'text/plain', '.pat', 'Patrones de sombreado', false);
+    } else if (r.action === 'use') { doc.settings.hatchPat = r.name; c.print(`Patrón actual para SOMBREADO: ${r.name}.`); }
+  }
+}, { group: 'Dibujo' });
 
 // ================= ANOTACIÓN =================
 def('TEXT', ['DT', 'DTEXT', 'TEXTO'], 'Crea texto de una línea', async c => {
@@ -797,7 +893,7 @@ async function readXrefFile(c, name, hint) {
   }
   if (!picked) return null;
   (app.xrefHandles ||= {})[name] = picked.handle;
-  return { src: parseSource(await picked.file.text(), picked.file.name), file: picked.file.name };
+  return { src: parseSource(await app.io.readText(picked.file), picked.file.name), file: picked.file.name };
 }
 def('XATTACH', ['XA', 'ENLAZARX', 'REFXENLAZAR'], 'Enlaza otro dibujo (.tcad o .dxf) como referencia externa', async c => {
   const doc = c.doc;
@@ -809,7 +905,7 @@ def('XATTACH', ['XA', 'ENLAZARX', 'REFXENLAZAR'], 'Enlaza otro dibujo (.tcad o .
   if (!name || (doc.blocks[name] && !doc.blocks[name].xref)) return c.print('Nombre no válido o ya usado por un bloque.');
   if (!doc.blocks[name]) {
     let src;
-    try { src = parseSource(await picked.file.text(), picked.file.name); } catch (err) { return c.print(`No se puede leer la referencia: ${err.message}`); }
+    try { src = parseSource(await c.app.io.readText(picked.file), picked.file.name); } catch (err) { return c.print(`No se puede leer la referencia: ${err.message}`); }
     const n = defineXref(doc, name, src, picked.file.name);
     (c.app.xrefHandles ||= {})[name] = picked.handle;
     c.print(`Referencia externa "${name}" enlazada: ${n} objeto(s) de ${picked.file.name}.`);
@@ -891,11 +987,24 @@ def('BASE', ['PUNTOBASE', 'INSBASE'], 'Punto base del bloque en edición, o punt
 // ---- Bloques dinámicos (dentro del editor de bloques) ----
 const needBedit = c => { if (!c.doc.bedit) { c.print('Este comando sólo funciona dentro del editor de bloques (BEDIT).'); return false; } return true; };
 const setDyn = (c, fn) => { const be = c.doc.bedit; be.dyn = fn(JSON.parse(JSON.stringify(be.dyn || {}))); c.doc.changed(); };
-def('BPARAMETER', ['BPARAM', 'PARAMETROB'], 'Añade un parámetro dinámico al bloque: estiramiento lineal, simetría o estados de visibilidad', async c => {
+// Nombre de parámetro no repetido entre los de su tipo
+const uniqueName = (list, name) => { let n = name, i = 2; while (list.some(x => x.name === n)) n = `${name}${i++}`; return n; };
+def('BPARAMETER', ['BPARAM', 'PARAMETROB'], 'Añade un parámetro dinámico al bloque: estiramiento lineal, rotación, simetría o estados de visibilidad', async c => {
   if (!needBedit(c)) return;
-  const k = await c.getKeyword('Indique tipo de parámetro', ['Lineal', 'Simetría', 'Visibilidad'], 'Lineal');
+  const k = await c.getKeyword('Indique tipo de parámetro', ['Lineal', 'Rotación', 'Simetría', 'Visibilidad'], 'Lineal');
+  if (k === 'Rotación') {
+    const d0 = c.doc.bedit.dyn;
+    const name = uniqueName(rotsOf(d0), (await c.getString('Indique nombre del parámetro', { spaces: true, def: 'Ángulo' })).trim() || 'Ángulo');
+    const cen = await c.getPoint('Precise punto base (centro de giro)');
+    const p = await c.getPoint('Precise radio del parámetro (ubicación del pinzamiento en el ángulo base)', { base: cen });
+    if (G.dist(cen, p) < 1e-9) return c.print('El radio no puede ser nulo.');
+    const ids = await c.getSelection('Designe los objetos que giran', { noPickfirst: true });
+    if (!ids.length) return c.print('No se ha designado ningún objeto.');
+    setDyn(c, d => ({ ...d, rots: [...rotsOf(d), { name, c: cen, p, ents: ids }] }));
+    return c.print(`Parámetro de rotación "${name}" (ángulo base ${deg(G.ang(cen, p))}) con ${ids.length} objeto(s). En las referencias, arrastre el pinzamiento cian para girarlos.`);
+  }
   if (k === 'Lineal') {
-    const name = (await c.getString('Indique nombre del parámetro', { spaces: true, def: 'Distancia' })).trim() || 'Distancia';
+    const name = uniqueName(linsOf(c.doc.bedit.dyn), (await c.getString('Indique nombre del parámetro', { spaces: true, def: 'Distancia' })).trim() || 'Distancia');
     const p1 = await c.getPoint('Precise punto inicial (fijo)');
     const p2 = await c.getPoint('Precise punto final (el que se arrastra)', { base: p1 });
     if (G.dist(p1, p2) < 1e-9) return c.print('Los puntos coinciden.');
@@ -905,7 +1014,7 @@ def('BPARAMETER', ['BPARAM', 'PARAMETROB'], 'Añade un parámetro dinámico al b
     c.print('Designe los objetos que se estiran (INTRO: los que tocan la ventana).');
     let ids = await c.getSelection('Designe objetos', { noPickfirst: true });
     if (!ids.length) ids = c.doc.ents.filter(e => crosses(e, rect)).map(e => e.id);
-    setDyn(c, d => ({ ...d, lin: { name, p1, p2, rect, ents: ids } }));
+    setDyn(c, d => { const lins = [...linsOf(d), { name, p1, p2, rect, ents: ids }]; delete d.lin; return { ...d, lins }; });
     c.print(`Parámetro lineal "${name}" (${fmt(G.dist(p1, p2), 4)}) con ${ids.length} objeto(s). En las referencias, arrastre el pinzamiento cian para cambiarlo.`);
   } else if (k === 'Simetría') {
     const a = await c.getPoint('Precise primer punto del eje de simetría');
@@ -964,6 +1073,19 @@ async function visToggle(c, hide) {
 }
 def('BVHIDE', ['BVH', 'OCULTARVIS'], 'Oculta objetos en el estado de visibilidad actual del bloque', c => visToggle(c, true), { group: 'Bloques', sel: true });
 def('BVSHOW', ['BVSH', 'MOSTRARVIS'], 'Muestra objetos en el estado de visibilidad actual del bloque', c => visToggle(c, false), { group: 'Bloques', sel: true });
+
+def('BLOOKUPTABLE', ['BLT', 'TABLACONSULTA'], 'Tabla de consulta del bloque dinámico: filas con nombre que fijan a la vez varios parámetros', async (c, arg) => {
+  if (!needBedit(c)) return;
+  const be = c.doc.bedit, d = be.dyn || {}, cols = [...lookupCols(d)];
+  if (!cols.length) return c.print('El bloque no tiene parámetros: añada antes uno lineal, de rotación, de simetría o de visibilidad (BPARAMETER).');
+  const pos = d.look?.pos || await c.getPoint('Precise ubicación del pinzamiento de consulta');
+  const v = arg && typeof arg === 'object' ? arg : await c.app.ui.lookupTableEditor(d, cols);
+  if (!v) return;
+  const rows = (v.rows || []).filter(r => String(r.label ?? '').trim());
+  if (!rows.length) { setDyn(c, x => { delete x.look; return x; }); return c.print('Tabla de consulta eliminada.'); }
+  setDyn(c, x => ({ ...x, look: { name: (v.name || 'Consulta').trim(), pos, cols: v.cols || cols, rows } }));
+  c.print(`Tabla de consulta con ${rows.length} fila(s) y ${(v.cols || cols).length} columna(s). En las referencias, el pinzamiento cian triangular pasa a la fila siguiente; la paleta de propiedades permite elegirla.`);
+}, { group: 'Bloques' });
 
 // ================= MODIFICAR =================
 def('ERASE', ['E', 'BORRA', 'BORRAR'], 'Borra objetos', async c => {
@@ -1271,9 +1393,140 @@ def('MATCHPROP', ['MA', 'IGUALARPROP'], 'Copia las propiedades de un objeto a ot
   for (const id of ids) c.doc.modify(id, e => {
     Object.assign(e, { layer, color, ltype, lw });
     if (e.type === o.e.type && ['text', 'mtext', 'attdef', 'dim', 'mleader', 'table'].includes(e.type) && o.e.style) e.style = o.e.style;
-    if (e.type === 'hatch' && o.e.type === 'hatch') { Object.assign(e, { pattern: o.e.pattern, scale: o.e.scale, angle: o.e.angle }); if (o.e.grad) e.grad = { ...o.e.grad }; else delete e.grad; }
+    if (e.type === 'hatch' && o.e.type === 'hatch') {
+      Object.assign(e, { pattern: o.e.pattern, scale: o.e.scale, angle: o.e.angle });
+      if (o.e.grad) e.grad = { ...o.e.grad }; else delete e.grad;
+      if (o.e.user) e.user = { ...o.e.user }; else delete e.user;
+    }
   });
 }, { group: 'Propiedades' });
+
+// ================= GRUPOS =================
+const groupLabel = g => (isAnonGroup(g.name) ? `sin nombre (${g.name})` : `"${g.name}"`);
+function listGroups(c) {
+  const doc = c.doc;
+  if (!doc.groups.length) return c.print('No hay grupos en el dibujo.');
+  for (const g of doc.groups) c.print(`  ${g.name}${g.desc ? ` — ${g.desc}` : ''}: ${g.ids.length} objeto(s)${g.sel ? '' : ', no seleccionable'}`);
+}
+// Selección previa (pickfirst) o designación con opciones. Devuelve una lista de identificadores o la opción elegida
+async function selectOr(c, prompt, options) {
+  const app = c.app;
+  if (app.pickfirst) { const ids = app.pickfirst.filter(id => c.doc.get(id)); app.pickfirst = null; c.print(`${ids.length} encontrados`); return ids; }
+  return app.ask('select', prompt, { options });
+}
+async function askGroupName(c, prompt, def) {
+  for (;;) {
+    const s = (await c.getString(`${prompt} o [?]`, { spaces: true, ...(def ? { def } : {}) })).trim();
+    if (s === '?') { listGroups(c); continue; }
+    return s;
+  }
+}
+def('GROUP', ['G', 'GRUPO', 'AGRUPAR'], 'Crea un grupo (con o sin nombre) con los objetos designados; se designan juntos', async c => {
+  const doc = c.doc;
+  let name = null, desc = '', ids;
+  for (;;) {
+    const r = await selectOr(c, `Designe objetos para el grupo ${name ? `"${name}"` : 'sin nombre'}`, ['Nombre', 'Descripción']);
+    if (r === 'Nombre') {
+      const s = await askGroupName(c, 'Indique un nombre de grupo');
+      if (!s) { name = null; continue; }
+      if (!validGroupName(s)) { c.print('Nombre de grupo no válido (no puede empezar por * ni contener < > / \\ " : ; ? * | = ` ,).'); continue; }
+      const old = findGroup(doc, s);
+      if (old && (await c.getKeyword(`El grupo "${old.name}" ya existe. ¿Desea reemplazarlo?`, ['Sí', 'No'], 'No')) !== 'Sí') continue;
+      name = s;
+      continue;
+    }
+    if (r === 'Descripción') { desc = (await c.getString('Indique descripción del grupo', { spaces: true, def: desc })).trim(); continue; }
+    ids = r.filter(id => doc.get(id));
+    break;
+  }
+  if (!ids.length) return c.print('No se ha designado ningún objeto.');
+  if (name && findGroup(doc, name)) removeGroup(doc, findGroup(doc, name));
+  const g = makeGroup(doc, name, ids, desc);
+  c.print(`Grupo ${groupLabel(g)} creado con ${g.ids.length} objeto(s).`);
+}, { group: 'Grupos', sel: true });
+
+def('UNGROUP', ['UNG', 'DESAGRUPAR'], 'Elimina los grupos de los objetos designados (los objetos se conservan)', async c => {
+  const doc = c.doc;
+  if (!doc.groups.length) return c.print('No hay grupos en el dibujo.');
+  let targets;
+  for (;;) {
+    const r = await selectOr(c, 'Designe grupo', ['Nombre']);
+    if (r === 'Nombre') {
+      const g = findGroup(doc, await askGroupName(c, 'Indique nombre del grupo'));
+      if (!g) { c.print('No existe ese grupo.'); continue; }
+      targets = [g];
+    } else targets = doc.groups.filter(g => g.ids.some(id => r.includes(id)));
+    break;
+  }
+  if (!targets.length) return c.print('Los objetos designados no pertenecen a ningún grupo.');
+  for (const g of targets) removeGroup(doc, g);
+  c.print(`${targets.length === 1 ? `Grupo ${groupLabel(targets[0])} desagrupado` : `${targets.length} grupos desagrupados`}.`);
+}, { group: 'Grupos', sel: true });
+
+async function editGroup(c, g) {
+  const doc = c.doc, app = c.app;
+  const k = await c.getKeyword(`Grupo ${groupLabel(g)} (${g.ids.length} objetos). Indique una opción`, ['Añadir objetos', 'Eliminar objetos', 'Renombrar'], 'Añadir objetos');
+  if (k === 'Renombrar') {
+    const s = (await c.getString('Indique el nuevo nombre del grupo', { spaces: true, def: isAnonGroup(g.name) ? '' : g.name })).trim();
+    if (!validGroupName(s) || (findGroup(doc, s) && findGroup(doc, s) !== g)) return c.print('Nombre no válido o ya usado por otro grupo.');
+    g.name = s; doc.changed();
+    return c.print(`Grupo renombrado: "${s}".`);
+  }
+  let ids;
+  if (k === 'Eliminar objetos') {
+    app.noGroupPick = true; // para quitar miembros sueltos hay que designarlos de uno en uno
+    try { ids = await app.ask('select', 'Designe los objetos que desea quitar del grupo'); } finally { app.noGroupPick = false; }
+    const set = new Set(ids), n = g.ids.length;
+    g.ids = g.ids.filter(id => !set.has(id));
+    if (!g.ids.length) { removeGroup(doc, g); return c.print('El grupo se ha quedado vacío y se ha eliminado.'); }
+    c.print(`${n - g.ids.length} objeto(s) quitado(s) del grupo; quedan ${g.ids.length}.`);
+  } else {
+    ids = await app.ask('select', 'Designe los objetos que desea añadir al grupo');
+    const n = g.ids.length;
+    g.ids = [...new Set([...g.ids, ...ids.filter(id => doc.get(id))])];
+    c.print(`${g.ids.length - n} objeto(s) añadido(s); el grupo tiene ${g.ids.length}.`);
+  }
+  doc.changed();
+}
+def('GROUPEDIT', ['GE', 'EDITARGRUPO'], 'Añade o elimina objetos de un grupo, o lo renombra', async c => {
+  const doc = c.doc, app = c.app;
+  if (!doc.groups.length) return c.print('No hay grupos en el dibujo.');
+  let g = null;
+  while (!g) {
+    const r = await app.ask('entity', 'Designe grupo', { options: ['Nombre'], filter: e => groupsOf(doc, e.id).length > 0 });
+    if (r === 'Nombre') { g = findGroup(doc, await askGroupName(c, 'Indique nombre del grupo')); if (!g) c.print('No existe ese grupo.'); continue; }
+    const all = groupsOf(doc, r.e.id);
+    g = all[0];
+    if (all.length > 1) c.print(`El objeto pertenece a ${all.length} grupos; se edita el más reciente, ${groupLabel(g)}.`);
+  }
+  app.sel = new Set(g.ids.filter(id => doc.get(id))); app.selChanged(); // el grupo se resalta mientras se edita
+  try { await editGroup(c, g); } finally { app.sel.clear(); app.selChanged(); }
+}, { group: 'Grupos' });
+
+def('CLASSICGROUP', ['GRUPOS', 'ADMINGRUPOS'], 'Administrador de grupos: designar, renombrar, describir, hacer seleccionable o desagrupar', async c => {
+  const doc = c.doc, app = c.app;
+  for (;;) {
+    if (!doc.groups.length) return c.print('No hay grupos en el dibujo. Cree uno con GROUP (G).');
+    const r = await app.ui.groupManager();
+    if (!r) return;
+    const g = doc.groups.find(x => x.name === r.name);
+    if (!g) continue;
+    if (r.action === 'select') {
+      const space = new Set(doc.ents.map(e => e.id));
+      app.sel = new Set(g.ids.filter(id => space.has(id) && doc.visible(doc.get(id)) && !doc.locked(doc.get(id))));
+      app.selChanged();
+      return c.print(`${app.sel.size} objeto(s) del grupo ${groupLabel(g)} designados.`);
+    }
+    if (r.action === 'rename') {
+      const v = await app.ui.prompt('Renombrar grupo', 'Nuevo nombre', isAnonGroup(g.name) ? '' : g.name);
+      if (v === null) continue;
+      if (!validGroupName(v) || (findGroup(doc, v) && findGroup(doc, v) !== g)) c.print('Nombre no válido o ya usado.'); else g.name = v;
+    } else if (r.action === 'desc') { const v = await app.ui.prompt(`Descripción del grupo ${g.name}`, 'Descripción', g.desc || ''); if (v !== null) g.desc = v; }
+    else if (r.action === 'selectable') g.sel = !g.sel;
+    else if (r.action === 'delete') { removeGroup(doc, g); c.print(`Grupo ${groupLabel(g)} desagrupado.`); }
+    doc.changed();
+  }
+}, { group: 'Grupos' });
 
 // ================= CONSULTA =================
 def('DIST', ['DI', 'DISTANCIA'], 'Mide la distancia y el ángulo entre dos puntos', async c => {
@@ -1339,8 +1592,10 @@ def('PURGE', ['PU', 'LIMPIA'], 'Elimina bloques, capas y estilos no utilizados',
   const nm = doc.mleaderStyles.length + doc.tableStyles.length;
   doc.mleaderStyles = doc.mleaderStyles.filter((x, i) => !i || usedM.has(x.name));
   doc.tableStyles = doc.tableStyles.filter((x, i) => !i || usedTb.has(x.name));
+  const usedP = new Set(all.filter(e => e.type === 'hatch').map(e => e.pattern)), np = Object.keys(doc.patterns).length;
+  for (const k of Object.keys(doc.patterns)) if (!usedP.has(k) && doc.settings.hatchPat !== k) delete doc.patterns[k];
   doc.changed();
-  c.print(`Limpiado: ${nb} bloque(s), ${nl - doc.layers.length} capa(s), ${nt - doc.textStyles.length} estilo(s) de texto, ${nd - doc.dimStyles.length} estilo(s) de cota, ${nm - doc.mleaderStyles.length - doc.tableStyles.length} estilo(s) de directriz o tabla.`);
+  c.print(`Limpiado: ${nb} bloque(s), ${nl - doc.layers.length} capa(s), ${nt - doc.textStyles.length} estilo(s) de texto, ${nd - doc.dimStyles.length} estilo(s) de cota, ${nm - doc.mleaderStyles.length - doc.tableStyles.length} estilo(s) de directriz o tabla, ${np - Object.keys(doc.patterns).length} patrón(es) de sombreado.`);
 }, { group: 'Utilidades' });
 
 // ================= VISTA =================
@@ -1620,6 +1875,46 @@ for (const [cmd, al, kind, d] of [['DCLINEAR', 'DCL', 'lin', 'lineal'], ['DCHORI
   def(cmd, [al], `Restricción de cota ${d}`, c => dimConstraint(c, kind), { group: 'Paramétrico' });
 }
 
+// ---- Restricciones automáticas ----
+const AC_KW = { Coincidente: 'coincident', coLineal: 'collinear', paRalela: 'parallel', Perpendicular: 'perpendicular', Tangente: 'tangent', cOncéntrica: 'concentric', Horizontal: 'horizontal', Vertical: 'vertical', Igual: 'equal' };
+def('AUTOCONSTRAIN', ['AUTORESTRICCION', 'AUTOREST', 'RESTAUTO'], 'Aplica automáticamente las restricciones geométricas que ya cumplen los objetos designados (coincidente, paralela, horizontal, tangente…)', async c => {
+  const S = c.settings, doc = c.doc, app = c.app;
+  const opts = () => ({ ...AUTO_DEFAULT, ...S.autoCons, off: [...(S.autoCons?.off || [])] });
+  let ids;
+  for (;;) {
+    const o = opts(), offTxt = o.off.length ? `; sin ${o.off.map(t => AUTO_TYPES[t].toLowerCase()).join(', ')}` : '';
+    const r = await selectOr(c, `Designe objetos (tolerancias: distancia ${fmt(o.tol, 4)}, ángulo ${fmt(o.angTol, 2)}°${offTxt})`, ['Parámetros']);
+    if (r !== 'Parámetros') { ids = r; break; }
+    const tol = await c.getDistance('Precise tolerancia de distancia', { def: o.tol });
+    const angTol = await c.getNumber('Indique tolerancia de ángulo (grados)', { def: o.angTol, min: 0, max: 45 });
+    const off = new Set(o.off);
+    for (;;) {
+      c.print(`Tipos: ${Object.entries(AC_KW).map(([k, t]) => `${k}${off.has(t) ? ' (no)' : ''}`).join(', ')}`);
+      const k = await app.ask('keyword', 'Indique tipo que desea activar o desactivar, o INTRO para terminar', { options: Object.keys(AC_KW), allowEnter: true });
+      if (k === null) break;
+      const t = AC_KW[k];
+      if (off.has(t)) off.delete(t); else off.add(t);
+    }
+    S.autoCons = { tol: tol > 0 ? tol : o.tol, angTol, off: [...off] };
+  }
+  ids = ids.filter(id => constrainable(doc.get(id)));
+  if (!ids.length) return c.print('Ningún objeto designado se puede restringir (líneas, polilíneas, arcos, círculos y puntos).');
+  const res = autoConstrain(doc, ids, opts());
+  if (res.tooMany) return c.print('Demasiados objetos para restringir de una vez: designe una parte del dibujo (unas 300 líneas como máximo).');
+  if (!res.cons.length) return c.print('No se ha encontrado ninguna restricción nueva: la geometría ya está restringida o no cumple ninguna relación dentro de las tolerancias.');
+  let id = Math.max(0, ...doc.constraints.map(k => k.id));
+  for (const k of res.cons) { k.id = ++id; doc.constraints.push(k); }
+  const r = solve(doc);
+  if (!r.ok) {
+    doc.constraints.splice(doc.constraints.length - res.cons.length);
+    solve(doc);
+    return c.print('Las restricciones encontradas no se pueden cumplir a la vez: no se aplica ninguna.');
+  }
+  for (const x of r.changed) doc.touched.add(x);
+  doc.changed();
+  c.print(`${res.cons.length} restricción(es) aplicada(s): ${Object.entries(res.counts).map(([t, n]) => `${n} ${AUTO_TYPES[t].toLowerCase()}`).join(', ')}.`);
+}, { group: 'Paramétrico', sel: true });
+
 def('DELCONSTRAINT', ['DELCON', 'BORRARRESTRICCION'], 'Elimina las restricciones de los objetos designados', async c => {
   const ids = new Set(await c.getSelection('Designe objetos'));
   const n = c.doc.constraints.length;
@@ -1658,8 +1953,9 @@ function collectBlocks(doc, ents, out = {}) {
 }
 def('COPYCLIP', ['COPIARPORTAPAPELES'], 'Copia los objetos al portapapeles', async c => {
   const ids = await c.getSelection();
-  const ents = ids.map(id => cloneEnt(c.doc.get(id)));
-  c.app.clipboard = { ents, blocks: JSON.parse(JSON.stringify(collectBlocks(c.doc, ents))) };
+  const ents = ids.map(id => cloneEnt(c.doc.get(id))), blocks = JSON.parse(JSON.stringify(collectBlocks(c.doc, ents)));
+  const pats = Object.fromEntries([...ents, ...Object.values(blocks).flatMap(b => b.ents)].filter(e => e.type === 'hatch' && c.doc.patterns[e.pattern]).map(e => [e.pattern, c.doc.patterns[e.pattern]]));
+  c.app.clipboard = { ents, blocks, groups: groupsWithin(c.doc, ids), patterns: pats };
   try { localStorage.setItem('trazocad.clip', JSON.stringify(c.app.clipboard)); } catch { /* sin almacenamiento */ }
   c.print(`${ids.length} objeto(s) copiado(s) al portapapeles.`);
 }, { sel: true, noTx: true, group: 'Edición' });
@@ -1670,6 +1966,7 @@ def('PASTECLIP', ['PEGARPORTAPAPELES'], 'Pega objetos del portapapeles', async c
   if (Array.isArray(clip)) clip = { ents: clip, blocks: {} };
   if (!clip?.ents?.length) return c.print('El portapapeles está vacío.');
   for (const [name, b] of Object.entries(clip.blocks || {})) if (!c.doc.blocks[name]) c.doc.defineBlock(name, b.base, b.ents);
+  for (const [name, p] of Object.entries(clip.patterns || {})) c.doc.patterns[name] ??= p;
   let b = null;
   for (const e of clip.ents) { const bb = bboxOf(e); b = b ? { x1: Math.min(b.x1, bb.x1), y1: Math.min(b.y1, bb.y1) } : bb; }
   const base = P(b.x1, b.y1);
@@ -1684,11 +1981,62 @@ def('PASTECLIP', ['PEGARPORTAPAPELES'], 'Pega objetos del portapapeles', async c
     if (old != null) map.set(old, e.id);
   }
   remapAssoc(made, map);
+  for (const g of clip.groups || []) if (g.ids.every(id => map.has(id))) c.doc.groups.push({ ...g, name: nextAnonGroup(c.doc), ids: g.ids.map(id => map.get(id)) });
 }, { group: 'Edición' });
 
 def('SELECTALL', ['TODO', 'SELTODO'], 'Selecciona todos los objetos', async c => { c.app.selectAll(); }, { noTx: true, group: 'Edición' });
 
 def('LAYER', ['LA', 'CAPA'], 'Administra las capas', async c => { c.app.ui.showPalette('layers'); }, { noTx: true, group: 'Propiedades' });
+// ---- Estados de capa ----
+const lsSummary = (c, s, r) => c.print(`Estado de capa "${s.name}" restaurado: ${r.changed} capa(s) modificada(s)${r.missing ? `, ${r.missing} capa(s) del estado ya no existen` : ''}. Capa actual: "${c.doc.cur.layer}".`);
+def('LAYERSTATE', ['LAS', 'ESTADOCAPAS', 'ESTADOSCAPA'], 'Administrador de estados de capa: guarda y restaura configuraciones de capas con nombre', async c => {
+  const doc = c.doc;
+  for (;;) {
+    const r = await c.app.ui.layerStateManager();
+    if (!r) return;
+    const s = r.name ? findLayerState(doc, r.name) : null, ui = c.app.ui;
+    if (['new', 'rename', 'desc'].includes(r.action)) {
+      let n = 1;
+      while (findLayerState(doc, `Estado${n}`)) n++;
+      r.value = await (r.action === 'desc' ? ui.prompt(`Descripción de "${s?.name}"`, 'Descripción', s?.desc || '') : ui.prompt(r.action === 'new' ? 'Nuevo estado de capa' : 'Renombrar estado de capa', 'Nombre', r.action === 'new' ? `Estado${n}` : s?.name));
+      if (r.value === null) continue;
+      if (r.action === 'new' && findLayerState(doc, r.value) && !(await ui.confirm(`El estado "${r.value}" ya existe. ¿Desea sobrescribirlo?`, 'Sobrescribir'))) continue;
+    }
+    switch (r.action) {
+      case 'new':
+        if (!validStateName(r.value)) { c.print('Nombre de estado no válido.'); break; }
+        saveLayerState(doc, r.value); c.print(`Estado de capa "${r.value}" guardado (${doc.layers.length} capas).`); break;
+      case 'update': if (s) { saveLayerState(doc, s.name); c.print(`Estado de capa "${s.name}" actualizado con la configuración actual.`); } break;
+      case 'restore': if (s) { lsSummary(c, s, restoreLayerState(doc, s, r.opts)); c.app.renderer.invalidate(); return; } break;
+      case 'rename': if (s && validStateName(r.value) && !(findLayerState(doc, r.value) && findLayerState(doc, r.value) !== s)) renameLayerState(doc, s, r.value); else c.print('Nombre no válido o repetido.'); break;
+      case 'desc': if (s) { s.desc = r.value; doc.changed(); } break;
+      case 'delete': if (s) { deleteLayerState(doc, s); c.print(`Estado de capa "${s.name}" eliminado.`); } break;
+    }
+  }
+}, { group: 'Propiedades' });
+def('-LAYERSTATE', ['-LAS', '-ESTADOCAPAS'], 'Estados de capa por la línea de comandos: guardar, restaurar, eliminar, renombrar o listar', async c => {
+  const doc = c.doc;
+  for (;;) {
+    const k = await c.app.ask('keyword', 'Indique una opción', { options: ['?', 'Guardar', 'Restaurar', 'Eliminar', 'renOmbrar', 'Descripción'], allowEnter: true });
+    if (k === null) return;
+    if (k === '?') { if (!doc.layerStates.length) c.print('No hay estados de capa guardados.'); for (const s of doc.layerStates) c.print(`  ${s.name}${s.desc ? ` — ${s.desc}` : ''} (${Object.keys(s.layers).length} capas, actual "${s.cur}")`); continue; }
+    const name = (await c.getString(k === 'Guardar' ? 'Indique nombre del estado de capa' : 'Indique nombre del estado', { spaces: true })).trim();
+    const s = findLayerState(doc, name);
+    if (k === 'Guardar') {
+      if (!validStateName(name)) { c.print('Nombre de estado no válido.'); continue; }
+      if (s && (await c.getKeyword(`El estado "${s.name}" ya existe. ¿Desea sobrescribirlo?`, ['Sí', 'No'], 'No')) !== 'Sí') continue;
+      saveLayerState(doc, name); c.print(`Estado de capa "${name}" guardado (${doc.layers.length} capas).`);
+      continue;
+    }
+    if (!s) { c.print(`No existe el estado de capa "${name}".`); continue; }
+    if (k === 'Restaurar') { lsSummary(c, s, restoreLayerState(doc, s, { props: LS_ALL, offMissing: !!c.settings.lsOffMissing })); c.app.renderer.invalidate(); }
+    else if (k === 'Eliminar') { deleteLayerState(doc, s); c.print(`Estado de capa "${s.name}" eliminado.`); }
+    else if (k === 'renOmbrar') {
+      const n = (await c.getString('Indique el nuevo nombre', { spaces: true, def: s.name })).trim();
+      if (!validStateName(n) || (findLayerState(doc, n) && findLayerState(doc, n) !== s)) c.print('Nombre no válido o repetido.'); else renameLayerState(doc, s, n);
+    } else { s.desc = (await c.getString('Indique la descripción', { spaces: true, def: s.desc || '' })).trim(); doc.changed(); }
+  }
+}, { group: 'Propiedades' });
 def('PROPERTIES', ['PR', 'CH', 'PROPIEDADES'], 'Paleta de propiedades', async c => { c.app.ui.showPalette('props'); }, { noTx: true, group: 'Propiedades' });
 def('DSETTINGS', ['DS', 'OS', 'OSNAP', 'REFENT', 'PARAMSDIB'], 'Parámetros de dibujo (referencias, rejilla, polar, isométrico)', async c => { c.app.ui.openSettings(); }, { noTx: true, group: 'Utilidades' });
 def('LTSCALE', ['LTS', 'ESCALATL'], 'Factor de escala global de tipos de línea', async c => {
@@ -1700,9 +2048,9 @@ def('NEW', ['NUEVO'], 'Nuevo dibujo', async c => { await c.app.io.newDoc(); }, {
 def('OPEN', ['ABRIR'], 'Abre un dibujo (.tcad / .dxf)', async c => { await c.app.io.open(); }, { noTx: true, group: 'Archivo' });
 def('QSAVE', ['SAVE', 'GUARDAR'], 'Guarda el dibujo', async c => { await c.app.io.save(false); }, { noTx: true, group: 'Archivo' });
 def('SAVEAS', ['GUARDARCOMO'], 'Guarda el dibujo con otro nombre', async c => { await c.app.io.save(true); }, { noTx: true, group: 'Archivo' });
-def('DXFOUT', ['EXPORTARDXF', 'DXF'], 'Exporta el espacio modelo a DXF (2000 o R12)', async (c, arg) => {
-  const v = arg || await c.app.ask('keyword', 'Versión de DXF', { options: ['2000', 'R12'], def: '2000' });
-  await c.app.io.exportDXF(v === 'R12' ? 'R12' : '2000');
+def('DXFOUT', ['EXPORTARDXF', 'DXF'], 'Exporta el dibujo a DXF (2007, con directrices múltiples y degradados; 2000; o R12)', async (c, arg) => {
+  const v = arg || await c.app.ask('keyword', 'Versión de DXF', { options: ['2007', '2000', 'R12'], def: '2007' });
+  await c.app.io.exportDXF(['2007', '2000', 'R12'].includes(v) ? v : '2007');
 }, { noTx: true, group: 'Archivo' });
 def('SVGOUT', ['EXPORTARSVG', 'SVG'], 'Exporta el modelo o la presentación a SVG', async c => { await c.app.io.exportSVG(); }, { noTx: true, group: 'Archivo' });
 def('PNGOUT', ['EXPORTARPNG', 'PNG'], 'Exporta el modelo o la presentación a PNG', async c => { await c.app.io.exportPNG(); }, { noTx: true, group: 'Archivo' });

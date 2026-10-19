@@ -1,9 +1,11 @@
-// Documento: capas, espacio modelo, presentaciones, bloques, estilos, deshacer/rehacer, sombreados asociativos y serialización.
+// Documento: capas, espacio modelo, presentaciones, bloques, estilos, grupos, estados de capa, patrones,
+// deshacer/rehacer, sombreados asociativos y serialización.
 import { bboxOf, bbUnion, cloneEnt, LTYPES, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, DEFAULT_TBLSTYLE } from './entities.js';
 import { assocLoops } from './hatch.js';
 import { updateDim, dropMissing, dimRefIds } from './assoc.js';
 import { remapDyn } from './dynblock.js';
 import { solve, consValid, refIds } from './constraints.js';
+import { cleanGroups } from './groups.js';
 
 export const DEFAULT_SETTINGS = {
   gridX: 10, snapX: 10, polarInc: 15, ltscale: 1, coordDec: 4,
@@ -29,6 +31,9 @@ export class Doc {
     this.bedit = null; // editor de bloques abierto: {name, base, ents}
     this.constraints = []; // restricciones paramétricas (constraints.js)
     this.params = [];      // parámetros de usuario {name, expr}
+    this.groups = [];      // grupos (groups.js)
+    this.layerStates = []; // estados de capa (layerstates.js)
+    this.patterns = {};    // patrones de sombreado personalizados {NOMBRE: {desc, fam}} (patterns.js)
     this.space = 'model';
     this.textStyles = [{ name: 'Standard', font: 'Arial', width: 1, oblique: 0 }];
     this.dimStyles = [{ ...DEFAULT_DIMSTYLE }];
@@ -57,11 +62,11 @@ export class Doc {
 
   // ----- Deshacer / rehacer por instantáneas -----
   state() {
-    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params });
+    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns });
   }
   loadState(s) {
     const o = JSON.parse(s);
-    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [] });
+    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {} });
     if (this.bedit) this.space = 'bedit';
     else if (this.space === 'bedit') this.space = 'model';
     else if (this.space !== 'model' && this.space !== 'bedit' && !this.layouts[this.space]) this.space = 'model';
@@ -73,6 +78,7 @@ export class Doc {
     if (!this.tx || --this.tx.depth > 0) return;
     this.syncConstraints();
     this.syncAssoc();
+    cleanGroups(this);
     const s = this.tx.snap;
     this.tx = null;
     if (s !== this.state()) {
@@ -273,8 +279,8 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 5, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
-      textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, constraints: this.constraints, params: this.params, cur: this.cur, settings: this.settings, nextId: this.nextId,
+      app: 'TrazoCAD', version: 6, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, cur: this.cur, settings: this.settings, nextId: this.nextId,
     };
   }
   fromJSON(o) {
@@ -291,6 +297,9 @@ export class Doc {
     }
     this.constraints = o.constraints || [];
     this.params = o.params || [];
+    this.groups = o.groups || [];
+    this.layerStates = o.layerStates || [];
+    this.patterns = o.patterns || {};
     if (o.mleaderStyles?.length) this.mleaderStyles = o.mleaderStyles;
     if (o.tableStyles?.length) this.tableStyles = o.tableStyles;
     this.cur = { ...this.cur, ...o.cur };

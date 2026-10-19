@@ -1,9 +1,12 @@
 // Interfaz: cinta de opciones, paletas (propiedades y capas), barra de estado, línea de comandos y diálogos.
 import { icon } from './icons.js';
-import { CMDS } from './commands.js';
+import { CMDS, loadPatterns } from './commands.js';
 import { TYPES, LTYPES, LWEIGHTS, COLORS, FONTS, ARROWS, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, DEFAULT_TBLSTYLE, ML_CONTENT, DATE_FORMATS, formatDate, fmt, bboxOf, bbUnion, propsOf, blockAttdefs, attVal } from './entities.js';
 import { OSNAP_MODES } from './snap.js';
-import { PATTERNS } from './patterns.js';
+import { PATTERNS, USER_DEFAULT, patText } from './patterns.js';
+import { groupsOf, isAnonGroup } from './groups.js';
+import { LS_PROPS, LS_ALL, layerStateMatches, renameLayerInStates } from './layerstates.js';
+import { linsOf, rotsOf } from './dynblock.js';
 import { PAPERS } from './document.js';
 import { makeRV, setWorld, paintEntity } from './render.js';
 import * as G from './geom.js';
@@ -27,17 +30,18 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 
 const RIBBON = [
   { tab: 'Inicio', groups: [
-    { name: 'Dibujo', items: [['LINE', 'Línea', 'line'], ['PLINE', 'Polilínea', 'pline'], ['CIRCLE', 'Círculo', 'circle'], ['ARC', 'Arco', 'arc'], ['RECTANG', 'Rectángulo', 'rect'], ['POLYGON', 'Polígono', 'polygon'], ['ELLIPSE', 'Elipse', 'ellipse'], ['SPLINE', 'Spline', 'spline'], ['HATCH', 'Sombreado', 'hatch']] },
+    { name: 'Dibujo', items: [['LINE', 'Línea', 'line'], ['PLINE', 'Polilínea', 'pline'], ['CIRCLE', 'Círculo', 'circle'], ['ARC', 'Arco', 'arc'], ['RECTANG', 'Rectángulo', 'rect'], ['POLYGON', 'Polígono', 'polygon'], ['ELLIPSE', 'Elipse', 'ellipse'], ['SPLINE', 'Spline', 'spline'], ['HATCH', 'Sombreado', 'hatch'], ['DIVIDE', 'Dividir', 'divide'], ['MEASURE', 'Graduar', 'measure']] },
     { name: 'Modificar', items: [['MOVE', 'Desplazar', 'move'], ['COPY', 'Copiar', 'copy'], ['ROTATE', 'Girar', 'rotate'], ['SCALE', 'Escala', 'scale'], ['MIRROR', 'Simetría', 'mirror'], ['OFFSET', 'Desfase', 'offset'], ['TRIM', 'Recortar', 'trim'], ['EXTEND', 'Alargar', 'extend'], ['FILLET', 'Empalme', 'fillet'], ['CHAMFER', 'Chaflán', 'chamfer'], ['BREAK', 'Partir', 'break'], ['LENGTHEN', 'Longitud', 'lengthen'], ['STRETCH', 'Estirar', 'stretch'], ['ARRAYRECT', 'Matriz', 'arrayrect'], ['ARRAYPOLAR', 'M. polar', 'arraypolar'], ['EXPLODE', 'Descomp.', 'explode'], ['JOIN', 'Unir', 'join'], ['ERASE', 'Borrar', 'erase']] },
     { name: 'Anotación', items: [['MTEXT', 'Texto', 'mtext'], ['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table']] },
     { name: 'Bloque', items: [['BLOCK', 'Crear', 'block'], ['INSERT', 'Insertar', 'insert'], ['BEDIT', 'Editar', 'bedit'], ['ATTDEF', 'Atributo', 'attdef']] },
+    { name: 'Grupos', items: [['GROUP', 'Agrupar', 'group'], ['UNGROUP', 'Desagrupar', 'ungroup'], ['GROUPEDIT', 'Editar grupo', 'groupedit'], ['CLASSICGROUP', 'Grupos', 'groups']] },
     { name: 'Capas', custom: 'layers' },
     { name: 'Propiedades', custom: 'props' },
     { name: 'Utilidades', items: [['DIST', 'Distancia', 'dist'], ['AREA', 'Área', 'area'], ['LIST', 'Lista', 'list']] },
   ] },
   { tab: 'Insertar', groups: [
     { name: 'Bloque', items: [['BLOCK', 'Crear bloque', 'block'], ['INSERT', 'Insertar', 'insert'], ['BEDIT', 'Editor de bloques', 'bedit'], ['EXPLODE', 'Descomponer', 'explode'], ['PURGE', 'Limpiar', 'trash']] },
-    { name: 'Bloque dinámico', items: [['BPARAMETER', 'Parámetro', 'bparam'], ['BVSTATE', 'Estados', 'bvstate'], ['BVHIDE', 'Ocultar', 'bvhide'], ['BVSHOW', 'Mostrar', 'bvshow']] },
+    { name: 'Bloque dinámico', items: [['BPARAMETER', 'Parámetro', 'bparam'], ['BVSTATE', 'Estados', 'bvstate'], ['BVHIDE', 'Ocultar', 'bvhide'], ['BVSHOW', 'Mostrar', 'bvshow'], ['BLOOKUPTABLE', 'Tabla consulta', 'lookup']] },
     { name: 'Referencia', items: [['XATTACH', 'Enlazar', 'xattach'], ['XREF', 'Referencias externas', 'xref']] },
     { name: 'Atributos', items: [['ATTDEF', 'Definir atributo', 'attdef'], ['ATTEDIT', 'Editar atributos', 'attedit']] },
     { name: 'Importar', items: [['OPEN', 'Abrir DXF', 'dxf'], ['PASTECLIP', 'Pegar', 'copy']] },
@@ -47,10 +51,10 @@ const RIBBON = [
     { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMORDINATE', 'Coordenada', 'dimord'], ['DIMREASSOCIATE', 'Reasociar', 'dimassoc'], ['DIMDISASSOCIATE', 'Desasociar', 'unlink'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
     { name: 'Series', items: [['DIMCONTINUE', 'Continua', 'dimcont'], ['DIMBASELINE', 'Línea base', 'dimbase'], ['QDIM', 'Rápida', 'qdim']] },
     { name: 'Directrices y tablas', items: [['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table'], ['MLEADERSTYLE', 'Estilo dir.', 'mlstyle'], ['TABLESTYLE', 'Estilo tabla', 'tblstyle']] },
-    { name: 'Sombreado', items: [['HATCH', 'Sombreado', 'hatch'], ['GRADIENT', 'Degradado', 'gradient']] },
+    { name: 'Sombreado', items: [['HATCH', 'Sombreado', 'hatch'], ['GRADIENT', 'Degradado', 'gradient'], ['PATTERNS', 'Patrones', 'patlib']] },
   ] },
   { tab: 'Paramétrico', groups: [
-    { name: 'Geométricas', items: [['GCCOINCIDENT', 'Coincidente', 'gccoinc'], ['GCCOLLINEAR', 'Colineal', 'gccol'], ['GCCONCENTRIC', 'Concéntrica', 'gcconc'], ['GCFIX', 'Fija', 'gcfix'], ['GCPARALLEL', 'Paralela', 'gcpar'],
+    { name: 'Geométricas', items: [['AUTOCONSTRAIN', 'Automática', 'autocons'], ['GCCOINCIDENT', 'Coincidente', 'gccoinc'], ['GCCOLLINEAR', 'Colineal', 'gccol'], ['GCCONCENTRIC', 'Concéntrica', 'gcconc'], ['GCFIX', 'Fija', 'gcfix'], ['GCPARALLEL', 'Paralela', 'gcpar'],
       ['GCPERPENDICULAR', 'Perpend.', 'gcperp'], ['GCHORIZONTAL', 'Horizontal', 'gchoriz'], ['GCVERTICAL', 'Vertical', 'gcvert'], ['GCTANGENT', 'Tangente', 'gctan'], ['GCEQUAL', 'Igual', 'gcequal']] },
     { name: 'De cota', items: [['DCLINEAR', 'Lineal', 'dcon'], ['DCALIGNED', 'Alineada', 'dimali'], ['DCANGULAR', 'Angular', 'dimang'], ['DCRADIUS', 'Radio', 'dimrad'], ['DCDIAMETER', 'Diámetro', 'dimdia']] },
     { name: 'Administrar', items: [['DELCONSTRAINT', 'Suprimir', 'delcon'], ['PARAMETERS', 'Parámetros', 'params'], ['CONSTRAINTBAR', 'Mostrar/ocultar', 'cbar']] },
@@ -67,7 +71,7 @@ const RIBBON = [
   ] },
   { tab: 'Salida', groups: [
     { name: 'Archivo', items: [['NEW', 'Nuevo', 'new'], ['OPEN', 'Abrir', 'open'], ['QSAVE', 'Guardar', 'save'], ['SAVEAS', 'Guardar como', 'save']] },
-    { name: 'Exportar', items: [['PDFOUT', 'PDF', 'pdf'], ['!dxf2000', 'DXF 2000', 'dxf'], ['!dxf12', 'DXF R12', 'dxf'], ['SVGOUT', 'SVG', 'svg'], ['PNGOUT', 'PNG', 'png'], ['PLOT', 'Imprimir', 'print']] },
+    { name: 'Exportar', items: [['PDFOUT', 'PDF', 'pdf'], ['!dxf2007', 'DXF 2007', 'dxf'], ['!dxf2000', 'DXF 2000', 'dxf'], ['!dxf12', 'DXF R12', 'dxf'], ['SVGOUT', 'SVG', 'svg'], ['PNGOUT', 'PNG', 'png'], ['PLOT', 'Imprimir', 'print']] },
   ] },
 ];
 
@@ -76,6 +80,7 @@ const TOGGLES = [
   ['ortho', 'ORTO', 'F8', 'Modo ortogonal'], ['polar', 'POLAR', 'F10', 'Rastreo polar'],
   ['osnap', 'REFENT', 'F3', 'Referencia a objetos (clic derecho: parámetros)'], ['otrack', 'RASTREO', 'F11', 'Rastreo de referencia a objetos'],
   ['dyn', 'DIN', 'F12', 'Entrada dinámica'], ['lwt', 'GLN', '', 'Mostrar grosores de línea'], ['iso', 'ISO', 'F5', 'Dibujo isométrico (F5: cambiar plano)'],
+  ['groups', 'GRUPO', 'Ctrl+Mayús+A', 'Selección de grupos: designar un objeto designa todo su grupo'],
 ];
 const ISO_NAMES = { top: 'superior', left: 'izquierdo', right: 'derecho' };
 
@@ -136,6 +141,7 @@ export class UI {
       case '!fullscreen': document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.(); break;
       case '!newlayout': app.run('LAYOUT', 'Nueva'); break;
       case '!model': app.switchTab('model'); break;
+      case '!dxf2007': app.run('DXFOUT', '2007'); break;
       case '!dxf2000': app.run('DXFOUT', '2000'); break;
       case '!dxf12': app.run('DXFOUT', 'R12'); break;
       default: app.run(cmd);
@@ -170,7 +176,9 @@ export class UI {
     this.layerSwatch = h('span', { class: 'swatch' });
     this.layerSel = h('select', { class: 'rb-select', title: 'Capa actual (o capa de los objetos seleccionados)', onchange: e => this.applyProp('layer', e.target.value) });
     box.append(h('div', { class: 'rb-row' }, this.layerSwatch, this.layerSel),
-      h('button', { class: 'rb-mini', onclick: () => this.showPalette('layers') }, h('span', { html: icon('layers', 16) }), 'Propiedades de capa'));
+      h('div', { class: 'rb-row' },
+        h('button', { class: 'rb-mini', title: 'Propiedades de capa (paleta de capas)', onclick: () => this.showPalette('layers') }, h('span', { html: icon('layers', 16) }), 'Propiedades'),
+        h('button', { class: 'rb-mini', title: 'Estados de capa (LAYERSTATE): guardar y restaurar configuraciones de capas', onclick: () => this.app.run('LAYERSTATE') }, h('span', { html: icon('laystate', 16) }), 'Estados')));
   }
   buildPropCtl(box) {
     this.colorSel = h('select', { class: 'rb-select', title: 'Color', onchange: async e => {
@@ -342,6 +350,10 @@ export class UI {
     })));
     body.append(this.propRow('Tipo de línea', mkSel(this.ltypeOptions(), common('ltype'), v => this.applyProp('ltype', v))));
     body.append(this.propRow('Grosor de línea', mkSel(this.lwOptions(), common('lw'), v => this.applyProp('lw', v === 'BYLAYER' || v === 'DEFAULT' ? v : +v))));
+    if (sel.length && doc.groups.length) { // grupos a los que pertenecen todos los objetos designados
+      const gs = groupsOf(doc, sel[0].id).filter(g => sel.every(e => g.ids.includes(e.id)));
+      if (gs.length) body.append(this.propRow('Grupo', h('span', { class: 'prop-ro', title: gs.map(g => g.desc ? `${g.name}: ${g.desc}` : g.name).join('\n') }, gs.map(g => (isAnonGroup(g.name) ? `${g.name} (sin nombre)` : g.name)).join(', '))));
+    }
 
     if (sel.length === 1) {
       const e = sel[0];
@@ -365,7 +377,7 @@ export class UI {
         } else if (pr.type === 'bool') {
           input = h('input', { type: 'checkbox', checked: raw, onchange: ev => this.setGeom(e.id, pr, ev.target.checked) });
         } else if (pr.type === 'select') {
-          input = h('select', { onchange: ev => this.setGeom(e.id, pr, ev.target.value) }, ...(typeof pr.options === 'function' ? pr.options() : pr.options).map(([v, l]) => h('option', { value: v }, l)));
+          input = h('select', { onchange: ev => this.setGeom(e.id, pr, ev.target.value) }, ...(typeof pr.options === 'function' ? pr.options(e) : pr.options).map(([v, l]) => h('option', { value: v }, l)));
           input.value = raw;
         } else {
           const shown = pr.type === 'num' ? fmt(raw, 4) : pr.type === 'ang' ? fmt(G.deg(G.normAng(raw)), 2) : raw;
@@ -423,7 +435,8 @@ export class UI {
         if ([...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)].some(e => e.layer === name)) return app.print(`La capa "${name}" contiene objetos y no se puede eliminar.`);
         tx(() => { doc.layers = doc.layers.filter(l => l.name !== name); this.selLayer = null; });
       } }, h('span', { html: icon('trash', 16) }), 'Eliminar'),
-      h('button', { class: 'btn', onclick: () => { if (this.selLayer) { doc.cur.layer = this.selLayer; this.refresh(); } } }, h('span', { html: icon('check', 16) }), 'Actual'));
+      h('button', { class: 'btn', onclick: () => { if (this.selLayer) { doc.cur.layer = this.selLayer; this.refresh(); } } }, h('span', { html: icon('check', 16) }), 'Actual'),
+      h('button', { class: 'btn', title: 'Estados de capa (LAYERSTATE)', onclick: () => app.run('LAYERSTATE') }, h('span', { html: icon('laystate', 16) }), `Estados${doc.layerStates.length ? ` (${doc.layerStates.length})` : ''}…`));
     body.append(bar);
     const vp = app.vpActive ? doc.get(app.vpActive) : null;
     const list = h('div', { class: 'lay-list' + (vp ? ' vp' : '') });
@@ -445,7 +458,7 @@ export class UI {
             const n = await this.prompt('Renombrar capa', 'Nuevo nombre', l.name);
             if (!n || n === l.name) return;
             if (doc.layers.some(x => x.name.toLowerCase() === n.toLowerCase())) return app.print(`La capa "${n}" ya existe.`);
-            tx(() => { for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (e.layer === l.name) e.layer = n; if (doc.cur.layer === l.name) doc.cur.layer = n; l.name = n; });
+            tx(() => { for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (e.layer === l.name) e.layer = n; if (doc.cur.layer === l.name) doc.cur.layer = n; renameLayerInStates(doc, l.name, n); l.name = n; });
           } }, l.name),
         h('button', { class: 'ib' + (l.on ? '' : ' off'), title: l.on ? 'Desactivar' : 'Activar', html: icon(l.on ? 'eye' : 'eyeoff', 16), onclick: ev => { ev.stopPropagation(); tx(() => { l.on = !l.on; }); } }),
         h('button', { class: 'ib' + (l.lock ? ' off' : ''), title: l.lock ? 'Desbloquear' : 'Bloquear', html: icon(l.lock ? 'lock' : 'unlock', 16), onclick: ev => { ev.stopPropagation(); tx(() => { l.lock = !l.lock; }); } }),
@@ -865,19 +878,155 @@ export class UI {
     return cv;
   }
 
-  // Selector de patrón de sombreado. Devuelve el nombre o null.
-  pickPattern(current) {
-    let chosen = current;
-    const grid = h('div', { class: 'swatches' });
+  // Muestra de un patrón de sombreado
+  patThumb(name, extra = {}) {
     const sq = [G.P(0, 0), G.P(40, 0), G.P(40, 40), G.P(0, 40)];
-    for (const [name, p] of Object.entries(PATTERNS)) {
-      const sw = h('button', { class: 'swatch-btn' + (name === current ? ' sel' : ''), title: p.desc,
-        onclick: () => { chosen = name; grid.querySelectorAll('.swatch-btn').forEach(x => x.classList.remove('sel')); sw.classList.add('sel'); },
-        ondblclick: () => grid.closest('.modal').querySelector('.btn.primary').click() },
-      this.thumb([{ type: 'hatch', loops: [sq], pattern: name, scale: 1, angle: 0, layer: '0', color: '#ffffff', ltype: 'BYLAYER', lw: 'BYLAYER' }], 72, 72, 0.02), h('span', {}, name));
+    return this.thumb([{ type: 'hatch', loops: [sq], pattern: name, scale: 1, angle: 0, layer: '0', color: '#ffffff', ltype: 'BYLAYER', lw: 'BYLAYER', ...extra }], 72, 72, 0.02);
+  }
+  // Selector de patrón de sombreado: predefinidos, personalizados del dibujo (con carga de archivos .pat) y definido por el
+  // usuario. Devuelve el nombre o null.
+  pickPattern(current) {
+    const app = this.app, doc = app.doc;
+    let chosen = current;
+    const body = h('div', {}), inch = h('input', { type: 'checkbox' });
+    const render = () => {
+      const grid = h('div', { class: 'swatches' });
+      const tile = (name, title, extra, cls = '') => {
+        const sw = h('button', { class: `swatch-btn ${cls}` + (name === chosen ? ' sel' : ''), title,
+          onclick: () => { chosen = name; grid.querySelectorAll('.swatch-btn').forEach(x => x.classList.remove('sel')); sw.classList.add('sel'); },
+          ondblclick: () => body.closest('.modal').querySelector('.btn.primary').click() },
+        this.patThumb(name, extra), h('span', {}, name === 'USER' ? 'Usuario' : name));
+        grid.append(sw);
+      };
+      for (const [name, p] of Object.entries(PATTERNS)) tile(name, p.desc);
+      for (const [name, p] of Object.entries(doc.patterns)) tile(name, `${p.desc || name} (personalizado)`, {}, 'custom');
+      const u = { ...USER_DEFAULT, ...doc.settings.hatchUser };
+      tile('USER', `Definido por el usuario: líneas ${u.dbl ? 'cruzadas' : 'paralelas'} cada ${u.sp} (opción Usuario de SOMBREADO)`, { user: u });
+      body.replaceChildren(grid, h('div', { class: 'lay-bar' },
+        h('button', { class: 'btn', onclick: async () => {
+          const f = await app.io.pickFile('Patrones de sombreado', ['.pat']);
+          if (!f) return;
+          const names = loadPatterns({ doc, app, print: m => app.print(m) }, await app.io.readText(f.file), inch.checked ? 25.4 : 1, f.file.name);
+          if (names.length) chosen = names[0];
+          render();
+        } }, h('span', { html: icon('open', 16) }), 'Cargar archivo .pat…'),
+        h('label', { class: 'chk', title: 'acad.pat está en pulgadas; acadiso.pat y los patrones métricos, en milímetros' }, inch, 'En pulgadas (× 25,4)')),
+      h('p', { class: 'hint' }, 'Los patrones personalizados (marcados en azul) se guardan en el dibujo. El comando PATRONES permite pegar definiciones, exportarlas o eliminarlas.'));
+    };
+    render();
+    return this.modal('Patrón de sombreado', body, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', value: () => chosen, primary: true }]);
+  }
+
+  // Administrador de patrones personalizados. Devuelve {action: 'load'|'paste'|'delete'|'export'|'use', name?, k} o null.
+  patternManager() {
+    const doc = this.app.doc, names = Object.keys(doc.patterns).sort();
+    let sel = names[0];
+    const inch = h('input', { type: 'checkbox' }), k = () => (inch.checked ? 25.4 : 1);
+    const grid = h('div', { class: 'swatches' });
+    for (const n of names) {
+      const p = doc.patterns[n];
+      const sw = h('button', { class: 'swatch-btn custom' + (n === sel ? ' sel' : ''), title: `${p.desc || n} · ${p.fam.length} familia(s) de líneas`,
+        onclick: () => { sel = n; grid.querySelectorAll('.swatch-btn').forEach(x => x.classList.remove('sel')); sw.classList.add('sel'); } }, this.patThumb(n), h('span', {}, n));
       grid.append(sw);
     }
-    return this.modal('Patrón de sombreado', grid, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', value: () => chosen, primary: true }]);
+    const box = h('div', {}, names.length ? grid : h('p', { class: 'hint' }, 'El dibujo no tiene patrones personalizados. Cargue un archivo .pat de AutoCAD (acad.pat, acadiso.pat u otro) o pegue su definición.'),
+      h('div', { class: 'lay-bar' }, h('label', { class: 'chk', title: 'acad.pat está en pulgadas; acadiso.pat y los patrones métricos, en milímetros' }, inch, 'Archivo en pulgadas (× 25,4)')),
+      h('p', { class: 'hint' }, 'Formato .pat: una línea «*NOMBRE, descripción» y, debajo, una línea por familia: ángulo, x, y, desplazamiento, separación[, trazos…] (trazo negativo = hueco, 0 = punto).'));
+    const act = a => () => ({ action: a, name: sel, k: k() });
+    return this.modal('Patrones de sombreado personalizados', box, [{ label: 'Cerrar', value: null }, { label: 'Pegar definición…', value: act('paste') }, { label: 'Exportar .pat', value: act('export') },
+      ...(names.length ? [{ label: 'Eliminar', value: act('delete') }, { label: 'Usar en SOMBREADO', value: act('use') }] : []), { label: 'Cargar .pat…', value: act('load'), primary: true }]);
+  }
+  // Texto de un patrón pegado por el usuario. Devuelve el texto o null.
+  patternPaste() {
+    const ta = h('textarea', { class: 'full', rows: 10, spellcheck: 'false', placeholder: '*LADRILLO45, Ladrillo a 45°\n45, 0, 0, 0, 6\n135, 0, 0, 0, 12, 6, -6' });
+    ta.style.fontFamily = 'monospace';
+    return this.modal('Pegar definición de patrón (.pat)', h('label', { class: 'fld' }, 'Definición', ta), [{ label: 'Cancelar', value: null }, { label: 'Cargar', value: () => ta.value, primary: true }]);
+  }
+
+  // Administrador de grupos. Devuelve {action: 'select'|'rename'|'desc'|'selectable'|'delete', name} o null.
+  groupManager() {
+    const doc = this.app.doc;
+    let showAnon = this.showAnonGroups !== false;
+    const list = () => doc.groups.filter(g => showAnon || !isAnonGroup(g.name));
+    let sel = (list().at(-1) || doc.groups.at(-1))?.name;
+    const tbody = h('tbody');
+    const render = () => {
+      tbody.replaceChildren(...list().map(g => {
+        const tr = h('tr', { class: g.name === sel ? 'sel' : '', onclick: () => { sel = g.name; tbody.querySelectorAll('tr').forEach(x => x.classList.toggle('sel', x === tr)); } },
+          h('td', {}, h('b', {}, g.name)), h('td', {}, g.desc || '—'), h('td', { class: 'num' }, String(g.ids.length)), h('td', {}, g.sel ? 'Sí' : 'No'));
+        return tr;
+      }));
+    };
+    const anon = h('input', { type: 'checkbox', checked: showAnon, onchange: e => { showAnon = this.showAnonGroups = e.target.checked; render(); } });
+    render();
+    const box = h('div', {},
+      h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...['Nombre', 'Descripción', 'Objetos', 'Seleccionable'].map(t => h('th', {}, t)))), tbody),
+      h('div', { class: 'lay-bar' }, h('label', { class: 'chk' }, anon, 'Mostrar grupos sin nombre (*A…)')),
+      h('p', { class: 'hint' }, 'Un grupo seleccionable se designa entero al designar cualquiera de sus objetos (si el botón GRUPO de la barra de estado está activado). «Desagrupar» elimina el grupo y conserva los objetos.'));
+    const act = a => () => (sel ? { action: a, name: sel } : null);
+    return this.modal('Grupos', box, [{ label: 'Cerrar', value: null }, { label: 'Renombrar…', value: act('rename') }, { label: 'Descripción…', value: act('desc') },
+      { label: 'Seleccionable sí/no', value: act('selectable') }, { label: 'Desagrupar', value: act('delete') }, { label: 'Designar', value: act('select'), primary: true }]);
+  }
+
+  // Administrador de estados de capa. Devuelve {action: 'new'|'update'|'restore'|'rename'|'desc'|'delete', name, opts} o null.
+  layerStateManager() {
+    const doc = this.app.doc, S = doc.settings;
+    let sel = doc.layerStates.find(s => layerStateMatches(doc, s))?.name || doc.layerStates[0]?.name;
+    const tbody = h('tbody');
+    for (const st of doc.layerStates) {
+      const d = new Date(st.saved), now = layerStateMatches(doc, st);
+      const tr = h('tr', { class: st.name === sel ? 'sel' : '', onclick: () => { sel = st.name; tbody.querySelectorAll('tr').forEach(x => x.classList.toggle('sel', x === tr)); } },
+        h('td', {}, h('b', {}, st.name), now ? h('span', { class: 'tag' }, ' actual') : null), h('td', {}, st.desc || '—'), h('td', { class: 'num' }, String(Object.keys(st.layers).length)),
+        h('td', {}, st.cur || '—'), h('td', {}, Number.isNaN(+d) ? '—' : d.toLocaleString('es')));
+      tbody.append(tr);
+    }
+    const props = S.lsProps || LS_ALL;
+    const checks = Object.entries(LS_PROPS).map(([k, l]) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', 'data-p': k, checked: props.includes(k) }), l));
+    const offMissing = h('input', { type: 'checkbox', checked: !!S.lsOffMissing });
+    const box = h('div', {},
+      doc.layerStates.length
+        ? h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...['Nombre', 'Descripción', 'Capas', 'Capa actual', 'Guardado'].map(t => h('th', {}, t)))), tbody)
+        : h('p', { class: 'hint' }, 'No hay estados de capa. «Nuevo…» guarda la configuración actual de las capas (activadas, bloqueadas, color, tipo y grosor de línea) con un nombre.'),
+      h('fieldset', {}, h('legend', {}, 'Propiedades que se restauran'), h('div', { class: 'grid2' }, ...checks, h('label', { class: 'chk', title: 'Las capas creadas después de guardar el estado se desactivan al restaurarlo' }, offMissing, 'Desactivar las capas que no están en el estado'))));
+    const opts = () => { const p = [...box.querySelectorAll('[data-p]')].filter(x => x.checked).map(x => x.dataset.p); S.lsProps = p; S.lsOffMissing = offMissing.checked; return { props: p, offMissing: offMissing.checked }; };
+    const act = a => () => (a === 'new' || sel ? { action: a, name: sel, opts: opts() } : null);
+    return this.modal('Estados de capa', box, [{ label: 'Cerrar', value: null }, { label: 'Nuevo…', value: act('new') },
+      ...(doc.layerStates.length ? [{ label: 'Actualizar', value: act('update') }, { label: 'Renombrar…', value: act('rename') }, { label: 'Descripción…', value: act('desc') }, { label: 'Eliminar', value: act('delete') }, { label: 'Restaurar', value: act('restore'), primary: true }] : [])]);
+  }
+
+  // Editor de la tabla de consulta de un bloque dinámico. cols: claves de los parámetros ('lin:Nombre', 'rot:Nombre', 'vis', 'flip').
+  // Devuelve {name, cols, rows: [{label, vals}]} o null. Las celdas vacías no cambian ese parámetro.
+  lookupTableEditor(d, cols) {
+    const old = d.look, title = k => (k === 'vis' ? 'Visibilidad' : k === 'flip' ? 'Simetría' : k.startsWith('lin:') ? `${k.slice(4)} (distancia)` : `${k.slice(4)} (ángulo °)`);
+    const def = k => {
+      if (k === 'vis') return d.vis.states[0];
+      if (k === 'flip') return false;
+      if (k.startsWith('lin:')) { const l = linsOf(d).find(x => x.name === k.slice(4)); return +G.dist(l.p1, l.p2).toFixed(6); }
+      const r = rotsOf(d).find(x => x.name === k.slice(4)); return +G.deg(G.ang(r.c, r.p)).toFixed(6);
+    };
+    const rows = old?.rows?.length
+      ? old.rows.map(r => ({ label: r.label, vals: cols.map(k => { const j = old.cols.indexOf(k); return j >= 0 ? r.vals[j] : null; }) }))
+      : [{ label: 'Fila1', vals: cols.map(def) }];
+    const name = h('input', { type: 'text', value: old?.name || 'Consulta' });
+    const tbody = h('tbody');
+    const cell = (r, j) => {
+      const k = cols[j], v = r.vals[j];
+      if (k === 'vis') { const s = h('select', { onchange: e => { r.vals[j] = e.target.value || null; } }, h('option', { value: '' }, '—'), ...d.vis.states.map(x => h('option', { value: x }, x))); s.value = v ?? ''; return s; }
+      if (k === 'flip') { const s = h('select', { onchange: e => { r.vals[j] = e.target.value === '' ? null : e.target.value === '1'; } }, h('option', { value: '' }, '—'), h('option', { value: '1' }, 'Invertido'), h('option', { value: '0' }, 'Normal')); s.value = v == null ? '' : v ? '1' : '0'; return s; }
+      return h('input', { type: 'text', value: v ?? '', class: 'num', onchange: e => { const t = e.target.value.trim().replace(',', '.'); const n = parseFloat(t); r.vals[j] = t === '' || !Number.isFinite(n) ? null : n; e.target.value = r.vals[j] ?? ''; } });
+    };
+    const render = () => {
+      tbody.replaceChildren(...rows.map((r, i) => h('tr', {},
+        h('td', {}, h('input', { type: 'text', value: r.label, onchange: e => { r.label = e.target.value.trim(); } })),
+        ...cols.map((_, j) => h('td', {}, cell(r, j))),
+        h('td', {}, h('button', { class: 'ib', title: 'Eliminar fila', html: icon('trash', 14), onclick: () => { rows.splice(i, 1); render(); } })))));
+    };
+    render();
+    const add = h('button', { class: 'btn', onclick: () => { rows.push({ label: `Fila${rows.length + 1}`, vals: cols.map(def) }); render(); } }, h('span', { html: icon('plus', 16) }), 'Añadir fila');
+    const box = h('div', {}, h('div', { class: 'grid2' }, h('label', { class: 'fld' }, 'Nombre de la consulta', name)), h('div', { class: 'lay-bar' }, add),
+      h('table', { class: 'xref-list params' }, h('thead', {}, h('tr', {}, h('th', {}, 'Fila'), ...cols.map(k => h('th', {}, title(k))), h('th', {}, ''))), tbody),
+      h('p', { class: 'hint' }, 'Cada fila fija a la vez los parámetros indicados; una celda vacía (—) deja ese parámetro como esté. Las distancias van en unidades del bloque y los ángulos en grados.'));
+    return this.modal('Tabla de consulta', box, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', primary: true, value: () => ({ name: name.value.trim() || 'Consulta', cols, rows: rows.filter(r => r.label) }) }]);
   }
 
   // Administrador de referencias externas. Devuelve {action: 'attach'|'reload'|'detach'|'bind', name} o null.
@@ -1126,6 +1275,16 @@ export class UI {
         <li>Pestañas <b>Modelo / Presentación</b> abajo a la izquierda; <b>+</b> crea una presentación con marco, cajetín y una ventana gráfica a escala estándar.</li>
         <li>Doble clic dentro de una ventana gráfica: trabaja en el modelo a través de ella (zoom y encuadre cambian su vista). Doble clic fuera: vuelve al papel.</li>
         <li>La escala de la ventana se cambia en la paleta de Propiedades. Imprimir, SVG y PNG de una presentación salen a escala real en milímetros.</li>
+      </ul>
+      <h4>Novedades de la v0.6</h4>
+      <ul>
+        <li><b>Grupos</b>: GROUP (<code>G</code>) agrupa objetos, con nombre y descripción o sin nombre (*A1…). Designar un objeto del grupo designa el grupo entero; el botón <b>GRUPO</b> de la barra de estado (<kbd>Ctrl+Mayús+A</kbd>) lo activa o desactiva. UNGROUP, GROUPEDIT (añadir, quitar, renombrar) y CLASSICGROUP (administrador). Copiar un grupo entero crea un grupo con las copias.</li>
+        <li><b>DIVIDE</b> y <b>MEASURE</b> (<code>GRADUA</code>): puntos o bloques (alineados o no) a lo largo de líneas, arcos, círculos, polilíneas, splines y elipses, en partes iguales o cada cierta longitud desde el extremo más próximo al designado.</li>
+        <li><b>Estados de capa</b>: LAYERSTATE (<code>LAS</code>) guarda la configuración de las capas con un nombre y la restaura de una vez, entera o sólo algunas propiedades; -LAYERSTATE por la línea de comandos.</li>
+        <li><b>Patrones personalizados</b>: PATRONES carga archivos .pat de AutoCAD (acadiso.pat, acad.pat en pulgadas o propios) o definiciones pegadas; quedan guardados en el dibujo. SOMBREADO ofrece también un patrón <b>definido por el usuario</b> (opción Usuario: separación y líneas cruzadas).</li>
+        <li><b>AUTOCONSTRAIN</b>: aplica de una vez las restricciones geométricas que la geometría ya cumple dentro de una tolerancia (coincidente, colineal, paralela, perpendicular, tangente, concéntrica, horizontal, vertical, igual), sin restricciones redundantes.</li>
+        <li><b>Bloques dinámicos</b>: varios parámetros lineales, parámetro de <b>rotación</b> (BPARAMETER) y <b>tabla de consulta</b> (BLOOKUPTABLE): cada fila fija a la vez varias medidas, el ángulo y el estado de visibilidad; se elige con el pinzamiento triangular o en Propiedades.</li>
+        <li><b>DXF 2007</b> (DXFOUT, botón «DXF 2007»): directrices múltiples como MULTILEADER con sus estilos, degradados reales, UTF-8; los grupos y los patrones personalizados se exportan e importan también en DXF 2000.</li>
       </ul>
       <h4>Novedades de la v0.5</h4>
       <ul>

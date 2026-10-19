@@ -1,4 +1,4 @@
-# TrazoCAD — v0.5
+# TrazoCAD — v0.6
 
 Software de dibujo técnico 2D inspirado en AutoCAD, hecho desde cero como **PWA** (aplicación web instalable y sin conexión). JavaScript puro con módulos ES: sin dependencias ni compilación.
 
@@ -11,6 +11,21 @@ node serve.mjs          # http://localhost:8080
 ```
 
 Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta tal cual a cualquier hosting estático con HTTPS (GitHub Pages, Netlify, Hostinger…). En Chrome/Edge aparece el botón **Instalar**.
+
+## Novedades de la v0.6
+
+![Eje de camino graduado con mojones, alcantarillas dinámicas con tabla de consulta, banquina con patrón personalizado, grupo designado y badén con restricciones automáticas](docs/vialidad.png)
+
+| Función | Detalle |
+|---|---|
+| **Grupos** (`GROUP`, `UNGROUP`, `GROUPEDIT`, `CLASSICGROUP`) | Conjuntos de objetos con nombre y descripción, o sin nombre (`*A1`…). Designar un objeto designa el grupo entero, con un recuadro discontinuo; el botón **GRUPO** de la barra de estado (Ctrl+Mayús+A) activa o desactiva la selección de grupos. Añadir y quitar miembros, renombrar, hacerlos no seleccionables y desagrupar. Copiar, desplazar con copia, simetría y matrices crean grupos sin nombre con las copias; el portapapeles los conserva. Se exportan e importan en DXF 2000 y 2007 (objetos GROUP) |
+| **Dividir y graduar** (`DIVIDE`, `MEASURE`) | Puntos o referencias a un bloque, alineadas con el objeto o no, en partes iguales o cada cierta longitud, sobre líneas, arcos, círculos, polilíneas con arcos, splines y elipses. GRADUA empieza en el extremo más próximo al punto con que se designó el objeto; los bloques reciben los valores por defecto de sus atributos |
+| **Estados de capa** (`LAYERSTATE`, `-LAYERSTATE`) | Guardan con un nombre y una descripción la configuración de todas las capas (activada, bloqueada, color, tipo y grosor de línea) y la capa actual. Al restaurar se eligen las propiedades y si se desactivan las capas creadas después; se marca el estado que coincide con la configuración actual. Botón «Estados» en la cinta y en la paleta de capas; al renombrar una capa los estados se actualizan |
+| **Patrones de sombreado personalizados** (`PATTERNS`, `PATRONES`) | Carga archivos `.pat` de AutoCAD (acadiso.pat, acad.pat en pulgadas o propios) o definiciones pegadas; los patrones se guardan en el dibujo, aparecen en el selector de SOMBREADO y en Propiedades, y se exportan a `.pat`. Patrón **definido por el usuario** (opción Usuario de SOMBREADO): líneas paralelas o cruzadas con su separación. En DXF se escriben con sus líneas (tipos predefinido, de usuario y personalizado) y al importar se recuperan los patrones desconocidos |
+| **Restricciones automáticas** (`AUTOCONSTRAIN`) | Aplica de una vez las restricciones que la geometría designada ya cumple dentro de una tolerancia de distancia y de ángulo: coincidente (también punto sobre objeto), colineal, paralela, perpendicular, tangente, concéntrica, horizontal, vertical e igual, en el orden de prioridad de AutoCAD. Sólo se añaden las independientes (rango del jacobiano), así que no quedan restricciones redundantes; la opción Parámetros cambia tolerancias y tipos |
+| **Bloques dinámicos** (`BPARAMETER`, `BLOOKUPTABLE`) | Varios parámetros lineales por bloque, **parámetro de rotación** con pinzamiento y **tabla de consulta**: filas con nombre que fijan a la vez distancias, ángulos, visibilidad y simetría (celda vacía = sin cambio). La fila se elige con el pinzamiento triangular o en la paleta de Propiedades, que muestra «Personalizado» si los valores no coinciden con ninguna. Los bloques de la v0.5 se siguen leyendo |
+| **DXF 2007** | Nueva versión por defecto de DXFOUT (AC1021, UTF-8). Las directrices múltiples se escriben como **MULTILEADER** con sus estilos (MLEADERSTYLE), texto con formato, rellano y flecha, y los globos como directrices con un bloque con atributo; los **degradados** como degradados. En DXF 2000 y R12 los caracteres no ASCII se escriben como `\U+XXXX`; al importar se detecta la codificación (UTF-8 o Windows-1252) y se leen los estilos de directriz y los globos de MULTILEADER |
+| **Otros** | Archivos `.tcad` versión 6 (los anteriores se siguen abriendo). LIMPIA elimina los patrones personalizados sin uso; IGUALARPROP copia también los patrones de usuario. Los patrones personalizados de un dibujo enlazado como referencia externa pasan al dibujo |
 
 ## Novedades de la v0.5
 
@@ -86,20 +101,22 @@ js/spline.js     B-splines: De Boor, interpolación, teselado, inserción de nud
 js/richtext.js   Códigos de formato de MTEXT: análisis y escritura
 js/entities.js   Tipos de entidad (línea … spline, texto con formato, directriz, tabla, atributo, sombreado, bloque, ventana)
 js/assoc.js      Cotas asociativas: referencias a la geometría y recálculo
-js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, deshacer, asociatividad
+js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, grupos, estados de capa, patrones, deshacer, asociatividad
 js/xref.js       Referencias externas: lectura, prefijos, recarga, desenlace y unión
-js/constraints.js Restricciones paramétricas, expresiones y solucionador
-js/dynblock.js   Bloques dinámicos
+js/constraints.js Restricciones paramétricas, expresiones, solucionador y restricciones automáticas
+js/dynblock.js   Bloques dinámicos: parámetros lineales, de rotación, simetría, visibilidad y tabla de consulta
+js/groups.js     Grupos: creación, selección conjunta, copias y limpieza
+js/layerstates.js Estados de capa: guardar, restaurar, comparar y renombrar
 js/pdf.js        Exportación a PDF vectorial
-js/patterns.js   Patrones de sombreado y recorte de líneas de patrón
+js/patterns.js   Patrones de sombreado (predefinidos, personalizados .pat y de usuario), degradados y recorte de líneas de patrón
 js/hatch.js      Detección de contornos (grafo plano, caras e islas) y recálculo asociativo
 js/spatial.js    Índice espacial
 js/view.js       Vista del modelo/papel y vista a través de ventana gráfica
 js/render.js     Dibujado en canvas
 js/snap.js       Referencias, rastreo, polar, orto, isométrico
-js/ops.js        Recortar, alargar, partir, longitud, desfase, empalme, chaflán, unir…
+js/ops.js        Recortar, alargar, partir, longitud, desfase, empalme, chaflán, unir, recorrido por longitud (GRADUA, DIVIDE)…
 js/commands.js   Comandos y alias
-js/dxf.js        DXF 2000 (con presentaciones) / R12
+js/dxf.js        DXF 2007 (MULTILEADER, degradados) / 2000 (ambos con presentaciones y grupos) / R12
 js/io.js         Abrir, guardar, exportar SVG/PNG, imprimir
 js/ui.js         Cinta, paletas, barra de estado, diálogos
 js/app.js        Núcleo: entrada, motor de comandos, presentaciones
@@ -109,15 +126,20 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 ## Limitaciones conocidas
 
 - La asociatividad de cotas y sombreados no se exporta a DXF: AutoCAD los abre como cotas y sombreados normales (las cotas sí como entidades DIMENSION editables). Una cota asociada a un punto de una polilínea sigue al vértice por su número; si se recorta o parte el objeto, la cota pierde la asociación.
-- Las directrices se exportan como LEADER + MTEXT (el formato DXF 2000 no tiene MULTILEADER) y los globos como círculo y texto; las tablas se exportan descompuestas en líneas y MTEXT. Los estilos de directriz y de tabla no se exportan a DXF.
+- En DXF 2000 las directrices se exportan como LEADER + MTEXT (ese formato no tiene MULTILEADER) y los globos como círculo y texto; en DXF 2007, como MULTILEADER. Las flechas abiertas, de trazo oblicuo y de punto se exportan como cerradas en los MULTILEADER. Las tablas se exportan descompuestas en líneas y MTEXT, y los estilos de tabla no se exportan.
 - En las fracciones apiladas y los colores de MTEXT se admite el subconjunto de códigos indicado; los códigos de párrafo (tabulaciones, sangrías, columnas) se descartan al importar.
 - Las referencias externas se leen con el selector de archivos del navegador (una web no puede abrir rutas por sí sola): «Recargar» pide de nuevo el archivo salvo en la misma sesión. En DXF se exportan unidas (como bloques normales).
 - Las splines cerradas se escriben en DXF como splines abiertas con los vértices repetidos (geometría idéntica). Al recortar o alargar una spline por vértices de control se convierte en una spline sin puntos de ajuste.
 - Los atributos de una referencia no se pueden desplazar por separado: siguen la posición definida en el bloque. Al descomponer la referencia se convierten en textos con su valor.
 - La exportación R12 sigue siendo sólo del espacio modelo y escribe las cotas, directrices y tablas descompuestas. En la importación, las referencias con escala no uniforme se descomponen.
 
-- Las restricciones paramétricas y los parámetros dinámicos no se exportan a DXF. En DXF 2000 los degradados se escriben como relleno sólido del color medio.
+- Las restricciones paramétricas y los parámetros dinámicos no se exportan a DXF: las referencias a bloques dinámicos se escriben como bloques anónimos con su geometría. En DXF 2000 los degradados se escriben como relleno sólido del color medio (en DXF 2007, como degradados).
+- Los parámetros de un bloque dinámico actúan cada uno sobre la geometría original del bloque, en el orden lineales, rotaciones y simetría: no se encadenan (el centro de una rotación no se desplaza con un estiramiento).
+- Los estados de capa se guardan en el archivo `.tcad` pero no se exportan a DXF ni se importan de archivos `.las`.
+- AUTOCONSTRAIN trabaja con líneas, tramos rectos de polilíneas, arcos, círculos y puntos (no con elipses ni splines) y con unas 300 líneas por designación como máximo.
+- Los patrones `.pat` se interpretan en las unidades del dibujo (milímetros, como acadiso.pat): los archivos en pulgadas, como acad.pat, se cargan marcando «En pulgadas». Un patrón en uso no se puede eliminar.
+- GRADUA y DIVIDE recorren las elipses y las splines sobre su teselado (error inferior a una milésima de su tamaño).
 
-## Hoja de ruta (v0.6+)
+## Hoja de ruta (v0.7+)
 
-Restricciones automáticas (AUTOCONSTRAIN), parámetros de rotación y tabla de consulta en bloques dinámicos, exportación DXF 2007+ con MULTILEADER y degradados, capas de estados (LAYERSTATE), grupos (GROUP), MEASURE/DIVIDE y sombreados con patrones personalizados.
+Líneas múltiples (MLINE) con estilos, matriz a lo largo de un recorrido (ARRAYPATH) y matrices asociativas editables, contornos y regiones (BOUNDARY, REGION) con operaciones booleanas, cotas de longitud de arco (DIMARC) y de radio con recodo (DIMJOGGED), tablas en DXF como ACAD_TABLE con sus estilos, importación y exportación de estados de capa en archivos `.las`, y delimitación de referencias externas y bloques (XCLIP).

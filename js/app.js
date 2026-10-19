@@ -11,22 +11,25 @@ import { UI } from './ui.js';
 import { IO } from './io.js';
 import './dynblock.js'; // registra los bloques dinámicos
 import { parseExpr, evalParams } from './constraints.js';
+import { PAT_ENV } from './patterns.js';
+import { expandGroups } from './groups.js';
 
 const CANCEL = Symbol('cancel');
 const PICKBOX = 6;
 const PREFS_KEY = 'trazocad.prefs';
 const strip = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
-const TOGGLE_NAMES = { grid: 'Rejilla', snap: 'Forzcursor', ortho: 'Orto', polar: 'Polar', osnap: 'Refent', otrack: 'Rastreo', dyn: 'Entrada dinámica', lwt: 'Grosor de línea' };
+const TOGGLE_NAMES = { grid: 'Rejilla', snap: 'Forzcursor', ortho: 'Orto', polar: 'Polar', osnap: 'Refent', otrack: 'Rastreo', dyn: 'Entrada dinámica', lwt: 'Grosor de línea', groups: 'Selección de grupos' };
 
 class App {
   constructor() {
     this.doc = new Doc();
     ENV.doc = this.doc;
+    PAT_ENV.doc = this.doc;
     this.view = this.modelView = new View();
     this.layoutViews = new WeakMap();
     this.spatial = new SpatialIndex();
     this.tab = 'model'; this.vpActive = null;
-    this.T = { grid: true, snap: false, ortho: false, polar: true, osnap: true, otrack: true, dyn: true, lwt: false };
+    this.T = { grid: true, snap: false, ortho: false, polar: true, osnap: true, otrack: true, dyn: true, lwt: false, groups: true };
     this.osnapModes = { end: true, mid: true, cen: true, qua: true, int: true, per: true, nea: false, nod: true, ins: true };
     this.loadPrefs();
 
@@ -472,6 +475,7 @@ class App {
     if (inField) return;
     if (e.ctrlKey || e.metaKey) {
       const kk = k.toLowerCase();
+      if (kk === 'a' && e.shiftKey) { e.preventDefault(); this.toggle('groups'); return; }
       if (kk === 'a') { e.preventDefault(); this.selectAll(); return; }
       if (kk === 'e') { e.preventDefault(); this.cycleIsoPlane(); return; }
       const map = { z: 'UNDO', y: 'REDO', s: e.shiftKey ? 'SAVEAS' : 'QSAVE', o: 'OPEN', n: 'NEW', p: 'PLOT', c: 'COPYCLIP', v: 'PASTECLIP' };
@@ -603,11 +607,21 @@ class App {
     }
   }
 
+  // Con la selección de grupos activada, designar un miembro designa el grupo entero
+  withGroups(ids) {
+    if (!this.T.groups || this.noGroupPick || !this.doc.groups.length) return new Set(ids);
+    const out = expandGroups(this.doc, ids), doc = this.doc;
+    if (out.size === ids.length) return out;
+    const space = new Set(doc.ents.map(e => e.id)), own = new Set(ids); // sólo miembros del espacio actual, visibles y desbloqueados
+    for (const id of out) { const e = doc.get(id); if (!own.has(id) && (!e || !space.has(id) || !doc.visible(e) || doc.locked(e))) out.delete(id); }
+    return out;
+  }
   selectClick(shift, set) {
     const m = this.mouse, id = this.pickId(m.sx, m.sy);
     if (id) {
-      if (shift) set.delete(id); else set.add(id);
-      if (this.req?.kind === 'select') this.print(`1 encontrado, ${set.size} total`);
+      const ids = this.withGroups([id]);
+      for (const x of ids) if (shift) set.delete(x); else set.add(x);
+      if (this.req?.kind === 'select') this.print(`${ids.size} encontrado(s)${ids.size > 1 ? ' (grupo)' : ''}, ${set.size} total`);
       this.selChanged();
     } else this.win = { s: { x: m.sx, y: m.sy }, shift, set, dragged: false };
   }
@@ -618,11 +632,13 @@ class App {
     const a = W.s, b = { x: m.sx, y: m.sy };
     if (Math.hypot(b.x - a.x, b.y - a.y) < 3) { this.renderer.invalidate(false); return; }
     const crossing = b.x < a.x, r = G.normRect(this.view.toWorld(a), this.view.toWorld(b));
-    let n = 0;
+    const hit = [];
     for (const e of this.idx().query(r)) {
       if (!this.doc.visible(e) || this.doc.locked(e)) continue;
-      if (crossing ? crosses(e, r) : inWindow(e, r)) { if (W.shift) W.set.delete(e.id); else W.set.add(e.id); n++; }
+      if (crossing ? crosses(e, r) : inWindow(e, r)) hit.push(e.id);
     }
+    const ids = this.withGroups(hit), n = ids.size;
+    for (const id of ids) if (W.shift) W.set.delete(id); else W.set.add(id);
     this.lastWindow = { rect: r, crossing };
     if (this.req?.kind === 'select') this.print(`${n} encontrados, ${W.set.size} total`);
     this.selChanged();

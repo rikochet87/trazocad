@@ -58,6 +58,7 @@ try {
       if (res.pdf) { writeFileSync(join(OUT, 'out.pdf'), Buffer.from(res.pdf, 'base64')); delete res.pdf; }
       if (res.d2000) { writeFileSync(join(OUT, 'out2000.dxf'), res.d2000); delete res.d2000; }
       if (res.d12) { writeFileSync(join(OUT, 'out12.dxf'), res.d12); delete res.d12; }
+      if (res.d2007) { writeFileSync(join(OUT, 'out2007.dxf'), res.d2007); delete res.d2007; }
     }
     console.log(typeof res === 'string' ? res : JSON.stringify(res, null, 1));
   }

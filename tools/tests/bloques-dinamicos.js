@@ -24,13 +24,13 @@ out.beditDyn = JSON.parse(JSON.stringify(doc.bedit.dyn));
 app.renderer.drawBase();
 await cmd('BCLOSE', 'S');
 const b = doc.blocks.PUERTA;
-out.blockDyn = { lin: b.dyn.lin.ents, flip: !!b.dyn.flip, states: b.dyn.vis.states, hide: b.dyn.vis.hide };
+out.blockDyn = { lin: (b.dyn.lins || [b.dyn.lin])[0].ents, flip: !!b.dyn.flip, states: b.dyn.vis.states, hide: b.dyn.vis.hide };
 const r = doc.get(ins.id);
 out.grips = E.gripsOf(r).length;
 out.kinds = E.TYPES.insert.gripKinds(r);
 // estiramiento con pinzamiento
 doc.begin(); doc.modify(r.id, e => E.TYPES.insert.moveGrip(e, 1, { x: 150, y: 3 })); doc.commit();
-out.dist = doc.get(r.id).dyn.dist;
+out.dist = doc.get(r.id).dyn.len.Anchura;
 out.bboxStretched = E.bboxOf(doc.get(r.id));
 // visibilidad cerrada
 doc.begin(); doc.modify(r.id, e => { e.dyn = { ...e.dyn, vis: 'Cerrada' }; }); doc.commit();

@@ -100,8 +100,14 @@ export class IO {
     await this.loadFile(file, handle);
   }
 
+  // Texto de un archivo: UTF-8 o, si no lo es (DXF anteriores a 2007), Windows-1252
+  async readText(file) {
+    const buf = await file.arrayBuffer();
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { return new TextDecoder('windows-1252').decode(buf); }
+  }
+
   async loadFile(file, handle = null) {
-    const text = await file.text(), doc = this.app.doc;
+    const text = await this.readText(file), doc = this.app.doc;
     try {
       if (/\.dxf$/i.test(file.name)) {
         const r = readDXF(text);
@@ -111,11 +117,19 @@ export class IO {
         for (const s of r.textStyles) if (!doc.textStyles.some(t => t.name === s.name)) doc.textStyles.push(s);
         if (r.dimStyles?.length) { doc.dimStyles = r.dimStyles; doc.cur.dimStyle = (r.dimStyles.find(d => d.name !== 'Standard') || r.dimStyles[0]).name; }
         if (r.insBase) doc.settings.insBase = r.insBase;
-        for (const e of r.ents) doc.add(e);
+        doc.patterns = r.patterns || {};
+        if (r.mleaderStyles?.length) { doc.mleaderStyles = r.mleaderStyles; doc.cur.mleaderStyle = r.mleaderStyles[0].name; }
+        const byHandle = new Map(); // identificador DXF → objeto importado (para los grupos)
+        const put = (e, target) => { const h = e._h; delete e._h; doc.add(e, target); if (h) byHandle.set(h, e.id); };
+        for (const e of r.ents) put(e);
         for (const l of r.layouts) {
           const lay = { name: l.name, paper: l.paper, w: l.w, h: l.h, ents: [] };
           doc.layouts.push(lay);
-          for (const e of l.ents) doc.add(e, lay.ents);
+          for (const e of l.ents) put(e, lay.ents);
+        }
+        for (const g of r.groups || []) {
+          const ids = g.handles.map(h => byHandle.get(h)).filter(Boolean);
+          if (ids.length) doc.groups.push({ name: g.name, desc: g.desc, ids, sel: g.sel });
         }
         doc.syncAssoc();
         doc.undoS = []; doc.redoS = []; doc.touched.clear();
@@ -164,10 +178,10 @@ export class IO {
     this.app.print(`Dibujo guardado: ${doc.name}.tcad`);
   }
 
-  async exportDXF(version = '2000') {
+  async exportDXF(version = '2007') {
     const doc = this.app.doc;
     const h = await this.writeFile(writeDXF(doc, version), `${doc.name}.dxf`, 'application/dxf', '.dxf', 'DXF', false);
-    if (h) this.app.print(`Exportado a DXF ${version === 'R12' ? 'R12' : '2000'}: ${doc.name}.dxf (${version === 'R12' || !doc.layouts.length ? 'espacio modelo y bloques' : `modelo, bloques y ${doc.layouts.length} presentación(es)`}).`);
+    if (h) this.app.print(`Exportado a DXF ${version}: ${doc.name}.dxf (${version === 'R12' || !doc.layouts.length ? 'espacio modelo y bloques' : `modelo, bloques y ${doc.layouts.length} presentación(es)`}${version === '2007' ? '; directrices múltiples y degradados incluidos' : ''}).`);
   }
 
   // ---------- SVG ----------
