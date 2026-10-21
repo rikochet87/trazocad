@@ -8,7 +8,7 @@ import { groupsOf, isAnonGroup } from './groups.js';
 import { LS_PROPS, LS_ALL, layerStateMatches, renameLayerInStates } from './layerstates.js';
 import { linsOf, rotsOf } from './dynblock.js';
 import { PAPERS } from './document.js';
-import { CAP_KEYS, samplePts } from './mline.js';
+import { CAP_KEYS, samplePts, MLEDIT_TOOLS, sortedElems, mlCross, mlTee, mlCorner, mlCutRange } from './mline.js';
 import { makeRV, setWorld, paintEntity } from './render.js';
 import * as G from './geom.js';
 import { parseRich, buildRich, baseFmt } from './richtext.js';
@@ -31,7 +31,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 
 const RIBBON = [
   { tab: 'Inicio', groups: [
-    { name: 'Dibujo', items: [['LINE', 'Línea', 'line'], ['PLINE', 'Polilínea', 'pline'], ['CIRCLE', 'Círculo', 'circle'], ['ARC', 'Arco', 'arc'], ['RECTANG', 'Rectángulo', 'rect'], ['POLYGON', 'Polígono', 'polygon'], ['ELLIPSE', 'Elipse', 'ellipse'], ['SPLINE', 'Spline', 'spline'], ['HATCH', 'Sombreado', 'hatch'], ['DIVIDE', 'Dividir', 'divide'], ['MEASURE', 'Graduar', 'measure'], ['MLINE', 'Línea múlt.', 'mline'], ['MLSTYLE', 'Estilo LM', 'mlstyle']] },
+    { name: 'Dibujo', items: [['LINE', 'Línea', 'line'], ['PLINE', 'Polilínea', 'pline'], ['CIRCLE', 'Círculo', 'circle'], ['ARC', 'Arco', 'arc'], ['RECTANG', 'Rectángulo', 'rect'], ['POLYGON', 'Polígono', 'polygon'], ['ELLIPSE', 'Elipse', 'ellipse'], ['SPLINE', 'Spline', 'spline'], ['HATCH', 'Sombreado', 'hatch'], ['DIVIDE', 'Dividir', 'divide'], ['MEASURE', 'Graduar', 'measure'], ['MLINE', 'Línea múlt.', 'mline'], ['MLSTYLE', 'Estilo LM', 'mlstyle'], ['MLEDIT', 'Editar LM', 'mledit'], ['REVCLOUD', 'Nube', 'revcloud'], ['WIPEOUT', 'Cobertura', 'wipeout']] },
     { name: 'Modificar', items: [['MOVE', 'Desplazar', 'move'], ['COPY', 'Copiar', 'copy'], ['ROTATE', 'Girar', 'rotate'], ['SCALE', 'Escala', 'scale'], ['MIRROR', 'Simetría', 'mirror'], ['OFFSET', 'Desfase', 'offset'], ['TRIM', 'Recortar', 'trim'], ['EXTEND', 'Alargar', 'extend'], ['FILLET', 'Empalme', 'fillet'], ['CHAMFER', 'Chaflán', 'chamfer'], ['BREAK', 'Partir', 'break'], ['LENGTHEN', 'Longitud', 'lengthen'], ['STRETCH', 'Estirar', 'stretch'], ['ARRAYRECT', 'Matriz', 'arrayrect'], ['ARRAYPOLAR', 'M. polar', 'arraypolar'], ['ARRAYPATH', 'M. recorrido', 'arraypath'], ['ARRAYEDIT', 'Editar matriz', 'arrayedit'], ['EXPLODE', 'Descomp.', 'explode'], ['JOIN', 'Unir', 'join'], ['ERASE', 'Borrar', 'erase']] },
     { name: 'Regiones', items: [['REGION', 'Región', 'region'], ['BOUNDARY', 'Contorno', 'boundary'], ['UNION', 'Unión', 'union'], ['SUBTRACT', 'Diferencia', 'subtract'], ['INTERSECT', 'Intersección', 'intersect']] },
     { name: 'Anotación', items: [['MTEXT', 'Texto', 'mtext'], ['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table']] },
@@ -44,13 +44,13 @@ const RIBBON = [
   { tab: 'Insertar', groups: [
     { name: 'Bloque', items: [['BLOCK', 'Crear bloque', 'block'], ['INSERT', 'Insertar', 'insert'], ['BEDIT', 'Editor de bloques', 'bedit'], ['EXPLODE', 'Descomponer', 'explode'], ['PURGE', 'Limpiar', 'trash']] },
     { name: 'Bloque dinámico', items: [['BPARAMETER', 'Parámetro', 'bparam'], ['BVSTATE', 'Estados', 'bvstate'], ['BVHIDE', 'Ocultar', 'bvhide'], ['BVSHOW', 'Mostrar', 'bvshow'], ['BLOOKUPTABLE', 'Tabla consulta', 'lookup']] },
-    { name: 'Referencia', items: [['XATTACH', 'Enlazar', 'xattach'], ['XREF', 'Referencias externas', 'xref'], ['XCLIP', 'Delimitar', 'xclip']] },
+    { name: 'Referencia', items: [['XATTACH', 'Enlazar', 'xattach'], ['XREF', 'Referencias externas', 'xref'], ['IMAGEATTACH', 'Imagen', 'image'], ['XCLIP', 'Delimitar', 'xclip']] },
     { name: 'Atributos', items: [['ATTDEF', 'Definir atributo', 'attdef'], ['ATTEDIT', 'Editar atributos', 'attedit']] },
     { name: 'Importar', items: [['OPEN', 'Abrir DXF', 'dxf'], ['PASTECLIP', 'Pegar', 'copy']] },
   ] },
   { tab: 'Anotar', groups: [
     { name: 'Texto', items: [['MTEXT', 'Líneas múltiples', 'mtext'], ['TEXT', 'Una línea', 'text'], ['FIELD', 'Campo', 'field'], ['STYLE', 'Estilo de texto', 'textstyle']] },
-    { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMORDINATE', 'Coordenada', 'dimord'], ['DIMARC', 'Long. de arco', 'dimarc'], ['DIMJOGGED', 'Recodo', 'dimjog'], ['DIMREASSOCIATE', 'Reasociar', 'dimassoc'], ['DIMDISASSOCIATE', 'Desasociar', 'unlink'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
+    { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMORDINATE', 'Coordenada', 'dimord'], ['DIMARC', 'Long. de arco', 'dimarc'], ['DIMJOGGED', 'Recodo', 'dimjog'], ['CENTERMARK', 'Marca centro', 'centermark'], ['CENTERLINE', 'Línea centro', 'centerline'], ['DIMBREAK', 'Romper cota', 'dimbreak'], ['DIMSPACE', 'Espaciar cotas', 'dimspace'], ['DIMREASSOCIATE', 'Reasociar', 'dimassoc'], ['DIMDISASSOCIATE', 'Desasociar', 'unlink'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
     { name: 'Series', items: [['DIMCONTINUE', 'Continua', 'dimcont'], ['DIMBASELINE', 'Línea base', 'dimbase'], ['QDIM', 'Rápida', 'qdim']] },
     { name: 'Directrices y tablas', items: [['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table'], ['MLEADERSTYLE', 'Estilo dir.', 'mlstyle'], ['TABLESTYLE', 'Estilo tabla', 'tblstyle']] },
     { name: 'Sombreado', items: [['HATCH', 'Sombreado', 'hatch'], ['GRADIENT', 'Degradado', 'gradient'], ['PATTERNS', 'Patrones', 'patlib']] },
@@ -1197,6 +1197,33 @@ export class UI {
     });
   }
 
+  // Herramientas de MLEDIT con una muestra de cada una, hecha con la propia operación sobre el estilo actual. Devuelve la clave o null.
+  mleditDialog() {
+    const doc = this.app.doc, cur = doc.mlineStyle(doc.cur.mlineStyle), offs = sortedElems(cur).map(x => x.off), wd = Math.max(...offs) - Math.min(...offs) || 1;
+    const name = '__mle__', st = { ...JSON.parse(JSON.stringify(cur)), name, fill: null }, k = 4 / wd, P = G.P;
+    const ml = pts => ({ type: 'mline', pts, closed: false, just: 'zero', scale: k, mlstyle: name, layer: '0', color: '#ffffff', ltype: 'BYLAYER', lw: 'BYLAYER' });
+    const dot = p => ({ type: 'point', p, layer: '0', color: '#f0b429', ltype: 'BYLAYER', lw: 'BYLAYER' });
+    const sample = t => {
+      if (['CC', 'OC', 'MC'].includes(t)) { const A = ml([P(-10, 0), P(10, 0)]), B = ml([P(0, -10), P(0, 10)]); mlCross(A, st, P(-5, 0), B, st, P(0, -5), t); return [A, B]; }
+      if (['CT', 'OT', 'MT'].includes(t)) { const A = ml([P(0, -10), P(0, 0)]), B = ml([P(-10, 4), P(10, 4)]); mlTee(A, st, P(0, -5), B, st, P(5, 4), t); return [A, B]; }
+      if (t === 'CJ') { const A = ml([P(-10, 3), P(3, 3)]), B = ml([P(0, -10), P(0, 6)]); mlCorner(A, st, P(-5, 3), B, st, P(0, -5)); return [A, B]; }
+      if (t === 'AV') return [ml([P(-10, -4), P(0, 4), P(10, -4)]), dot(P(0, 4))];
+      if (t === 'DV') return [ml([P(-10, 0), P(10, 0)]), dot(P(0, 0))];
+      const A = ml([P(-10, 0), P(10, 0)]);
+      if (t === 'CS') mlCutRange(A, P(-3, 2), P(3, 2), [0]);
+      if (t === 'CA') mlCutRange(A, P(-3, 0), P(3, 0), offs.map((_, i) => i));
+      return [A];
+    };
+    const saved = doc.mlineStyles;
+    doc.mlineStyles = [st];
+    let res = null;
+    const grid = h('div', { class: 'swatches mledit' }, ...Object.entries(MLEDIT_TOOLS).map(([t, label]) => h('button', { class: 'swatch-btn', title: `${label} (${t})`,
+      onclick: ev => { res = t; ev.currentTarget.closest('.modal').querySelector('.btn.primary').click(); } }, this.thumb(sample(t), 84, 64, 0.1), h('span', {}, label))));
+    doc.mlineStyles = saved;
+    return this.modal('Herramientas de edición de líneas múltiples', h('div', {}, grid, h('p', { class: 'hint' }, 'Elija una herramienta y designe después las líneas múltiples. En los cruces y las uniones se conserva la parte de cada línea por la que se designa.')),
+      [{ label: 'Cancelar', value: null }, { label: 'Aceptar', value: () => res, primary: true }]);
+  }
+
   tableStyleManager() {
     const doc = this.app.doc;
     return this.styleManager({
@@ -1322,6 +1349,14 @@ export class UI {
         <li>Pestañas <b>Modelo / Presentación</b> abajo a la izquierda; <b>+</b> crea una presentación con marco, cajetín y una ventana gráfica a escala estándar.</li>
         <li>Doble clic dentro de una ventana gráfica: trabaja en el modelo a través de ella (zoom y encuadre cambian su vista). Doble clic fuera: vuelve al papel.</li>
         <li>La escala de la ventana se cambia en la paleta de Propiedades. Imprimir, SVG y PNG de una presentación salen a escala real en milímetros.</li>
+      </ul>
+      <h4>Novedades de la v0.8</h4>
+      <ul>
+        <li><b>MLEDIT</b> (<code>MLE</code>): cruces cerrada, abierta y combinada, uniones en T y en esquina, añadir o suprimir vértices, cortar y soldar elementos de una línea múltiple; los cortes se guardan y se exportan a DXF 2000/2007.</li>
+        <li><b>ARRAYEDIT</b>: sustituye los objetos de origen o un elemento concreto de una matriz, añade niveles con separación Z y define el ángulo de las filas. Los cambios conservan la asociatividad.</li>
+        <li><b>CENTERMARK / CENTERLINE</b>: marcas y líneas de centro asociativas en círculos, arcos y pares de líneas. <b>DIMBREAK</b> rompe cotas donde las cruzan otros objetos y <b>DIMSPACE</b> las separa o alinea.</li>
+        <li><b>REVCLOUD / WIPEOUT / IMAGEATTACH</b>: nubes de revisión rectangulares, poligonales o desde un contorno; coberturas que ocultan lo dibujado debajo; imágenes PNG, JPEG, GIF, WebP o BMP con escala y recorte XCLIP.</li>
+        <li><b>DXF</b>: los estados de capa se escriben como LAYERSTATE en DXF 2000/2007, junto con los cortes de las líneas múltiples. Archivos <code>.tcad</code> versión 8.</li>
       </ul>
       <h4>Novedades de la v0.7</h4>
       <ul>

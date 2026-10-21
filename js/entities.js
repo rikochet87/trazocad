@@ -3,7 +3,7 @@ import * as G from './geom.js';
 import { PATTERNS, famsOf, famLines, gradientSpec, GRADIENTS, GRAD_DEFAULT, USER_DEFAULT } from './patterns.js';
 import { splinePts, rebuild as rebuildSpline } from './spline.js';
 import { parseRich, baseFmt, richPlain } from './richtext.js';
-import { mlineGeom, mlinePrims, mlStyleOf, ML_JUST } from './mline.js';
+import { mlineGeom, mlinePrims, mlStyleOf, ML_JUST, reverseCuts } from './mline.js';
 import { clipActive, clipKeeps, clipPrims } from './xclip.js';
 const { P, Mx, TAU } = G;
 
@@ -197,7 +197,7 @@ export function arrowHead(kind, tip, dirIn, asz, lines, arrows, dots) {
   }
 }
 
-export function dimParts(e) {
+function dimPartsBase(e) {
   const ds = dimStyleOf(e), k = ds.scale || 1;
   const asz = ds.asz * k, h = ds.txt * k, gap = ds.gap * k, exo = ds.exo * k, exe = ds.exe * k;
   const lines = [], arrows = [], dots = [], arcs = [];
@@ -337,6 +337,32 @@ export function dimParts(e) {
   const up = P(-Math.sin(ta), Math.cos(ta));
   const str = label(num(val));
   return { lines, arrows, dots, arcs, val, d1, d2, text: { p: G.add(G.mid(d1, d2), G.mul(up, gap)), rot: ta, h, str, align: 'c', style: ds.textStyle } };
+}
+
+// Cortes de cota (DIMBREAK): e.breaks = [{p, len}] son huecos centrados en los puntos de cruce con otros objetos
+export function dimParts(e) {
+  const d = dimPartsBase(e);
+  if (!e.breaks?.length) return d;
+  const out = [];
+  for (const [a, b] of d.lines) {
+    const L = G.dist(a, b), u = L > 1e-12 ? G.norm(G.sub(b, a)) : null;
+    if (!u) { out.push([a, b]); continue; }
+    const iv = [];
+    for (const br of e.breaks) {
+      const t = G.dot(G.sub(br.p, a), u), q = G.add(a, G.mul(u, t));
+      if (t <= 1e-9 || t >= L - 1e-9 || G.dist(q, br.p) > (br.tol || 1e-6)) continue;
+      iv.push([Math.max(0, t - (br.len || 0)), Math.min(L, t + (br.len || 0))]);
+    }
+    iv.sort((x, y) => x[0] - y[0]);
+    let cur = 0;
+    for (const [x, y] of iv) {
+      if (x > cur + 1e-9) out.push([G.add(a, G.mul(u, cur)), G.add(a, G.mul(u, x))]);
+      cur = Math.max(cur, y);
+    }
+    if (cur < L - 1e-9) out.push([G.add(a, G.mul(u, cur)), b]);
+  }
+  d.lines = out;
+  return d;
 }
 
 // ---------- Bloques ----------
@@ -1051,6 +1077,105 @@ TYPES.dim = {
     { label: 'Asociativa', type: 'bool', get: e => !!e.assoc, set: (e, v) => { if (!v) delete e.assoc; } }],
 };
 
+// ---------- Marcas y líneas de centro (asociativas) ----------
+TYPES.center = {
+  name: 'Centro',
+  prims: e => (e.lines || []).map(([a, b]) => ({ k: 's', a, b })),
+  bbox: e => bbPts((e.lines || []).flat()),
+  snaps: e => ({ end: (e.lines || []).flat(), mid: (e.lines || []).map(([a, b]) => G.mid(a, b)) }),
+  grips: e => (e.lines?.length ? [G.mid(e.lines[0][0], e.lines[0][1])] : []),
+  moveGrip(e, i, p) {
+    const a = e.lines?.[0];
+    if (!a) return;
+    const d = G.sub(p, G.mid(a[0], a[1]));
+    e.lines = e.lines.map(([q, r]) => [G.add(q, d), G.add(r, d)]);
+    delete e.assoc;
+  },
+  xform(e, m) { e.lines = (e.lines || []).map(([a, b]) => [Mx.ap(m, a), Mx.ap(m, b)]); if (e.assoc) e._xf = true; },
+  path(c, e) { for (const [a, b] of e.lines || []) { c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); } },
+  props: [
+    ro('Tipo', e => (e.kind === 'mark' ? 'Marca de centro' : 'Línea de centro'), 'text'),
+    ro('Asociativa', e => (e.assoc ? 'Sí' : 'No'), 'text'),
+    ro('Extensión', e => e.size ?? 2.5),
+    ro('Referencias', e => (e.assoc ? Object.values(e.assoc).filter(x => x != null).length : 0)),
+  ],
+};
+
+// ---------- Cobertura (WIPEOUT) ----------
+const wipeoutBg = () => (!ENV.onScreen ? '#ffffff' : ENV.doc && (ENV.doc.space === 'model' || ENV.doc.space === 'bedit') ? '#212830' : '#ffffff');
+TYPES.wipeout = {
+  name: 'Cobertura',
+  prims: e => closedSegs(e.pts),
+  bbox: e => bbPts(e.pts),
+  snaps: e => ({ end: e.pts, mid: e.pts.map((p, i) => G.mid(p, e.pts[(i + 1) % e.pts.length])) }),
+  grips: e => e.pts,
+  moveGrip(e, i, p) { e.pts[i] = p; },
+  xform(e, m) { e.pts = e.pts.map(p => Mx.ap(m, p)); },
+  draw(c, e, R, st) {
+    c.beginPath(); TYPES.pline.path(c, { pts: e.pts, closed: true });
+    c.save();
+    c.fillStyle = wipeoutBg(); c.fill();
+    if (st.hl) { c.strokeStyle = st.color; c.lineWidth = st.px / R.scale; c.setLineDash([6 / R.scale, 4 / R.scale]); c.stroke(); }
+    c.restore();
+  },
+  props: [ro('Área', e => Math.abs(G.polyArea(e.pts))), ro('Vértices', e => e.pts.length, 'int')],
+};
+
+// ---------- Imagen raster (IMAGEATTACH) ----------
+const IMG_CACHE = new Map();
+function imageOf(src) {
+  let im = IMG_CACHE.get(src);
+  if (!im) {
+    im = new Image();
+    im.onload = () => ENV.doc?.emit('change');
+    im.src = src;
+    IMG_CACHE.set(src, im);
+  }
+  return im;
+}
+export const imageCorners = e => {
+  const c = Math.cos(e.rot || 0), s = Math.sin(e.rot || 0);
+  return [[0, 0], [e.w, 0], [e.w, e.h], [0, e.h]].map(([x, y]) => P(e.p.x + x * c - y * s, e.p.y + x * s + y * c));
+};
+TYPES.image = {
+  name: 'Imagen',
+  prims: e => closedSegs(e.clip?.pts?.length ? e.clip.pts : imageCorners(e)),
+  bbox: e => bbPts(e.clip?.pts?.length ? e.clip.pts : imageCorners(e)),
+  snaps: e => ({ end: imageCorners(e), mid: imageCorners(e).map((p, i, q) => G.mid(p, q[(i + 1) % 4])), ins: [e.p] }),
+  grips: e => [e.p, ...imageCorners(e)],
+  moveGrip(e, i, p) {
+    if (i === 0) { e.p = p; return; }
+    const d = G.sub(p, imageCorners(e)[i - 1]);
+    e.p = G.add(e.p, d);
+  },
+  xform(e, m) {
+    e.p = Mx.ap(m, e.p); e.w *= Mx.scaleOf(m); e.h *= Mx.scaleOf(m); e.rot = (e.rot || 0) + Math.atan2(m[1], m[0]);
+    if (e.clip?.pts) e.clip = { ...e.clip, pts: e.clip.pts.map(q => Mx.ap(m, q)) };
+  },
+  draw(c, e, R, st) {
+    const clip = e.clip?.pts?.length && !e.clip.off ? e.clip : null;
+    if (clip) {
+      c.save(); c.beginPath();
+      if (e.clip.invert) { const b = bbPts(imageCorners(e)), m = Math.max(b.x2 - b.x1, b.y2 - b.y1) + 1; c.rect(b.x1 - m, b.y1 - m, b.x2 - b.x1 + 2 * m, b.y2 - b.y1 + 2 * m); }
+      clip.pts.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y)));
+      c.closePath(); c.clip('evenodd');
+    }
+    const im = imageOf(e.src);
+    c.save(); c.translate(e.p.x, e.p.y); c.rotate(e.rot || 0); c.scale(1, -1);
+    if (im.complete && im.naturalWidth && typeof c.drawImage === 'function') c.drawImage(im, 0, -e.h, e.w, e.h);
+    else { c.strokeStyle = st.color; c.lineWidth = st.px / R.scale; c.strokeRect(0, -e.h, e.w, e.h); }
+    c.restore();
+    if (clip) {
+      c.restore();
+      const fr = ENV.doc?.settings?.xclipFrame ?? 2;
+      if (fr === 1 || (fr === 2 && ENV.onScreen) || st.hl) { c.beginPath(); TYPES.pline.path(c, { pts: clip.pts, closed: true }); c.stroke(); }
+    }
+  },
+  props: [ro('Archivo', e => e.name || 'Imagen'), num('Anchura', e => e.w, (e, v) => { if (v > 0) e.w = v; }),
+    num('Altura', e => e.h, (e, v) => { if (v > 0) e.h = v; }),
+    angp('Rotación', e => e.rot || 0, (e, v) => { e.rot = v; }), ro('Delimitada', e => (e.clip ? 'Sí' : 'No'))],
+};
+
 // ---------- Sombreado ----------
 const hatchEdges = e => e.loops.flatMap(l => closedSegs(l));
 export function hatchArea(e) {
@@ -1198,7 +1323,7 @@ export function applyDash(c, pat, k, R) {
 const mlStyle = e => mlStyleOf(D(), e.mlstyle);
 const mlcacheG = new WeakMap();
 export function mlGeom(e) {
-  const st = mlStyle(e), key = JSON.stringify([e.pts, e.closed, e.just, e.scale, st]);
+  const st = mlStyle(e), key = JSON.stringify([e.pts, e.closed, e.just, e.scale, e.cuts, st]);
   const hit = mlcacheG.get(e);
   if (hit && hit.key === key) return hit.g;
   const g = mlineGeom(e, st);
@@ -1211,14 +1336,23 @@ TYPES.mline = {
   prims: e => mlinePrims(mlGeom(e)),
   bbox: e => { const g = mlGeom(e); return g.arcs.reduce((b, [c, r, a1, a2]) => bbUnion(b, arcBB(c, r, a1, a2)), bbPts(g.elems.flatMap(x => x.pts))); },
   snaps: e => {
-    const g = mlGeom(e), mid = [];
-    for (const el of g.elems) for (let i = 0; i < (g.closed ? el.pts.length : el.pts.length - 1); i++) mid.push(G.mid(el.pts[i], el.pts[(i + 1) % el.pts.length]));
-    return { end: g.elems.flatMap(x => x.pts), mid };
+    const g = mlGeom(e), mid = [], end = [];
+    for (const el of g.elems) for (const r of el.runs) {
+      const p = r.pts;
+      for (let i = 0; i < (r.closed ? p.length : p.length - 1); i++) mid.push(G.mid(p[i], p[(i + 1) % p.length]));
+      end.push(...p);
+    }
+    return { end, mid };
   },
   grips: e => e.pts,
   moveGrip(e, i, p) { e.pts = e.pts.map((q, j) => (j === i ? p : q)); },
-  // Simetría: se invierte el sentido para que los elementos sigan al mismo lado
-  xform(e, m) { e.pts = e.pts.map(q => Mx.ap(m, q)); e.scale = (e.scale ?? 1) * Mx.scaleOf(m); if (Mx.det(m) < 0) e.pts.reverse(); },
+  // Simetría: se invierte el sentido para que los elementos sigan al mismo lado (y los cortes de MLEDIT, con él)
+  xform(e, m) {
+    const k = Mx.scaleOf(m);
+    e.pts = e.pts.map(q => Mx.ap(m, q)); e.scale = (e.scale ?? 1) * k;
+    if (e.cuts) e.cuts = e.cuts.map(c => ({ ...c, a: c.a * k, b: c.b * k }));
+    if (Mx.det(m) < 0) { e.pts.reverse(); reverseCuts(e); }
+  },
   draw(c, e, R, st) {
     const g = mlGeom(e), base = c.getLineDash(), doc = D();
     if (g.fill && !st?.hl) {
@@ -1226,13 +1360,13 @@ TYPES.mline = {
       for (const l of g.fill) { l.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); c.closePath(); }
       c.fill('evenodd'); c.restore();
     }
-    const strokeEl = (pts, closed) => { c.beginPath(); pts.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); if (closed) c.closePath(); c.stroke(); };
+    const strokeEl = runs => { c.beginPath(); for (const r of runs) { r.pts.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); if (r.closed) c.closePath(); } c.stroke(); };
     for (const el of g.elems) {
       const own = !st?.hl && el.color && el.color !== 'BYLAYER' && el.color !== 'BYBLOCK';
       c.strokeStyle = own ? (st?.paper && el.color.toLowerCase() === '#ffffff' ? '#000000' : el.color) : st.color;
       if (!st?.hl && el.ltype && el.ltype !== 'BYLAYER' && el.ltype !== 'BYBLOCK') applyDash(c, (LTYPES[el.ltype] || LTYPES.CONTINUOUS).pat, st.ltscale ?? doc?.settings?.ltscale, R);
       else c.setLineDash(base);
-      strokeEl(el.pts, g.closed);
+      strokeEl(el.runs);
     }
     c.strokeStyle = st.color; c.setLineDash(base);
     c.beginPath();
@@ -1247,6 +1381,7 @@ TYPES.mline = {
     { label: 'Cerrada', type: 'bool', get: e => !!e.closed, set: (e, v) => { e.closed = v && e.pts.length > 2; } },
     ro('Vértices', e => e.pts.length, 'int'),
     ro('Elementos', e => mlStyle(e).elems.length, 'int'),
+    ro('Cortes (MLEDIT)', e => e.cuts?.length || 0, 'int'),
     ro('Longitud (eje)', mlLen),
   ],
 };

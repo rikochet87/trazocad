@@ -2,7 +2,7 @@
 // deshacer/rehacer, sombreados asociativos y serialización.
 import { bboxOf, bbUnion, cloneEnt, LTYPES, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, DEFAULT_TBLSTYLE } from './entities.js';
 import { assocLoops } from './hatch.js';
-import { updateDim, dropMissing, dimRefIds } from './assoc.js';
+import { updateDim, updateCenter, centerRefs, dropMissing, dimRefIds } from './assoc.js';
 import { remapDyn } from './dynblock.js';
 import { solve, consValid, refIds } from './constraints.js';
 import { cleanGroups } from './groups.js';
@@ -14,7 +14,7 @@ export const DEFAULT_SETTINGS = {
   textH: 2.5, filletR: 0, chamferA: 0, chamferB: 0, offsetD: 10, lastRadius: 10, polySides: 4,
   hatchPat: 'ANSI31', hatchScale: 1, hatchAng: 0, hatchAssoc: true, iso: false, isoPlane: 'top', splineMethod: 'fit',
   dimAssoc: true, mleaderContent: 'mtext', balloonNum: 0, insBase: { x: 0, y: 0 },
-  mlScale: 20, mlJust: 'top', arrayAssoc: true, xclipFrame: 2, boundaryType: 'pline', boundaryIslands: true,
+  mlScale: 20, mlJust: 'top', arrayAssoc: true, xclipFrame: 2, boundaryType: 'pline', boundaryIslands: true, revcloud: 5,
 };
 const newMlStyle = () => JSON.parse(JSON.stringify(DEFAULT_MLINESTYLE));
 export const PAPERS = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841], Carta: [279.4, 215.9], Oficio: [355.6, 215.9] };
@@ -163,6 +163,14 @@ export class Doc {
           if (!updateDim(h, get)) delete h.assoc;
           continue;
         }
+        if (h.type === 'center') {
+          dropMissing(h, get);
+          const ids = centerRefs(h);
+          if (!ids.length) continue;
+          if (!ids.some(id => t.has(id))) { if (moved) delete h.assoc; continue; }
+          if (!updateCenter(h, get)) delete h.assoc;
+          continue;
+        }
         if (h.type !== 'hatch') continue;
         const srcs = h.assoc.map(get);
         if (srcs.some(x => !x)) { drop(h); continue; }
@@ -195,6 +203,9 @@ export class Doc {
       if (h.type === 'dim' && dimRefIds(h).some(id => map.has(id))) {
         const n = cloneEnt(h);
         if (updateDim(n, get)) out.push(n);
+      } else if (h.type === 'center' && centerRefs(h).some(id => map.has(id))) {
+        const n = cloneEnt(h);
+        if (updateCenter(n, get)) out.push(n);
       } else if (h.type === 'hatch' && h.assoc.some(id => map.has(id))) {
         const srcs = h.assoc.map(get);
         const r = !srcs.some(x => !x) && srcs.length <= 50 ? assocLoops(h, srcs) : null;
@@ -294,7 +305,7 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 7, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      app: 'TrazoCAD', version: 8, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
       textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, cur: this.cur, settings: this.settings, nextId: this.nextId,
     };
   }

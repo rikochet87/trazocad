@@ -119,6 +119,7 @@ export class IO {
         if (r.dimStyles?.length) { doc.dimStyles = r.dimStyles; doc.cur.dimStyle = (r.dimStyles.find(d => d.name !== 'Standard') || r.dimStyles[0]).name; }
         if (r.insBase) doc.settings.insBase = r.insBase;
         doc.patterns = r.patterns || {};
+        if (r.layerStates?.length) doc.layerStates = r.layerStates;
         if (r.mleaderStyles?.length) { doc.mleaderStyles = r.mleaderStyles; doc.cur.mleaderStyle = r.mleaderStyles[0].name; }
         if (r.tableStyles?.length) { doc.tableStyles = r.tableStyles; doc.cur.tableStyle = r.tableStyles[0].name; }
         for (const s of r.mlineStyles || []) { const i = doc.mlineStyles.findIndex(x => x.name.toUpperCase() === s.name.toUpperCase()); if (i >= 0) doc.mlineStyles[i] = s; else doc.mlineStyles.push(s); }
@@ -231,9 +232,21 @@ export class IO {
       const s = stroke(e), col = printColor(doc.style(e).color);
       switch (e.type) {
         case 'line': out.push(`<line x1="${n5(e.p1.x)}" y1="${n5(e.p1.y)}" x2="${n5(e.p2.x)}" y2="${n5(e.p2.y)}" ${s}/>`); break;
+        case 'center': out.push(`<path d="${(e.lines || []).map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}" ${s}/>`); break;
         case 'circle': out.push(`<circle cx="${n5(e.c.x)}" cy="${n5(e.c.y)}" r="${n5(e.r)}" ${s}/>`); break;
         case 'arc': { const a = G.polar(e.c, e.a1, e.r), b = G.polar(e.c, e.a2, e.r); out.push(`<path d="M${n5(a.x)} ${n5(a.y)} A${n5(e.r)} ${n5(e.r)} 0 ${G.sweep(e.a1, e.a2) > Math.PI ? 1 : 0} 1 ${n5(b.x)} ${n5(b.y)}" ${s}/>`); break; }
         case 'pline': out.push(`<path d="${plD(e)}" ${s}/>`); break;
+        case 'wipeout': out.push(`<path d="${e.pts.map(p => `${n5(p.x)} ${n5(p.y)}`).join('L').replace(/^/, 'M')}Z" fill="#ffffff"/>`); break;
+        case 'image': {
+          const im = `<image x="0" y="${n5(-e.h)}" width="${n5(e.w)}" height="${n5(e.h)}" preserveAspectRatio="none" href="${esc(e.src)}"/>`;
+          const tr = `<g transform="translate(${n5(e.p.x)} ${n5(e.p.y)}) rotate(${n5(-G.deg(e.rot || 0))})">${im}</g>`;
+          if (e.clip?.pts?.length && !e.clip.off) {
+            const id = `ic${++this.gradN}`;
+            out.push(`<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="${e.clip.pts.map(p => `${n5(p.x)} ${n5(p.y)}`).join('L').replace(/^/, 'M')}Z"/></clipPath>`);
+            out.push(`<g clip-path="url(#${id})">${tr}</g>`);
+          } else out.push(tr);
+          break;
+        }
         case 'ellipse': out.push(`<polygon points="${pts(ellPts(e, 96))}" ${s}/>`); break;
         case 'point': out.push(`<circle cx="${n5(e.p.x)}" cy="${n5(e.p.y)}" r="${n5(lwScale ? 0.3 : 0.5)}" fill="${col}"/>`); break;
         case 'text': out.push(textEl(e, col)); break;
@@ -286,7 +299,7 @@ export class IO {
             let a = s;
             if (own) a = a.replace(/stroke="[^"]*"/, `stroke="${printColor(el.color)}"`);
             if (lt) a = a.replace(/ stroke-dasharray="[^"]*"/, '') + (lt.pat.length ? ` stroke-dasharray="${lt.pat.map(v => n5(Math.abs(v) * doc.settings.ltscale) || 0.2).join(' ')}"` : '');
-            out.push(`<${g.closed ? 'polygon' : 'polyline'} points="${pts(el.pts)}" ${a}/>`);
+            for (const r of el.runs) out.push(`<${r.closed ? 'polygon' : 'polyline'} points="${pts(r.pts)}" ${a}/>`);
           }
           if (g.lines.length || g.arcs.length) out.push(`<path d="${g.lines.map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}${g.arcs.map(arcD).join('')}" ${s}/>`);
           break;

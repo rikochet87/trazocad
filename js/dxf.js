@@ -8,7 +8,7 @@ import { hasCodes, richPlain } from './richtext.js';
 import { PATTERNS, famsOf, hatchSegments, GRADIENTS, GRAD_DEFAULT, baseFams } from './patterns.js';
 import { splinePts, interpolate, rebuild as rebuildSpline } from './spline.js';
 import { mlGeom, insertMatrix, tableGeom, DEFAULT_TBLSTYLE } from './entities.js';
-import { sortedElems, justShift, DEFAULT_MLINESTYLE } from './mline.js';
+import { sortedElems, justShift, DEFAULT_MLINESTYLE, cutParams } from './mline.js';
 import { arrayEnts } from './arrays.js';
 const { P } = G;
 
@@ -33,7 +33,8 @@ export function writeDXF(doc, version = '2000') {
   const g = (code, val) => { o.push(String(code), typeof val === 'string' && !V07 ? asciiDxf(val) : String(val)); };
   let hseed = 0x30;
   const H = () => (hseed++).toString(16).toUpperCase();
-  const xy = (k, p) => { g(10 + k, num(p.x)); g(20 + k, num(p.y)); g(30 + k, 0); };
+  let zOff = 0; // elevación de la entidad que se escribe (niveles de las matrices)
+  const xy = (k, p) => { g(10 + k, num(p.x)); g(20 + k, num(p.y)); g(30 + k, num(zOff)); };
 
   // Registros de bloque (2000): modelo, un espacio papel por presentación y bloques de usuario
   const userBlocks = Object.values(doc.blocks).filter(b => !b.name.startsWith('*'));
@@ -70,6 +71,7 @@ export function writeDXF(doc, version = '2000') {
   if (V07) { let nt = 0; for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if (e.type === 'table') tblBlocks.set(e, [`*T${++nt}`, H()]); }
   // Estilos de línea múltiple (MLINESTYLE) y delimitaciones de referencias (SPATIAL_FILTER en el diccionario de extensión)
   const mlstDict = R12 ? null : H(), mlstH = R12 ? {} : Object.fromEntries(doc.mlineStyles.map(st => [st.name, H()]));
+  const lsDict = R12 || !doc.layerStates.length ? null : H(), lsH = R12 ? [] : doc.layerStates.map(() => H());
   const clips = [], clipsPlanned = !R12 && [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)].some(list => list.some(e => e.type === 'insert' && e.clip?.pts?.length > 2));
   // Globos (directrices con contenido de bloque) en DXF 2007: un bloque _TrazoGlobo (círculo de radio 1 y atributo NUM)
   // por cada proporción altura de texto / radio, que el MULTILEADER inserta escalado al radio del globo
@@ -289,7 +291,8 @@ export function writeDXF(doc, version = '2000') {
     g(42, num(d.val)); g(3, nm(doc.dimStyle(e.style).name));
     g(100, 'AcDbRadialDimensionLarge'); xy(3, e.p4); xy(4, e.p5); xy(5, G.add(e.p1, G.mul(u, d.val))); g(40, num(Math.PI / 4));
   };
-  // Línea múltiple: vértices con la dirección de su tramo y el vector de inglete; cada elemento, su distancia sobre el inglete
+  // Línea múltiple: vértices con la dirección de su tramo y el vector de inglete; cada elemento, su distancia sobre el inglete,
+  // el inicio (0) y los huecos de MLEDIT (pares inicio-fin a lo largo del tramo desde el inicio del elemento)
   const mline = (e, ow) => {
     if (R12) { for (const x of explodeEntity(e)) writeEnt(x, ow); return; }
     const st = doc.mlineStyle(e.mlstyle), gm = mlGeom(e), els = sortedElems(st), sh = justShift(st, e.just || 'top'), s = e.scale ?? 1;
@@ -299,7 +302,12 @@ export function writeDXF(doc, version = '2000') {
     xy(0, e.pts[0]); g(210, 0); g(220, 0); g(230, 1);
     gm.frames.forEach((f, i) => {
       xy(1, e.pts[i]); xy(2, f.dir); xy(3, f.miter);
-      for (const el of els) { g(74, 2); g(41, num((el.off + sh) * s * f.k)); g(41, 0); g(75, 0); }
+      els.forEach((el, k) => {
+        const gaps = cutParams(e, gm, i, k);
+        g(74, 2 + 2 * gaps.length); g(41, num((el.off + sh) * s * f.k)); g(41, 0);
+        for (const [a, b] of gaps) { g(41, num(a)); g(41, num(b)); }
+        g(75, 0);
+      });
     });
   };
   // Tabla (DXF 2007): referencia a su bloque *T, filas, columnas, alturas, anchuras y texto de cada celda
@@ -375,6 +383,8 @@ export function writeDXF(doc, version = '2000') {
     g(294, 0); g(178, 0); g(179, gm.side > 0 ? 1 : 3); g(45, 1);
   };
   const writeEnt = (e, ow) => {
+    const z0 = zOff;
+    zOff = e.z || 0;
     switch (e.type) {
       case 'mleader': if (V07 && (e.content !== 'block' || balloonBlk.size)) multileader(e, ow); else leader(e, ow); break;
       case 'table': if (tblBlocks.has(e)) acadTable(e, ow); else for (const x of explodeEntity(e)) writeEnt(x, ow); break;
@@ -385,6 +395,7 @@ export function writeDXF(doc, version = '2000') {
         common('INSERT', e, ow, 'AcDbBlockReference'); g(2, dynIns.get(e)[0]); xy(0, P(0, 0)); g(41, 1); g(42, 1); g(43, 1);
         break;
       case 'line': line(e, e.p1, e.p2, ow); break;
+      case 'center': for (const [a, b] of e.lines || []) line(e, a, b, ow); break;
       case 'circle': common('CIRCLE', e, ow, 'AcDbCircle'); xy(0, e.c); g(40, num(e.r)); break;
       case 'arc': arc(e, e.c, e.r, e.a1, e.a2, ow); break;
       case 'pline': poly(e, e.pts, e.closed, e.bulges, ow); break;
@@ -403,6 +414,7 @@ export function writeDXF(doc, version = '2000') {
       case 'mtext': mtext(e, ow); break;
       case 'attdef': attdef(e, ow); break;
       case 'hatch': hatch(e, ow); break;
+      case 'wipeout': hatch({ ...e, type: 'hatch', pattern: 'SOLID', loops: [e.pts] }, ow); break;
       case 'insert': insert(e, ow); break;
       case 'dim': {
         if (V07 && e.kind === 'arc' && dimBlocks.has(e)) { arcDimension(e, ow); break; }
@@ -417,6 +429,7 @@ export function writeDXF(doc, version = '2000') {
         break;
       }
     }
+    zOff = z0;
   };
   // Entidades de una presentación: primero la ventana general del papel (id 1), después las del usuario
   const writePaper = (lay, i, ow) => {
@@ -592,6 +605,7 @@ export function writeDXF(doc, version = '2000') {
     g(3, 'ACAD_GROUP'); g(350, grp);
     if (layouts.length) { g(3, 'ACAD_LAYOUT'); g(350, layDict); }
     if (V07) { g(3, 'ACAD_MLEADERSTYLE'); g(350, mlsDict); g(3, 'ACAD_TABLESTYLE'); g(350, tsDict); }
+    if (lsDict) { g(3, 'ACAD_LAYERSTATES'); g(350, lsDict); }
     g(3, 'ACAD_MLINESTYLE'); g(350, mlstDict);
     // Estilos de línea múltiple
     g(0, 'DICTIONARY'); g(5, mlstDict); g(330, root); g(100, 'AcDbDictionary'); g(281, 1);
@@ -605,6 +619,21 @@ export function writeDXF(doc, version = '2000') {
       const els = sortedElems(st);
       g(71, els.length);
       for (const el of els) { g(49, num(el.off)); g(62, colCode(el.color)); if (el.color?.startsWith('#')) g(420, tcolor(el.color)); g(6, ltName(el.ltype)); }
+    }
+    // Estados de capa (LAYERSTATE) en el diccionario ACAD_LAYERSTATES
+    if (lsDict) {
+      g(0, 'DICTIONARY'); g(5, lsDict); g(330, root); g(100, 'AcDbDictionary'); g(281, 1);
+      doc.layerStates.forEach((s, i) => { g(3, nm(s.name)); g(350, lsH[i]); });
+      doc.layerStates.forEach((s, i) => {
+        g(0, 'LAYERSTATE'); g(5, lsH[i]); g(102, '{ACAD_REACTORS'); g(330, lsDict); g(102, '}'); g(330, lsDict); g(100, 'AcDbLayerState');
+        g(1, nm(s.name)); g(91, 2047); g(301, s.desc || ''); g(290, 0); g(302, s.cur || '0');
+        for (const [name, v] of Object.entries(s.layers)) {
+          const aci = hexToAci(v.color || '#ffffff');
+          g(8, nm(name)); g(90, (v.on === false ? 1 : 0) | (v.lock ? 4 : 0) | 8);
+          g(62, aci); g(370, lwCode(v.lw)); g(6, v.ltype && v.ltype !== 'CONTINUOUS' ? v.ltype : 'Continuous'); g(2, `Color_${aci}`); g(440, 33554687);
+          if ((v.color || '').toLowerCase() !== aciToHex(aci).toLowerCase()) g(420, tcolor(v.color));
+        }
+      });
     }
     // Delimitaciones de referencias: diccionario de extensión de la referencia → ACAD_FILTER → SPATIAL
     for (const k of clips) {
@@ -1046,11 +1075,34 @@ export function readDXF(text) {
           break;
         }
         case 'MLINE': {
-          const pts = [];
-          for (const [c, v] of gr.d) { if (c === 11) pts.push(P(parseFloat(v), 0)); else if (c === 21 && pts.length) pts[pts.length - 1].y = parseFloat(v); }
+          // Vértices (11), dirección del tramo (12), inglete (13) y, por elemento, sus parámetros (74 n, 41 × n)
+          const vs = [];
+          let par = null;
+          for (const [c, v] of gr.d) {
+            const x = parseFloat(v);
+            if (c === 11) vs.push({ p: P(x, 0), dir: P(1, 0), mit: P(0, 1), els: [] });
+            else if (!vs.length) continue;
+            else if (c === 21) vs[vs.length - 1].p.y = x;
+            else if (c === 12) vs[vs.length - 1].dir.x = x; else if (c === 22) vs[vs.length - 1].dir.y = x;
+            else if (c === 13) vs[vs.length - 1].mit.x = x; else if (c === 23) vs[vs.length - 1].mit.y = x;
+            else if (c === 74) { par = []; vs[vs.length - 1].els.push(par); }
+            else if (c === 41 && par) par.push(x);
+            else if (c === 75) par = null;
+          }
+          const pts = vs.map(q => q.p);
           if (pts.length < 2) { skipped++; break; }
           const sn = val(gr, 2, 'STANDARD'), st = mlineStyles.find(s => s.name.toUpperCase() === String(sn).toUpperCase());
-          push(xformEnt({ type: 'mline', pts, closed: !!(parseInt(val(gr, 71, '0'), 10) & 2), just: ['top', 'zero', 'bottom'][parseInt(val(gr, 70, '0'), 10)] || 'top', scale: numv(gr, 40, 1) || 1, mlstyle: st ? st.name : 'STANDARD' }, M));
+          const ml = { type: 'mline', pts, closed: !!(parseInt(val(gr, 71, '0'), 10) & 2), just: ['top', 'zero', 'bottom'][parseInt(val(gr, 70, '0'), 10)] || 'top', scale: numv(gr, 40, 1) || 1, mlstyle: st ? st.name : 'STANDARD' };
+          // Huecos de MLEDIT: distancias desde el inicio del elemento → distancias sobre el eje desde el vértice
+          const cuts = [];
+          vs.forEach((q, i) => q.els.forEach((pp, k) => {
+            if (pp.length < 2) return;
+            const d0 = G.dot(G.norm(q.mit), G.norm(q.dir)) * pp[0];
+            if (pp[1] > 1e-9) cuts.push({ s: i, k, a: d0, b: d0 + pp[1] });
+            for (let j = 2; j + 1 < pp.length; j += 2) if (pp[j + 1] > pp[j] + 1e-9) cuts.push({ s: i, k, a: d0 + pp[j], b: d0 + pp[j + 1] });
+          }));
+          if (cuts.length) ml.cuts = cuts;
+          push(xformEnt(ml, M));
           break;
         }
         case 'ARC_DIMENSION': case 'LARGE_RADIAL_DIMENSION': {
@@ -1361,7 +1413,24 @@ export function readDXF(text) {
     const paper = Object.entries(PAPERS_MM).find(([, [a, b]]) => Math.abs(Math.max(a, b) - Math.max(l.w, l.h)) < 1 && Math.abs(Math.min(a, b) - Math.min(l.w, l.h)) < 1)?.[0] || 'A4';
     outLayouts.push({ name: l.name, paper, w: l.w, h: l.h, ents: le });
   }
-  return { layers: [...layers.values()], ents, blocks: outBlocks, textStyles, dimStyles, mleaderStyles, mlineStyles, tableStyles, layouts: outLayouts, groups: groupsOut, patterns, insBase: headerPoint(pairs, '$INSBASE') || P(0, 0), skipped };
+  // Estados de capa (objetos LAYERSTATE): mismas propiedades que los archivos .las
+  const layerStates = [];
+  for (const gr of sections.OBJECTS || []) {
+    if (gr.type !== 'LAYERSTATE') continue;
+    const s = { name: val(gr, 1, ''), desc: val(gr, 301, ''), cur: val(gr, 302, '0'), layers: {}, saved: new Date().toISOString() };
+    let l = null;
+    for (const [c, v] of gr.d) {
+      if (c === 8) { l = { on: true, lock: false, color: '#ffffff', ltype: 'CONTINUOUS', lw: 'DEFAULT' }; s.layers[v] = l; }
+      else if (!l) continue;
+      else if (c === 90) { const f = parseInt(v, 10) || 0; l.on = !(f & 1) && !(f & 2); l.lock = !!(f & 4); }
+      else if (c === 62) { const a = parseInt(v, 10); if (a < 0) l.on = false; if (Math.abs(a) >= 1 && Math.abs(a) <= 255) l.color = aciToHex(Math.abs(a)); }
+      else if (c === 92 || c === 420) l.color = '#' + ((parseInt(v, 10) >>> 0) & 0xffffff).toString(16).padStart(6, '0');
+      else if (c === 370) l.lw = lwFrom(v);
+      else if (c === 6) { const t = String(v).toUpperCase(); l.ltype = LTYPES[t] ? t : 'CONTINUOUS'; }
+    }
+    if (s.name) layerStates.push(s);
+  }
+  return { layers: [...layers.values()], ents, blocks: outBlocks, textStyles, dimStyles, mleaderStyles, mlineStyles, tableStyles, layouts: outLayouts, groups: groupsOut, patterns, layerStates, insBase: headerPoint(pairs, '$INSBASE') || P(0, 0), skipped };
 }
 
 // Punto de una variable de cabecera (código 9 seguido de 10/20)

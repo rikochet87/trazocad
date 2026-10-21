@@ -50,6 +50,36 @@ export function dropMissing(e, get) {
   clean(e);
 }
 
+// Marcas y líneas de centro asociativas: e.assoc = {a, b?} (círculo/arco para la marca; dos objetos para la línea).
+// Recalcula e.lines con la posición actual de las referencias.
+export const centerRefs = e => (e.assoc ? [e.assoc.a, e.assoc.b].filter(x => x != null) : []);
+export function updateCenter(e, get) {
+  const A = e.assoc;
+  if (!A) return true;
+  const size = e.size ?? 2.5, a = get(A.a);
+  if (!a) return false;
+  if (e.kind === 'mark') {
+    if (a.type !== 'circle' && a.type !== 'arc') return false;
+    const h = a.r + size;
+    e.lines = [[G.P(a.c.x - h, a.c.y), G.P(a.c.x + h, a.c.y)], [G.P(a.c.x, a.c.y - h), G.P(a.c.x, a.c.y + h)]];
+    return true;
+  }
+  const b = get(A.b);
+  if (!b) return false;
+  if ((a.type === 'circle' || a.type === 'arc') && (b.type === 'circle' || b.type === 'arc')) {
+    const u = G.len(G.sub(b.c, a.c)) > 1e-12 ? G.norm(G.sub(b.c, a.c)) : G.P(1, 0);
+    e.lines = [[G.add(a.c, G.mul(u, -(a.r + size))), G.add(b.c, G.mul(u, b.r + size))]];
+    return true;
+  }
+  if (a.type !== 'line' || b.type !== 'line') return false;
+  // Empareja los extremos más próximos y traza la línea entre sus puntos medios, prolongada `size` por cada lado
+  const same = G.dist(a.p1, b.p1) + G.dist(a.p2, b.p2) <= G.dist(a.p1, b.p2) + G.dist(a.p2, b.p1);
+  const m1 = G.mid(a.p1, same ? b.p1 : b.p2), m2 = G.mid(a.p2, same ? b.p2 : b.p1);
+  const u = G.len(G.sub(m2, m1)) > 1e-12 ? G.norm(G.sub(m2, m1)) : G.P(1, 0);
+  e.lines = [[G.add(m1, G.mul(u, -size)), G.add(m2, G.mul(u, size))]];
+  return true;
+}
+
 const linesX = (a, b) => G.llInt(a.p1, a.p2, b.p1, b.p2);
 // Base de una cota angular entre dos líneas: vértice y extremo más alejado de cada una
 export function angBase(a, b) {

@@ -1,6 +1,7 @@
 // Matrices asociativas: rectangular, polar y a lo largo de un recorrido (ARRAYPATH), editables como un único objeto.
 // Entidad: {type: 'array', kind: 'rect'|'polar'|'path', src: [entidades de origen], base: punto base del origen, M: matriz local → dibujo,
-//   rect:  rows, cols, dx (entre columnas), dy (entre filas)
+//   rect:  rows, cols, dx (entre columnas), dy (entre filas), ra (ángulo de filas), lv (niveles), dz (separación entre niveles),
+//   repl: {índice del elemento: [entidades que lo sustituyen]}
 //   polar: c (centro), n, fill (ángulo a rellenar, con signo), rot (girar los elementos)
 //   path:  path (copia del recorrido en coordenadas locales), pathId (recorrido asociado), method: 'divide'|'measure', n, sp, align}
 // Todo se guarda en coordenadas locales; M recoge los desplazamientos, giros, escalas y simetrías aplicados después.
@@ -16,6 +17,11 @@ const inv = m => { const d = m[0] * m[3] - m[1] * m[2]; return [m[3] / d, -m[1] 
 export const arrayM = e => e.M || Mx.I();
 export const toLocal = (e, p) => Mx.ap(inv(arrayM(e)), p);
 export const toWorld = (e, p) => Mx.ap(arrayM(e), p);
+export const arrayInv = e => inv(arrayM(e));
+export const invertM = inv;
+export const rectLevels = e => Math.max(1, e.lv | 0 || 1);
+// Matriz local del elemento `i` (con sus niveles, en el caso rectangular)
+export const itemWorld = (e, i) => Mx.mul(arrayM(e), itemMatrices(e)[i] || Mx.I());
 // Centro de la caja de las entidades de origen (punto base por defecto)
 export function srcCenter(ents) {
   const b = ents.reduce((r, x) => bbUnion(r, bboxOf(x)), null);
@@ -43,8 +49,8 @@ export function pathFit(e) { const pt = pathOf(e.path), sp = Math.abs(e.sp); ret
 export function itemMatrices(e) {
   switch (e.kind) {
     case 'rect': {
-      const out = [];
-      for (let i = 0; i < Math.max(1, e.rows | 0); i++) for (let j = 0; j < Math.max(1, e.cols | 0); j++) out.push(Mx.T(j * e.dx, i * e.dy));
+      const out = [], ra = e.ra || 0, ca = Math.cos(ra), sa = Math.sin(ra);
+      for (let l = 0; l < rectLevels(e); l++) for (let i = 0; i < Math.max(1, e.rows | 0); i++) for (let j = 0; j < Math.max(1, e.cols | 0); j++) out.push(Mx.T(j * e.dx - i * e.dy * sa, i * e.dy * ca));
       return out;
     }
     case 'polar': {
@@ -72,13 +78,15 @@ export function itemMatrices(e) {
 // Entidades de todos los elementos, en coordenadas del dibujo (con el identificador de la matriz)
 const cache = new WeakMap();
 export function arrayEnts(e) {
-  const key = JSON.stringify([e.kind, e.rows, e.cols, e.dx, e.dy, e.c, e.n, e.fill, e.rot, e.method, e.sp, e.align, e.base, e.M, e.path, e.layer, e.src.length, e.ver || 0]);
+  const key = JSON.stringify([e.kind, e.rows, e.cols, e.dx, e.dy, e.ra, e.lv, e.dz, e.c, e.n, e.fill, e.rot, e.method, e.sp, e.align, e.base, e.M, e.path, e.layer, e.src.length, e.repl, e.ver || 0]);
   const hit = cache.get(e);
   if (hit && hit.key === key && hit.src === e.src) return hit.ents;
-  const M = arrayM(e), ents = [];
+  const M = arrayM(e), ents = [], per = e.kind === 'rect' ? Math.max(1, e.rows | 0) * Math.max(1, e.cols | 0) : Infinity;
+  let idx = 0;
   for (const L of itemMatrices(e)) {
-    const W = Mx.mul(M, L);
-    for (const s of e.src) { const v = xformEnt(cloneEnt(s), W); v.id = e.id; ents.push(v); }
+    const W = Mx.mul(M, L), srcs = e.repl?.[idx] || e.src, z = e.kind === 'rect' && rectLevels(e) > 1 ? Math.floor(idx / per) * (e.dz || 0) : 0;
+    for (const s of srcs) { const v = xformEnt(cloneEnt(s), W); v.id = e.id; if (z) v.z = (s.z || 0) + z; ents.push(v); }
+    idx++;
   }
   cache.set(e, { key, src: e.src, ents });
   return ents;
@@ -91,10 +99,11 @@ export const itemCount = e => itemMatrices(e).length;
 export function arrayGrips(e) {
   const W = p => toWorld(e, p), b = e.base;
   if (e.kind === 'rect') {
+    const rd = P(-Math.sin(e.ra || 0), Math.cos(e.ra || 0));
     const out = [{ p: W(b), kind: '' }];
     if (e.cols > 1) out.push({ p: W(G.add(b, P(e.dx, 0))), kind: 'cols' });
-    if (e.rows > 1) out.push({ p: W(G.add(b, P(0, e.dy))), kind: 'rows' });
-    out.push({ p: W(G.add(b, P((e.cols - 1) * e.dx + (e.cols > 1 ? 0 : e.dx || 1), (e.rows - 1) * e.dy + (e.rows > 1 ? 0 : e.dy || 1)))), kind: 'count' });
+    if (e.rows > 1) out.push({ p: W(G.add(b, G.mul(rd, e.dy))), kind: 'rows' });
+    out.push({ p: W(G.add(b, G.add(P((e.cols - 1) * e.dx + (e.cols > 1 ? 0 : e.dx || 1), 0), G.mul(rd, (e.rows - 1) * e.dy + (e.rows > 1 ? 0 : e.dy || 1))))), kind: 'count' });
     return out;
   }
   if (e.kind === 'polar') {
@@ -111,10 +120,11 @@ export function arrayMoveGrip(e, i, p) {
   if (!g.kind) { const d = G.sub(p, g.p); e.M = Mx.mul(Mx.T(d.x, d.y), arrayM(e)); e._xf = true; return; }
   const q = G.sub(toLocal(e, p), e.base);
   if (g.kind === 'cols') { if (Math.abs(q.x) > 1e-9) e.dx = q.x; }
-  else if (g.kind === 'rows') { if (Math.abs(q.y) > 1e-9) e.dy = q.y; }
+  else if (g.kind === 'rows') { const d = G.dot(q, P(-Math.sin(e.ra || 0), Math.cos(e.ra || 0))); if (Math.abs(d) > 1e-9) e.dy = d; }
   else if (g.kind === 'count') {
-    if (Math.abs(e.dx) > 1e-12) e.cols = Math.max(1, Math.min(1000, Math.round(q.x / e.dx) + 1));
-    if (Math.abs(e.dy) > 1e-12) e.rows = Math.max(1, Math.min(1000, Math.round(q.y / e.dy) + 1));
+    const rd = P(-Math.sin(e.ra || 0), Math.cos(e.ra || 0)), d = G.dot(q, rd), qc = G.sub(q, G.mul(rd, d));
+    if (Math.abs(e.dx) > 1e-12) e.cols = Math.max(1, Math.min(1000, Math.round(qc.x / e.dx) + 1));
+    if (Math.abs(e.dy) > 1e-12) e.rows = Math.max(1, Math.min(1000, Math.round(d / e.dy) + 1));
   } else if (g.kind === 'step') {
     const full = Math.abs(Math.abs(e.fill) - G.TAU) < 1e-9, a = G.ang(e.c, toLocal(e, p)) - G.ang(e.c, e.base);
     let step = Math.atan2(Math.sin(a), Math.cos(a));
@@ -129,7 +139,11 @@ const num = (label, get, set) => ({ label, type: 'num', get, set });
 const int = (label, key, max = 1000) => ({ label, type: 'num', get: e => e[key], set: (e, v) => { const k = Math.round(v); if (k >= 1 && k <= max) e[key] = k; } });
 export function arrayProps(e) {
   const out = [{ label: 'Tipo', type: 'text', get: x => ARRAY_KINDS[x.kind], ro: true }, { label: 'Elementos', type: 'int', get: x => itemCount(x), ro: true }];
-  if (e.kind === 'rect') out.push(int('Columnas', 'cols'), num('Separación entre columnas', x => x.dx, (x, v) => { if (v) x.dx = v; }), int('Filas', 'rows'), num('Separación entre filas', x => x.dy, (x, v) => { if (v) x.dy = v; }));
+  if (e.kind === 'rect') out.push(int('Columnas', 'cols'), num('Separación entre columnas', x => x.dx, (x, v) => { if (v) x.dx = v; }), int('Filas', 'rows'), num('Separación entre filas', x => x.dy, (x, v) => { if (v) x.dy = v; }),
+    { label: 'Ángulo de filas (°)', type: 'num', get: x => G.deg(x.ra || 0), set: (x, v) => { x.ra = G.rad(v); } },
+    { label: 'Niveles', type: 'num', get: x => rectLevels(x), set: (x, v) => { const n = Math.round(v); if (n >= 1 && n <= 1000) x.lv = n; } },
+    num('Separación entre niveles', x => x.dz || 0, (x, v) => { x.dz = v; }),
+    { label: 'Elementos sustituidos', type: 'int', get: x => Object.keys(x.repl || {}).length, ro: true });
   else if (e.kind === 'polar') out.push(int('Número de elementos', 'n'), num('Ángulo a rellenar (°)', x => G.deg(x.fill), (x, v) => { if (v) x.fill = G.rad(Math.max(-360, Math.min(360, v))); }),
     { label: 'Girar elementos', type: 'bool', get: x => x.rot !== false, set: (x, v) => { x.rot = v; } });
   else out.push({ label: 'Método', type: 'select', options: PATH_METHODS, get: x => x.method, set: (x, v) => { x.method = v; if (v === 'measure' && x.n > pathFit(x)) x.n = pathFit(x); } },

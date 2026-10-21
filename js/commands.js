@@ -1,14 +1,14 @@
 // Comandos estilo AutoCAD. Cada comando es una función asíncrona que pide datos con el contexto `c`.
 import * as G from './geom.js';
-import { TYPES, cloneEnt, xformEnt, crosses, bboxOf, bbPts, describe, fmt, dimParts, plArea, plLength, plPieces, plPolygon, hatchArea, blockAttdefs, mlEff, fieldText, FIELD_PROPS, DATE_FORMATS, insertMatrix, LTYPES } from './entities.js';
+import { TYPES, cloneEnt, xformEnt, crosses, bboxOf, bbPts, describe, fmt, dimParts, plArea, plLength, plPieces, plPolygon, hatchArea, blockAttdefs, mlEff, fieldText, FIELD_PROPS, DATE_FORMATS, insertMatrix, LTYPES, primsOf, ellPts } from './entities.js';
 import { entityLoop, chainLoops, booleanLoops, nestLoops, regionArea, regionPerimeter } from './region.js';
-import { srcCenter, toLocal, itemCount, pathFit, localPath, pathable, ARRAY_KINDS } from './arrays.js';
+import { srcCenter, toLocal, itemCount, pathFit, localPath, pathable, ARRAY_KINDS, arrayInv, arrayM, invertM, itemWorld, itemMatrices, rectLevels } from './arrays.js';
 import { rectClip } from './xclip.js';
-import { mlineStyleRefs } from './mline.js';
+import { mlineStyleRefs, MLEDIT_TOOLS, mlCross, mlTee, mlCorner, mlAddVertex, mlDelVertex, mlCutRange, nearestElem as mlNearestElem, sortedElems } from './mline.js';
 import { readLas, writeLas } from './layerstates.js';
 import { findBoundary, loopsOfEntity } from './hatch.js';
 import { rebuild as rebuildSpline, splinePts } from './spline.js';
-import { angBase, remapDim, updateDim } from './assoc.js';
+import { angBase, remapDim, updateDim, updateCenter } from './assoc.js';
 import { parseSource, defineXref, detachXref, bindXref, xrefNames, xrefRefs, cleanXrefName } from './xref.js';
 import * as OPS from './ops.js';
 import { GRADIENTS, GRAD_DEFAULT, USER_DEFAULT, PATTERNS, parsePat, patText } from './patterns.js';
@@ -57,6 +57,12 @@ function remapAssoc(ents, map) {
     if (n.type === 'array' && n.pathId != null) { if (map.has(n.pathId)) n.pathId = map.get(n.pathId); else delete n.pathId; continue; }
     if (!n.assoc) continue;
     if (n.type === 'dim') { remapDim(n, map); continue; }
+    if (n.type === 'center') {
+      const A = n.assoc;
+      for (const k of ['a', 'b']) if (A[k] != null) { if (map.has(A[k])) A[k] = map.get(A[k]); else delete A[k]; }
+      if (A.a == null) delete n.assoc; else if (A.b == null) delete A.b;
+      continue;
+    }
     if (n.assoc.every(id => map.has(id))) n.assoc = n.assoc.map(id => map.get(id));
     else { delete n.assoc; delete n.seed; }
   }
@@ -305,6 +311,156 @@ def('MLINE', ['ML', 'LINEAM', 'LINEAMULTIPLE'], 'Dibuja líneas múltiples (elem
 }, { group: 'Dibujo' });
 def('MLSTYLE', ['ESTILOLM', 'ESTILOLINEAM'], 'Administra los estilos de línea múltiple: elementos, desfases, colores, tipos de línea, remates y relleno', async c => { await c.app.ui.mlineStyleManager(); }, { group: 'Dibujo' });
 
+// ---- Edición de líneas múltiples (MLEDIT): cruces, uniones en T, esquinas, vértices, cortes y soldaduras ----
+const isMl = e => e.type === 'mline';
+async function mledit(c, tool) {
+  const doc = c.doc, styleOf = e => doc.mlineStyle(e.mlstyle), name = MLEDIT_TOOLS[tool];
+  c.print(`${name}.`);
+  let n = 0;
+  for (;;) {
+    if (['CC', 'OC', 'MC', 'CT', 'OT', 'MT', 'CJ'].includes(tool)) {
+      const tee = tool[1] === 'T';
+      const a = await c.getEntity(tee ? 'Designe primera línea múltiple (el pie de la T)' : 'Designe primera línea múltiple', { filter: isMl, allowEnter: true });
+      if (!a) break;
+      const b = await c.getEntity(tee ? 'Designe segunda línea múltiple (la barra de la T)' : 'Designe segunda línea múltiple', { filter: e => isMl(e) && e.id !== a.e.id, allowEnter: true });
+      if (!b) break;
+      // Se trabaja sobre copias: si la operación no es posible, el dibujo no cambia
+      const A = cloneEnt(a.e), B = cloneEnt(b.e);
+      const err = tool === 'CJ' ? mlCorner(A, styleOf(A), a.pt, B, styleOf(B), b.pt)
+        : tee ? mlTee(A, styleOf(A), a.pt, B, styleOf(B), b.pt, tool) : mlCross(A, styleOf(A), a.pt, B, styleOf(B), b.pt, tool);
+      if (err) { c.print(err); continue; }
+      for (const [src, x] of [[a.e, A], [b.e, B]]) doc.modify(src.id, e => { e.pts = x.pts; if (x.cuts) e.cuts = x.cuts; else delete e.cuts; });
+      n++;
+      continue;
+    }
+    const o = await c.getEntity(tool === 'AV' || tool === 'DV' ? `Designe línea múltiple${tool === 'AV' ? ' en el punto del vértice nuevo' : ' junto al vértice'}` : 'Designe línea múltiple', { filter: isMl, allowEnter: true });
+    if (!o) break;
+    if (tool === 'AV' || tool === 'DV') {
+      const x = cloneEnt(o.e), ok = tool === 'AV' ? mlAddVertex(x, o.pt) : mlDelVertex(x, o.pt);
+      if (!ok) { c.print(tool === 'AV' ? 'El punto coincide con un vértice.' : 'La línea múltiple no tiene vértices que se puedan suprimir.'); continue; }
+      doc.modify(o.e.id, e => { e.pts = x.pts; if (x.cuts) e.cuts = x.cuts; else delete e.cuts; });
+      n++;
+      continue;
+    }
+    const p2 = await c.getPoint('Designe segundo punto', { base: o.pt });
+    const st = styleOf(o.e), ks = tool === 'CS' ? [mlNearestElem(o.e, st, o.pt)] : sortedElems(st).map((_, i) => i);
+    doc.modify(o.e.id, e => mlCutRange(e, o.pt, p2, ks, tool === 'WA'));
+    n++;
+  }
+  if (n) c.print(`${name}: ${n} edición(es).`);
+}
+def('MLEDIT', ['EDITARLM', 'EDITLM', 'MLE'], 'Edita líneas múltiples: cruces, uniones en T y en esquina, añadir o suprimir vértices, cortar y soldar elementos', async (c, arg) => {
+  const tool = MLEDIT_TOOLS[String(arg || '').toUpperCase()] ? String(arg).toUpperCase() : await c.app.ui.mleditDialog();
+  if (tool) await mledit(c, tool);
+}, { group: 'Modificar' });
+def('-MLEDIT', ['-EDITARLM'], 'MLEDIT por la línea de comandos: CC, OC, MC (cruces), CT, OT, MT (en T), CJ (esquina), AV, DV (vértices), CS, CA (cortar), WA (soldar)', async c => {
+  for (const [k, v] of Object.entries(MLEDIT_TOOLS)) c.print(`  ${k}  ${v}`);
+  await mledit(c, await c.getKeyword('Indique opción de edición', Object.keys(MLEDIT_TOOLS), 'CC'));
+}, { group: 'Modificar' });
+
+// ---- Marcas y líneas de centro asociativas (CENTERMARK, CENTERLINE) ----
+const centerExt = c => (c.doc.dimStyle(c.doc.cur.dimStyle).txt || 2.5) * 1.5;
+def('CENTERMARK', ['DIMCENTER', 'MARCACENTRO', 'CENTROMARCA'], 'Crea marcas de centro asociativas en círculos y arcos; siguen al objeto si cambia', async c => {
+  let n = 0;
+  for (;;) {
+    const o = await c.getEntity('Designe círculo o arco para la marca de centro (Intro para terminar)', { filter: isCirc, allowEnter: true });
+    if (!o) break;
+    const e = { type: 'center', kind: 'mark', assoc: { a: o.e.id }, size: centerExt(c) };
+    if (!updateCenter(e, id => c.doc.get(id))) { c.print('No se puede crear la marca de centro en ese objeto.'); continue; }
+    c.add(e); n++;
+  }
+  if (n) c.print(`${n} marca(s) de centro creada(s).`);
+}, { group: 'Anotación' });
+def('CENTERLINE', ['LINEACENTRO', 'CENTROLINEA'], 'Crea líneas de centro asociativas entre dos líneas o entre dos círculos/arcos', async c => {
+  const first = await c.getEntity('Designe primera línea o círculo', { filter: e => e.type === 'line' || isCirc(e) });
+  const second = await c.getEntity('Designe segunda línea o círculo', { filter: e => (e.type === 'line' || isCirc(e)) && e.id !== first.e.id });
+  const ok = (first.e.type === 'line' && second.e.type === 'line') || (isCirc(first.e) && isCirc(second.e));
+  if (!ok) return c.print('La línea de centro necesita dos líneas o dos círculos/arcos.');
+  const e = { type: 'center', kind: 'line', assoc: { a: first.e.id, b: second.e.id }, size: centerExt(c) };
+  if (!updateCenter(e, id => c.doc.get(id))) return c.print('No se puede crear la línea de centro entre esos objetos.');
+  c.add(e);
+}, { group: 'Anotación' });
+
+// ---- Nubes de revisión (REVCLOUD) y coberturas (WIPEOUT) ----
+// Contorno cerrado → polilínea de arcos de `len` de longitud de cuerda, abombados hacia fuera
+function cloudOf(path, len) {
+  const n = path.length, cum = [0];
+  for (let i = 0; i < n; i++) cum.push(cum[i] + G.dist(path[i], path[(i + 1) % n]));
+  const per = cum[n];
+  const cnt = Math.max(8, Math.min(2000, Math.round(per / Math.max(len, 1e-9))));
+  const at = t => {
+    t = Math.max(0, Math.min(per - 1e-9, t));
+    for (let i = 0; i < n; i++) if (t <= cum[i + 1]) {
+      const a = path[i], b = path[(i + 1) % n], L = cum[i + 1] - cum[i];
+      return G.add(a, G.mul(G.sub(b, a), L > 0 ? (t - cum[i]) / L : 0));
+    }
+    return path[0];
+  };
+  let area = 0;
+  for (let i = 0; i < n; i++) area += G.cross(path[i], path[(i + 1) % n]);
+  const sign = area > 0 ? -1 : 1, pts = [], bulges = [];
+  for (let i = 0; i < cnt; i++) { pts.push(at(i * per / cnt)); bulges.push(sign); }
+  return { type: 'pline', pts, bulges, closed: true };
+}
+def('REVCLOUD', ['NUBE', 'REVISION', 'NUBEREVISION'], 'Crea una nube de revisión rectangular, poligonal o a partir de un contorno cerrado', async c => {
+  const S = c.settings;
+  const len = await c.getNumber('Longitud de arco de la nube', { def: S.revcloud || 5, min: 0.001 });
+  S.revcloud = len; c.doc.changed();
+  const mode = await c.getKeyword('Indique forma de la nube', ['Rectangular', 'Poligonal', 'Objeto'], 'Rectangular');
+  let path = null, src = null;
+  if (mode === 'Rectangular') {
+    const a = await c.getPoint('Precise primera esquina de la nube');
+    const b = await c.getPoint('Precise esquina opuesta', { base: a, rubber: false });
+    if (Math.abs(b.x - a.x) < 1e-9 || Math.abs(b.y - a.y) < 1e-9) return c.print('Nube nula.');
+    path = [a, P(b.x, a.y), b, P(a.x, b.y)];
+  } else if (mode === 'Poligonal') {
+    const pts = [await c.getPoint('Precise primer punto de la nube')];
+    for (;;) {
+      const p = await c.getPoint('Precise punto siguiente (Intro para cerrar)', { base: pts[pts.length - 1], allowEnter: true, options: pts.length >= 2 ? ['desHacer'] : [] });
+      if (p === null) break;
+      if (p === 'desHacer') { pts.pop(); continue; }
+      pts.push(p);
+    }
+    if (pts.length < 3) return c.print('Se necesitan al menos tres puntos.');
+    path = pts;
+  } else {
+    const o = await c.getEntity('Designe polilínea cerrada, círculo, elipse o región', { filter: e => (e.type === 'pline' && e.closed && e.pts.length > 2) || e.type === 'circle' || e.type === 'ellipse' || e.type === 'region' });
+    if (o.e.type === 'circle') { const k = Math.max(16, Math.round(G.TAU * o.e.r / Math.max(len, 1e-6))); path = Array.from({ length: k }, (_, i) => G.polar(o.e.c, i * G.TAU / k, o.e.r)); }
+    else if (o.e.type === 'ellipse') path = ellPts(o.e, 96);
+    else if (o.e.type === 'pline') path = o.e.pts;
+    else path = o.e.loops[0].pts;
+    src = o.e;
+  }
+  if (!path || path.length < 3) return c.print('El contorno no es válido.');
+  const cloud = cloudOf(path, len);
+  c.add(cloud);
+  if (src) c.doc.remove(src.id);
+  c.print(`Nube de revisión creada con ${cloud.pts.length} arcos.`);
+}, { group: 'Dibujo' });
+def('WIPEOUT', ['COBERTURA', 'TAPAR', 'OCULTAR'], 'Crea una cobertura poligonal que oculta lo dibujado debajo de ella', async c => {
+  const pts = [await c.getPoint('Precise primer punto del contorno de la cobertura')];
+  for (;;) {
+    const p = await c.getPoint('Precise punto siguiente (Intro para cerrar)', { base: pts[pts.length - 1], allowEnter: true, options: pts.length >= 2 ? ['desHacer'] : [] });
+    if (p === null) break;
+    if (p === 'desHacer') { pts.pop(); continue; }
+    pts.push(p);
+  }
+  if (pts.length < 3) return c.print('Se necesitan al menos tres puntos.');
+  c.add({ type: 'wipeout', pts });
+  c.print('Cobertura creada.');
+}, { group: 'Dibujo' });
+def('IMAGEATTACH', ['IMAGEN', 'ADJUNTARIMAGEN', 'IMATTACH'], 'Adjunta una imagen raster (PNG, JPEG, GIF, WebP o BMP) al dibujo', async c => {
+  const f = await c.app.io.pickFile('Imágenes', ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
+  if (!f) return;
+  const src = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f.file); });
+  const im = new Image();
+  const ok = await new Promise(res => { im.onload = () => res(true); im.onerror = () => res(false); im.src = src; });
+  if (!ok) return c.print('No se puede leer la imagen.');
+  const p = await c.getPoint('Precise punto de inserción de la imagen');
+  const sc = await c.getNumber('Escala de la imagen (1 píxel = 1 unidad)', { def: 1, min: 1e-6 });
+  c.add({ type: 'image', p, w: im.naturalWidth * sc, h: im.naturalHeight * sc, src, name: f.file.name, rot: 0 });
+  c.print(`Imagen "${f.file.name}" adjuntada (${im.naturalWidth} × ${im.naturalHeight} px).`);
+}, { group: 'Insertar' });
 def('POINT', ['PO', 'PUNTO'], 'Crea objetos punto', async c => {
   for (;;) {
     const p = await c.getPoint('Precise un punto', { allowEnter: true });
@@ -972,6 +1128,45 @@ def('DIMREASSOCIATE', ['DRE', 'REASOCIARCOTA'], 'Asocia los puntos de las cotas 
 def('STYLE', ['ST', 'ESTILO'], 'Administra los estilos de texto', async c => { await c.app.ui.textStyleManager(); }, { group: 'Anotación' });
 def('DIMSTYLE', ['D', 'DST', 'ACOESTIL', 'ESTILOCOTA'], 'Administra los estilos de cota', async c => { await c.app.ui.dimStyleManager(); }, { group: 'Anotación' });
 
+// ---- DIMBREAK: cortes en las cotas donde las cruzan otros objetos ----
+def('DIMBREAK', ['DBR', 'CORTARCOTA', 'ROMPERCOTA'], 'Rompe la línea de cota (y sus líneas de referencia) donde la cruzan otros objetos', async c => {
+  const o = await c.getEntity('Designe cota para romper', { filter: e => e.type === 'dim' });
+  if (o.e.breaks?.length) {
+    const k = await c.getKeyword(`La cota tiene ${o.e.breaks.length} corte(s)`, ['Añadir', 'Quitar'], 'Añadir');
+    if (k === 'Quitar') { c.doc.modify(o.e.id, e => { delete e.breaks; }); c.print('Cortes de cota eliminados.'); return; }
+  }
+  const how = await c.getKeyword('Indique cómo calcular los cortes', ['Automático', 'Seleccionar objetos'], 'Automático');
+  const objs = how === 'Automático'
+    ? c.doc.ents.filter(e => e.id !== o.e.id && !['dim', 'mleader', 'table'].includes(e.type) && c.doc.visible(e))
+    : (await c.getSelection('Designe los objetos que cortan la cota')).map(id => c.doc.get(id)).filter(Boolean);
+  const d = dimParts(o.e), segs = d.lines.map(([a, b]) => ({ k: 's', a, b })), pts = [];
+  for (const ob of objs) for (const q of primsOf(ob)) for (const s of segs) pts.push(...G.primInt(q, s));
+  const uniq = pts.filter((p, i) => pts.findIndex(q => G.dist(p, q) < 1e-6) === i);
+  if (!uniq.length) return c.print('No hay intersecciones con la cota.');
+  const len = (d.text?.h || 2.5) * 1.2;
+  c.doc.modify(o.e.id, e => { e.breaks = [...(e.breaks || []), ...uniq.map(p => ({ p, len }))]; });
+  c.print(`${uniq.length} corte(s) añadido(s) a la cota.`);
+}, { group: 'Anotación' });
+// ---- DIMSPACE: separa o alinea cotas paralelas respecto a una cota base ----
+const dimDir = e => (e.kind === 'ali' ? G.norm(G.sub(e.p2, e.p1)) : P(Math.cos(e.rot || 0), Math.sin(e.rot || 0)));
+def('DIMSPACE', ['DSP', 'ESPACIARCOTAS'], 'Separa o alinea cotas paralelas a partir de una cota base (0 = alinear)', async c => {
+  const base = await c.getEntity('Designe cota base', { filter: e => e.type === 'dim' && (e.kind === 'lin' || e.kind === 'ali') });
+  const ids = await c.getSelection('Designe cotas que desea espaciar', { noPickfirst: true });
+  const targets = ids.map(id => c.doc.get(id)).filter(e => e && e.type === 'dim' && e.id !== base.e.id && (e.kind === 'lin' || e.kind === 'ali'));
+  if (!targets.length) return c.print('No hay cotas lineales o alineadas que espaciar.');
+  const sp = await c.getNumber('Indique espaciado entre cotas (0 = alinear con la base)', { def: 10, min: 0 });
+  const B = base.e, dir = dimDir(B), n = G.perp(dir), bc = G.dot(B.p3, n);
+  const items = targets.map(e => {
+    const d = dimDir(e);
+    return { e, coord: G.dot(e.p3, n), side: G.cross(dir, d) < 0 ? -1 : 1 };
+  }).sort((a, b) => Math.abs(a.coord - bc) - Math.abs(b.coord - bc));
+  items.forEach((it, k) => {
+    const sign = it.side * (Math.sign(it.coord - bc) || 1), want = bc + sign * sp * (k + 1);
+    c.doc.modify(it.e.id, e => { e.p3 = G.add(e.p3, G.mul(n, want - it.coord)); });
+  });
+  c.print(`${items.length} cota(s) ${sp ? `espaciada(s) a ${fmt(sp, 4)}` : 'alineada(s) con la cota base'}.`);
+}, { group: 'Anotación' });
+
 // ================= BLOQUES =================
 def('BLOCK', ['B', 'BLOQUE'], 'Crea un bloque a partir de objetos designados', async c => {
   const name = (await c.getString('Indique nombre de bloque', { spaces: true })).trim();
@@ -1103,16 +1298,19 @@ def('XREF', ['XR', 'REFEXTERNAS', 'REFX'], 'Administra las referencias externas:
 const invM = m => { const d = m[0] * m[3] - m[1] * m[2]; return [m[3] / d, -m[1] / d, -m[2] / d, m[0] / d, (m[2] * m[5] - m[3] * m[4]) / d, (m[1] * m[4] - m[0] * m[5]) / d]; };
 // Contorno del dibujo → coordenadas de la definición del bloque de la referencia
 const toBlockCoords = (c, e, poly) => { const M = invM(insertMatrix(e, c.doc.blocks[e.name])); return poly.map(q => Mx.ap(M, q)); };
-def('XCLIP', ['XC', 'DELIMITARX', 'DELIMITAR', 'CLIPX'], 'Delimita referencias a bloques y referencias externas con un contorno rectangular o poligonal (normal o invertido)', async c => {
-  const ins = (await c.getSelection()).map(id => c.doc.get(id)).filter(e => e?.type === 'insert' && c.doc.blocks[e.name]);
-  if (!ins.length) return c.print('No se ha designado ninguna referencia a bloque.');
+def('XCLIP', ['XC', 'DELIMITARX', 'DELIMITAR', 'CLIPX'], 'Delimita referencias a bloques, referencias externas e imágenes con un contorno rectangular o poligonal (normal o invertido)', async c => {
+  const ins = (await c.getSelection()).map(id => c.doc.get(id)).filter(e => (e?.type === 'insert' && c.doc.blocks[e.name]) || e?.type === 'image');
+  if (!ins.length) return c.print('No se ha designado ninguna referencia a bloque o imagen.');
   c.print(`${ins.length} referencia(s) designada(s).`);
   const k = await c.getKeyword('Indique opción de delimitación', ['ACtivar', 'DEsactivar', 'Suprimir', 'generar Polilínea', 'Nuevo contorno'], 'Nuevo contorno');
   const clipped = ins.filter(e => e.clip);
   if (k === 'ACtivar' || k === 'DEsactivar') { for (const e of clipped) c.doc.modify(e.id, x => { x.clip = { ...x.clip, off: k === 'DEsactivar' }; }); return c.print(`${clipped.length} delimitación(es) ${k === 'ACtivar' ? 'activada(s)' : 'desactivada(s)'}.`); }
   if (k === 'Suprimir') { for (const e of clipped) c.doc.modify(e.id, x => { delete x.clip; }); return c.print(`${clipped.length} delimitación(es) suprimida(s).`); }
   if (k === 'generar Polilínea') {
-    for (const e of clipped) { const M = insertMatrix(e, c.doc.blocks[e.name]); c.add({ type: 'pline', pts: e.clip.pts.map(q => Mx.ap(M, q)), closed: true }); }
+    for (const e of clipped) {
+      const pts = e.type === 'image' ? e.clip.pts : e.clip.pts.map(q => Mx.ap(insertMatrix(e, c.doc.blocks[e.name]), q));
+      c.add({ type: 'pline', pts, closed: true });
+    }
     return c.print(`${clipped.length} polilínea(s) creada(s) con el contorno de delimitación.`);
   }
   let targets = ins;
@@ -1142,7 +1340,7 @@ def('XCLIP', ['XC', 'DELIMITARX', 'DELIMITAR', 'CLIPX'], 'Delimita referencias a
       poly = plPolygon(o.e, 48);
     }
   }
-  for (const e of targets) c.doc.modify(e.id, x => { x.clip = { pts: toBlockCoords(c, x, poly), ...(invert ? { invert: true } : {}) }; });
+  for (const e of targets) c.doc.modify(e.id, x => { x.clip = { pts: x.type === 'image' ? poly : toBlockCoords(c, x, poly), ...(invert ? { invert: true } : {}) }; });
   c.print(`${targets.length} referencia(s) delimitada(s)${invert ? ' (delimitación invertida)' : ''}.`);
 }, { group: 'Bloques', sel: true });
 def('XCLIPFRAME', ['MARCODELIMITAR', 'XCF'], 'Marco de las delimitaciones: 0 oculto, 1 visible e impreso, 2 visible sólo en pantalla', async c => {
@@ -1564,13 +1762,19 @@ function makeArray(c, ids, kind, params) {
   return c.add({ type: 'array', kind, src, base: srcCenter(src), M: Mx.I(), ...params });
 }
 const ARR_KW = {
-  rect: ['ASOciativa', 'Base', 'Recuento', 'Separación', 'COLumnas', 'Filas', 'sAlir'],
+  rect: ['ASOciativa', 'Base', 'Recuento', 'Separación', 'COLumnas', 'Filas', 'Ángulo de filas', 'Niveles', 'Origen', 'ReemplaZar', 'sAlir'],
   polar: ['ASOciativa', 'Base', 'Elementos', 'ángulo eNtre', 'reLlenar ángulo', 'Girar elementos', 'sAlir'],
   path: ['ASOciativa', 'Método', 'Base', 'Elementos', 'aLinear elementos', 'sAlir'],
 };
-const arrSummary = e => (e.kind === 'rect' ? `${e.cols} columna(s) × ${e.rows} fila(s), separación ${fmt(e.dx, 4)} × ${fmt(e.dy, 4)}`
+const arrSummary = e => (e.kind === 'rect' ? `${e.cols} columna(s) × ${e.rows} fila(s)${rectLevels(e) > 1 ? ` × ${rectLevels(e)} nivel(es)` : ''}, separación ${fmt(e.dx, 4)} × ${fmt(e.dy, 4)}${e.ra ? `, filas a ${fmt(G.deg(e.ra), 2)}°` : ''}`
   : e.kind === 'polar' ? `${e.n} elementos en ${fmt(G.deg(e.fill), 2)}°${e.rot === false ? ', sin girar' : ''}`
     : `${itemCount(e)} elementos, ${e.method === 'divide' ? 'repartidos en el recorrido' : `separación ${fmt(e.sp, 4)}`}${e.align === false ? ', sin alinear' : ''}`);
+// Clona objetos para el origen de una matriz (sin identificador ni datos de asociatividad) y los transforma a sus coordenadas locales
+const arraySrcOf = (doc, ids, M, skip) => ids.filter(x => x !== skip).map(x => doc.get(x)).filter(Boolean).map(x => {
+  const c = xformEnt(cloneEnt(x), M);
+  for (const k of ['id', 'assoc', 'seed', '_xf', 'pathId']) delete c[k];
+  return c;
+});
 async function arrayEditLoop(c, id, editing) {
   const doc = c.doc;
   let assoc = c.settings.arrayAssoc !== false;
@@ -1604,6 +1808,39 @@ async function arrayEditLoop(c, id, editing) {
         const n = await c.getNumber('Indique número de filas', { def: e.rows, int: true, min: 1, max: 1000 });
         const d = await c.getDistance('Precise distancia entre filas', { def: e.dy });
         set(x => { x.rows = n; if (d) x.dy = d; }); break;
+      }
+      case 'Ángulo de filas': {
+        const a = await c.getNumber('Precise ángulo de las filas (+ = antihorario, 0 = perpendiculares a las columnas)', { def: +fmt(G.deg(e.ra || 0), 4) });
+        set(x => { x.ra = G.rad(a); }); break;
+      }
+      case 'Niveles': {
+        const n = await c.getNumber('Indique número de niveles', { def: rectLevels(e), int: true, min: 1, max: 1000 });
+        const dz = await c.getNumber('Indique separación entre niveles', { def: e.dz || 0 });
+        set(x => { x.lv = n; x.dz = dz; }); break;
+      }
+      case 'Origen': {
+        const ids = await c.getSelection('Designe los objetos que serán el origen de la matriz (Intro para conservarlos)', { noPickfirst: true });
+        if (!ids.length) break;
+        const src = arraySrcOf(doc, ids, arrayInv(doc.get(id)), id);
+        if (!src.length) { c.print('No se puede usar la propia matriz como origen.'); break; }
+        doc.modify(id, x => { x.src = src; x.repl = {}; });
+        for (const x of ids) if (x !== id) doc.remove(x);
+        c.print(`Origen de la matriz reemplazado por ${src.length} objeto(s).`);
+        break;
+      }
+      case 'ReemplaZar': {
+        const p = await c.getPoint('Designe el elemento de la matriz que desea reemplazar');
+        const Ls = itemMatrices(e), M = arrayM(e);
+        let k = 0, bd = Infinity;
+        Ls.forEach((L, i) => { const d = G.dist(p, Mx.ap(Mx.mul(M, L), e.base)); if (d < bd) { bd = d; k = i; } });
+        const ids = await c.getSelection(`Designe los objetos que sustituirán al elemento ${k + 1} (Intro para cancelar)`, { noPickfirst: true });
+        if (!ids.length) break;
+        const repl = arraySrcOf(doc, ids, invertM(itemWorld(doc.get(id), k)), id);
+        if (!repl.length) { c.print('No se puede usar la propia matriz como reemplazo.'); break; }
+        doc.modify(id, x => { x.repl = { ...(x.repl || {}), [k]: repl }; });
+        for (const x of ids) if (x !== id) doc.remove(x);
+        c.print(`Elemento ${k + 1} reemplazado por ${repl.length} objeto(s).`);
+        break;
       }
       case 'Elementos':
         if (e.kind === 'path' && e.method !== 'divide') {

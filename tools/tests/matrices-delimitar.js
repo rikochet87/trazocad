@@ -42,6 +42,12 @@ out.noAssocEnts = doc.model.slice(n0 - 1).map(e => e.type);
 await cmd('ARRAYRECT', sel([doc.model.at(-1).id]), 'ASO', 'S', 'sA'); // vuelve a dejar ASOciativa = Sí
 await cmd('UNDO');
 
+// ---- Ángulo de filas: a 0° las filas van en vertical; a 30° giran en sentido antihorario ----
+await cmd('CIRCLE', '200,-50', '1'); const AC = last();
+await cmd('ARRAYRECT', sel([AC.id]), 'COL', '2', '10', 'F', '2', '10', 'Ángulo de filas', '30', '');
+const ARa = last(), Lr = A.itemMatrices(ARa);
+out.rowAngle = [r4(Lr[1][4]), r4(Lr[1][5]), r4(Lr[2][4]), r4(Lr[2][5])];
+
 // ---- ARRAYPOLAR: 6 elementos en 360°, luego 4 en 180° sin girar ----
 await cmd('LINE', '50,-50', '55,-50', ''); const L = last();
 out.polar = await cmd('ARRAYPOLAR', sel([L.id]), '40,-50', '');
