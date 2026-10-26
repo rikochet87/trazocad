@@ -1,12 +1,14 @@
 // Archivos: nuevo, abrir, guardar (.tcad), exportar DXF/SVG/PNG, imprimir y autoguardado.
 import * as G from './geom.js';
-import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, bboxOf, mtextGeom, mleaderGeom, tableGeom, fieldText, ENV, insertClip, mlGeom, LTYPES, imageAlpha } from './entities.js';
+import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, bboxOf, mtextGeom, mleaderGeom, tableGeom, fieldText, ENV, insertClip, mlGeom, LTYPES, imageAlpha, imageClipLoops, dimTexts } from './entities.js';
 import { arrayEnts } from './arrays.js';
 import { splinePts } from './spline.js';
 import { writeDXF, readDXF } from './dxf.js';
 import { hatchSegments, gradientSpec } from './patterns.js';
-import { makeRV, setWorld, vpModelRect } from './render.js';
+import { makeRV, setWorld, vpModelRect, vpLtk } from './render.js';
 import { PdfContext, buildPdf } from './pdf.js';
+import { xrefNames, restoreXrefs } from './xref.js';
+import { plotStyler } from './plotstyles.js';
 
 const AUTOSAVE_KEY = 'trazocad.autosave';
 const fsAccess = 'showSaveFilePicker' in window;
@@ -118,6 +120,8 @@ export class IO {
         for (const s of r.textStyles) if (!doc.textStyles.some(t => t.name === s.name)) doc.textStyles.push(s);
         if (r.dimStyles?.length) { doc.dimStyles = r.dimStyles; doc.cur.dimStyle = (r.dimStyles.find(d => d.name !== 'Standard') || r.dimStyles[0]).name; }
         if (r.insBase) doc.settings.insBase = r.insBase;
+        if (r.psltscale != null) doc.settings.psltscale = r.psltscale;
+        if (r.modelPlotStyle) doc.settings.modelPlotStyle = r.modelPlotStyle;
         doc.patterns = r.patterns || {};
         if (r.layerStates?.length) doc.layerStates = r.layerStates;
         if (r.mleaderStyles?.length) { doc.mleaderStyles = r.mleaderStyles; doc.cur.mleaderStyle = r.mleaderStyles[0].name; }
@@ -127,7 +131,7 @@ export class IO {
         const put = (e, target) => { const h = e._h; delete e._h; doc.add(e, target); if (h) byHandle.set(h, e.id); };
         for (const e of r.ents) put(e);
         for (const l of r.layouts) {
-          const lay = { name: l.name, paper: l.paper, w: l.w, h: l.h, ents: [] };
+          const lay = { name: l.name, paper: l.paper, w: l.w, h: l.h, ents: [], ...(l.plotStyle ? { plotStyle: l.plotStyle } : {}) };
           doc.layouts.push(lay);
           for (const e of l.ents) put(e, lay.ents);
         }
@@ -150,10 +154,20 @@ export class IO {
       }
       doc.dirty = false;
       this.app.afterLoad();
+      await this.restoreXrefs();
     } catch (err) {
       console.error(err);
       this.app.print(`Error al abrir el archivo: ${err.message}`, 'err');
     }
+  }
+
+  // Referencias externas recordadas de otras sesiones: se recargan solas si el navegador conserva el permiso de lectura
+  async restoreXrefs() {
+    const doc = this.app.doc;
+    if (!xrefNames(doc).length) return;
+    const { loaded, missing } = await restoreXrefs(doc);
+    if (loaded) { this.app.print(`${loaded} referencia(s) externa(s) recargada(s) desde sus archivos.`); this.app.renderer.invalidate(); }
+    if (missing) this.app.print(`${missing} referencia(s) externa(s) sin cargar: use XREF › Recargar para elegir su archivo.`, 'err');
   }
 
   async writeFile(content, name, mime, ext, desc, useHandle) {
@@ -190,11 +204,19 @@ export class IO {
 
   // ---------- SVG ----------
   // lwScale: unidades de dibujo por mm de grosor (null = trazo fino independiente del zoom); vis: filtro de visibilidad
+  // Estilo con el que se imprime un objeto: el de la tabla de estilos de trazado de la exportación, o el suyo
+  plotSt(e) { const st = this.app.doc.style(e); return this.plot ? this.plot(e, st) : st; }
+  // Exportaciones de la presentación lay (o del modelo con null): prepara la tabla de estilos de trazado
+  plotFor(lay) { this.plot = plotStyler(this.app.doc, lay); this.ltk = 1; return this.plot; }
+  printSty(lay, px) { // función entidad → estilo de pintado de render.js para PNG y PDF
+    const doc = this.app.doc, ps = plotStyler(doc, lay);
+    return e => { const s = doc.style(e), st = ps ? ps(e, s) : s; return { color: ps ? st.color : printColor(st.color), px: px(st.lw), pat: st.pat, ltscale: doc.settings.ltscale }; };
+  }
   svgEnts(ents, lwScale, out, vis = e => this.app.doc.layer(e.layer).on) {
     const doc = this.app.doc;
     const stroke = e => {
-      const st = doc.style(e), col = printColor(st.color);
-      const dash = st.pat.length ? ` stroke-dasharray="${st.pat.map(v => n5(Math.abs(v) * doc.settings.ltscale) || 0.2).join(' ')}"` : '';
+      const st = this.plotSt(e), col = this.plot ? st.color : printColor(st.color);
+      const dash = st.pat.length ? ` stroke-dasharray="${st.pat.map(v => n5(Math.abs(v) * doc.settings.ltscale * (this.ltk || 1)) || 0.2).join(' ')}"` : '';
       const w = lwScale ? `stroke-width="${n5(Math.max(0.13, st.lw) * lwScale)}"` : `stroke-width="${n5(Math.max(0.25, st.lw) * 3.78 / 3)}" vector-effect="non-scaling-stroke"`;
       return `stroke="${col}" ${w} fill="none" stroke-linecap="round" stroke-linejoin="round"${dash}`;
     };
@@ -229,7 +251,7 @@ export class IO {
     const arcD = ([c, r, a1, a2]) => { const a = G.polar(c, a1, r), b = G.polar(c, a2, r); return `M${n5(a.x)} ${n5(a.y)} A${n5(r)} ${n5(r)} 0 ${G.sweep(a1, a2) > Math.PI ? 1 : 0} 1 ${n5(b.x)} ${n5(b.y)}`; };
     for (const e of ents) {
       if (!vis(e)) continue;
-      const s = stroke(e), col = printColor(doc.style(e).color);
+      const s = stroke(e), col = this.plot ? this.plotSt(e).color : printColor(doc.style(e).color);
       switch (e.type) {
         case 'line': out.push(`<line x1="${n5(e.p1.x)}" y1="${n5(e.p1.y)}" x2="${n5(e.p2.x)}" y2="${n5(e.p2.y)}" ${s}/>`); break;
         case 'center': out.push(`<path d="${(e.lines || []).map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}" ${s}/>`); break;
@@ -248,7 +270,11 @@ export class IO {
           const tr = `<g transform="translate(${n5(e.p.x)} ${n5(e.p.y)}) rotate(${n5(-G.deg(e.rot || 0))})">${im}</g>`;
           if (e.clip?.pts?.length && !e.clip.off) {
             const id = `ic${++this.gradN}`;
-            out.push(`<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="${e.clip.pts.map(p => `${n5(p.x)} ${n5(p.y)}`).join('L').replace(/^/, 'M')}Z"/></clipPath>`);
+            // Todos los contornos en un solo trazado par-impar; invertida: con un marco exterior alrededor de la imagen
+            const b = bboxOf({ ...e, clip: null }), m = Math.max(b.x2 - b.x1, b.y2 - b.y1) + 1;
+            const outer = e.clip.invert ? `M${n5(b.x1 - m)} ${n5(b.y1 - m)}H${n5(b.x2 + m)}V${n5(b.y2 + m)}H${n5(b.x1 - m)}Z` : '';
+            const d = outer + imageClipLoops(e).map(l => `M${l.map(p => `${n5(p.x)} ${n5(p.y)}`).join('L')}Z`).join('');
+            out.push(`<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="${d}" clip-rule="evenodd"/></clipPath>`);
             out.push(`<g clip-path="url(#${id})">${tr}</g>`);
           } else out.push(tr);
           break;
@@ -315,15 +341,17 @@ export class IO {
           out.push(`<path d="${d.lines.map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}${d.arcs.map(arcD).join('')}" ${s}/>`);
           for (const tri of d.arrows) out.push(`<polygon points="${pts(tri)}" fill="${col}"/>`);
           for (const [c, r] of d.dots) out.push(`<circle cx="${n5(c.x)}" cy="${n5(c.y)}" r="${n5(r)}" fill="${col}"/>`);
-          out.push(textEl(d.text, col));
+          for (const t of dimTexts(d)) out.push(textEl(t, col));
           break;
         }
         case 'vport': {
           const id = `vp${e.id}`, m = vpModelRect(e), sc = e.s, vcx = (e.p1.x + e.p2.x) / 2, vcy = (e.p1.y + e.p2.y) / 2;
           out.push(`<clipPath id="${id}"><rect x="${n5(e.p1.x)}" y="${n5(e.p1.y)}" width="${n5(e.p2.x - e.p1.x)}" height="${n5(e.p2.y - e.p1.y)}"/></clipPath>`);
           out.push(`<g clip-path="url(#${id})"><g transform="matrix(${n5(sc)} 0 0 ${n5(sc)} ${n5(vcx - sc * e.cx)} ${n5(vcy - sc * e.cy)})">`);
-          const doc2 = this.app.doc;
+          const doc2 = this.app.doc, k0 = this.ltk || 1;
+          this.ltk = k0 * vpLtk(doc2, e); // escala de tipo de línea propia de la ventana
           this.svgEnts(this.app.spatial.of(doc2.model, doc2.ver).query(m, true), lwScale / sc, out, doc2.visibleIn(e));
+          this.ltk = k0;
           out.push('</g></g>');
           out.push(`<rect x="${n5(e.p1.x)}" y="${n5(e.p1.y)}" width="${n5(e.p2.x - e.p1.x)}" height="${n5(e.p2.y - e.p1.y)}" ${s}/>`);
           break;
@@ -336,6 +364,7 @@ export class IO {
   buildSVG() {
     const app = this.app, doc = app.doc, lay = app.layoutShown();
     let x1, y1, w, h, body, size;
+    this.plotFor(lay);
     if (lay) {
       x1 = 0; y1 = 0; w = lay.w; h = lay.h;
       ENV.layout = lay;
@@ -350,6 +379,7 @@ export class IO {
       body = this.svgEnts(doc.model, null, []);
       size = `width="${n5(w)}mm" height="${n5(h)}mm"`;
     }
+    this.plot = null;
     return { size: [w, h], paper: !!lay, svg: `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="${n5(x1)} ${n5(-y1 - h)} ${n5(w)} ${n5(h)}" ${size}>
 <rect x="${n5(x1)}" y="${n5(-y1 - h)}" width="${n5(w)}" height="${n5(h)}" fill="#ffffff"/>
@@ -373,14 +403,14 @@ ${body.join('\n')}
       const ppm = 8; // píxeles por mm (~200 ppp)
       W = Math.round(lay.w * ppm); H = Math.round(lay.h * ppm);
       R = makeRV(lay.w / 2, lay.h / 2, ppm, W, H, 1);
-      sty = e => { const st = doc.style(e); return { color: printColor(st.color), px: Math.max(1, st.lw * ppm), pat: st.pat, ltscale: doc.settings.ltscale }; };
+      sty = this.printSty(lay, lw => Math.max(1, lw * ppm));
     } else {
       const b = doc.extents(doc.model.filter(e => doc.visible(e)));
       if (!b) return app.print('El dibujo está vacío.');
       const bw = b.x2 - b.x1 || 1, bh = b.y2 - b.y1 || 1;
       W = 2400; H = Math.max(200, Math.min(4800, Math.round(W * bh / bw)));
       R = makeRV((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2, Math.min(W / bw, H / bh) * 0.94, W, H, 1);
-      sty = e => { const st = doc.style(e); return { color: printColor(st.color), px: Math.max(1.5, st.lw * 8), pat: st.pat, ltscale: doc.settings.ltscale }; };
+      sty = this.printSty(null, lw => Math.max(1.5, lw * 8));
     }
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
     const c = cv.getContext('2d');
@@ -396,10 +426,9 @@ ${body.join('\n')}
   // which: 'current' (presentación activa o modelo) o 'all' (todas las presentaciones, una por página)
   async buildPDF(which = 'current') {
     const app = this.app, doc = app.doc, K = 72 / 25.4; // puntos por mm
-    const sty = e => { const st = doc.style(e); return { color: printColor(st.color), px: Math.max(0.1, st.lw) * K, pat: st.pat, ltscale: doc.settings.ltscale }; };
     const pageOf = lay => {
       const W = lay.w * K, H = lay.h * K, ctx = new PdfContext(H);
-      app.renderer.drawLayout(ctx, makeRV(lay.w / 2, lay.h / 2, K, W, H, 1), lay, sty, true);
+      app.renderer.drawLayout(ctx, makeRV(lay.w / 2, lay.h / 2, K, W, H, 1), lay, this.printSty(lay, lw => Math.max(0.1, lw) * K), true);
       return { w: W, h: H, ctx };
     };
     const lay = app.layoutShown();
@@ -411,7 +440,7 @@ ${body.join('\n')}
     const W = 420 * K, H = 297 * K, bw = b.x2 - b.x1 || 1, bh = b.y2 - b.y1 || 1, s = Math.min((W - 20 * K) / bw, (H - 20 * K) / bh);
     const ctx = new PdfContext(H), R = makeRV((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2, s, W, H, 1);
     setWorld(ctx, R);
-    app.renderer.paintList(ctx, R, doc.model, e => ({ ...sty(e), px: Math.max(0.1, doc.style(e).lw) * K }));
+    app.renderer.paintList(ctx, R, doc.model, this.printSty(null, lw => Math.max(0.1, lw) * K));
     return [{ w: W, h: H, ctx }];
   }
   async exportPDF(which = 'current') {

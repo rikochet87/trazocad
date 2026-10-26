@@ -135,6 +135,8 @@ const I = {
   centermark: '<circle cx="12" cy="12" r="7"/><path d="M2 12h20M12 2v20" stroke-dasharray="4 2"/><path d="M10 12h4M12 10v4"/>',
   centerline: '<path d="M3 7h18M3 17h18"/><path d="M2 12h20" stroke-dasharray="5 2"/><path d="M11 9v6M13 9v6"/>',
   dimbreak: '<path d="M3 5v14M21 5v14"/><path d="M3 12h6M15 12h6"/><path d="M9 12h6" stroke-dasharray="2 2" opacity=".35"/><path d="m10 9 4 6M14 9l-4 6" stroke-width="1.2"/>',
+  dimovr: '<path d="M3 15v6M21 15v6M3 18h18"/><path d="M7 6h6M10 3v6" stroke-width="1.4"/><path d="M15 6h5" stroke-width="1.4"/><path d="M8 12h8" opacity=".55"/>',
+  plotstyle: '<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="1.5"/><path d="M7 14h10v7H7z"/><path d="M9 17h2M13 17h2M9 19h6" stroke-width="1.2"/><circle cx="17.5" cy="12" r=".9" fill="currentColor"/>',
   dimspace: '<path d="M3 5v14M21 5v14"/><path d="M3 8h18M3 12h18M3 16h18"/><path d="M12 7v2M12 11v2M12 15v2" stroke-width="1.2"/>',
   revcloud: '<path d="M5 8a3 3 0 0 1 4-3 3 3 0 0 1 5-1 3 3 0 0 1 4 3 3 3 0 0 1 2 4 3 3 0 0 1-2 4 3 3 0 0 1-4 3 3 3 0 0 1-5 1 3 3 0 0 1-4-3 3 3 0 0 1-2-4 3 3 0 0 1 2-4z"/>',
   revcloudedit: '<path d="M3 9a2.5 2.5 0 0 1 3.5-2.5A2.5 2.5 0 0 1 10 5a2.5 2.5 0 0 1 3.5 1.5A2.5 2.5 0 0 1 16 9"/><path d="M3 9a2.5 2.5 0 0 0 2 4 2.5 2.5 0 0 0 3 2.5"/><path d="m14 21 6-6-2-2-6 6v2Z"/><path d="M4 13h2M8 15h2" stroke-width="2"/>',

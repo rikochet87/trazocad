@@ -1,4 +1,4 @@
-# TrazoCAD — v0.9
+# TrazoCAD — v0.10
 
 Software de dibujo técnico 2D inspirado en AutoCAD, hecho desde cero como **PWA** (aplicación web instalable y sin conexión). JavaScript puro con módulos ES: sin dependencias ni compilación.
 
@@ -11,6 +11,24 @@ node serve.mjs          # http://localhost:8080
 ```
 
 Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta tal cual a cualquier hosting estático con HTTPS (GitHub Pages, Netlify, Hostinger…). En Chrome/Edge aparece el botón **Instalar**.
+
+## Novedades de la v0.10
+
+![Hoja de un tramo de ruta: ortofoto recortada con dos contornos, señales enlazadas como referencia externa, perfil tipo con cotas con tolerancia, terraplén sombreado con islas alrededor de una alcantarilla, leyenda con degradado de cuatro colores y la paleta de Propiedades con dos cotas designadas](docs/v10.png)
+
+| Función | Detalle |
+|---|---|
+| **Imágenes a escala real** (`IMAGEATTACH`) | Lee la resolución guardada en el archivo (PNG `pHYs`, JPEG JFIF y EXIF, BMP) y propone el tamaño real; la escala se indica en unidades por píxel, en **píxeles por unidad** o por **resolución** (ppp) con las unidades del dibujo por pulgada (25,4 en milímetros). Propiedades muestra y cambia la **Escala (unidades/píxel)** y la **Resolución** efectiva |
+| **Recorte con varios contornos** (`XCLIP` › Añadir contorno) | Una imagen recortada admite contornos adicionales que se combinan par-impar: un contorno dentro de otro abre un hueco y los separados muestran varias zonas. Todos se editan con pinzamientos y se exportan a SVG, PDF y DXF (el primero como contorno de IMAGE; el resto en XDATA propios); «generar Polilínea» crea una por contorno |
+| **Tolerancias en cotas** | Estilos de cota con tolerancia **simétrica** (±), **desviación** (+sup/−inf apiladas, con escala de altura), **límites** (máximo sobre mínimo) y **básica** (texto enmarcado), con sus decimales. En DXF se escriben como DIMTOL, DIMLIM, DIMTP, DIMTM, DIMTFAC y DIMTDEC (básica: DIMGAP negativo) y se leen de vuelta |
+| **Estilos aplicados por cota** (`DIMOVERRIDE`, `DOV`) | Cambia variables (DIMTXT, DIMASZ, DIMDEC, DIMTOL, DIMTP…) sólo en las cotas designadas, sin tocar su estilo, o **borra** esas modificaciones. Propiedades tiene las secciones *Tolerancias* y *Modificaciones de estilo* y el botón para restablecer. En DXF viajan como XDATA `ACAD`/`DSTYLE`, como en AutoCAD |
+| **Islas de sombreado** | Detección de islas **Normal**, **Exterior** o **Ignorar** (HATCH › Detección de islas, también en Propiedades), **Incluir islas** designando objetos y **Quitar islas** con un punto. Los sombreados asociativos recuerdan las islas quitadas al recalcularse; el estilo se guarda en el código 75 del DXF |
+| **Degradados de varios colores** | GRADIENT › Colores admite colores intermedios con su posición; Propiedades › **Paradas de color** («0% #2e7d32, 35% #c0ca33, 100% #f5f5f5»). Todos los tipos (lineal, cilíndrico, esférico…) los usan; en pantalla, SVG, PDF y DXF 2007 (código 453 con cada parada) |
+| **Referencias externas recordadas** | XATTACH y Recargar guardan en el navegador (IndexedDB) el archivo de cada referencia: al abrir el dibujo otro día se vuelve a leer solo si el navegador mantiene el permiso, y XREF muestra cuáles están «recordadas». En DXF 2000 y 2007 se escriben como **bloques XREF** (indicador 4 y ruta del archivo) con sus capas dependientes `REF\|capa`; TrazoCAD guarda además su contenido en XDATA y lo recupera al importar |
+| **Tablas de estilos de trazado** (`STYLESMANAGER`, `CONFIGPAG`) | Tablas **.ctb** (por color ACI) y **.stb** (estilos con nombre por capa u objeto, `ESTILOTRAZADO`) que cambian color, escala de grises, intensidad, grosor y tipo de línea al imprimir y exportar a PDF, SVG y PNG. Predefinidas `monochrome.ctb`, `grayscale.ctb`, `screening 50%.ctb`, `acad.ctb/stb` y `monochrome.stb`; las propias se crean, copian y editan, y se **importan y exportan** como archivos de AutoCAD. CONFIGPAG elige la tabla de cada presentación (o del modelo) y la puede mostrar en pantalla; en DXF va en PLOTSETTINGS |
+| **Tipos de línea por ventana** | Cada ventana gráfica tiene su **Escala de tipo de línea** (Propiedades) y `PSLTSCALE` = 1 deja los trazos con el mismo tamaño en el papel en todas las ventanas, sea cual sea su escala |
+| **Propiedades de varios objetos** | Con objetos de varios tipos, la cabecera de la paleta elige *Todos* o un tipo (*Círculo (2)*); con un solo tipo se editan sus propiedades geométricas en todos a la vez, con *\*Varios\** donde difieren, en una sola operación de deshacer |
+| **Otros** | Archivos `.tcad` versión 10 (los anteriores se siguen abriendo); la ayuda (F1) recoge las novedades. Corregido: SOMBREADO y CONTORNO por punto interior ya no fallan cuando hay una isla a la derecha del punto, a su misma altura |
 
 ## Novedades de la v0.9
 
@@ -149,12 +167,13 @@ js/arrays.js     Matrices asociativas: rectangular (con niveles y ángulo de fil
 js/xclip.js      Delimitación de referencias (XCLIP): recorte de primitivas con el contorno
 js/assoc.js      Cotas asociativas y marcas/líneas de centro: referencias a la geometría y recálculo
 js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, grupos, estados de capa, patrones, deshacer, asociatividad (también matriz–recorrido)
-js/xref.js       Referencias externas: lectura, prefijos, recarga, desenlace y unión
+js/xref.js       Referencias externas: lectura, prefijos, recarga, desenlace, unión y archivos recordados (IndexedDB)
+js/plotstyles.js Tablas de estilos de trazado .ctb/.stb: predefinidas, aplicación al imprimir y lectura/escritura de archivos de AutoCAD
 js/constraints.js Restricciones paramétricas, expresiones, solucionador y restricciones automáticas
 js/dynblock.js   Bloques dinámicos: parámetros lineales, de rotación, simetría, visibilidad y tabla de consulta
 js/groups.js     Grupos: creación, selección conjunta, copias y limpieza
 js/layerstates.js Estados de capa: guardar, restaurar, comparar, renombrar y archivos .las
-js/pdf.js        Exportación a PDF vectorial
+js/pdf.js        Exportación a PDF vectorial (con los estilos de trazado de la presentación)
 js/patterns.js   Patrones de sombreado (predefinidos, personalizados .pat y de usuario), degradados y recorte de líneas de patrón
 js/hatch.js      Detección de contornos (grafo plano, caras e islas, con las primitivas de origen) y recálculo asociativo
 js/spatial.js    Índice espacial
@@ -163,7 +182,7 @@ js/render.js     Dibujado en canvas
 js/snap.js       Referencias, rastreo, polar, orto, isométrico
 js/ops.js        Recortar, alargar, partir, longitud, desfase, empalme, chaflán, unir, recorrido por longitud (GRADUA, DIVIDE)…
 js/commands.js   Comandos y alias
-js/dxf.js        DXF 2007 (MULTILEADER, ACAD_TABLE, ARC_DIMENSION, imágenes, DIMBREAK, matrices y degradados) / 2000 (ambos con presentaciones, grupos, MLINE con cortes, IMAGE, XCLIP y estados de capa) / R12
+js/dxf.js        DXF 2007 (MULTILEADER, ACAD_TABLE, ARC_DIMENSION, imágenes, DIMBREAK, matrices y degradados de varios colores) / 2000 (ambos con presentaciones y su tabla de estilos de trazado, grupos, MLINE con cortes, IMAGE, XCLIP, XREF, tolerancias y modificaciones de cota, y estados de capa) / R12
 js/io.js         Abrir, guardar, exportar SVG/PNG (con imágenes), imprimir
 js/ui.js         Cinta, paletas, barra de estado, diálogos (incluido el de MLEDIT)
 js/app.js        Núcleo: entrada, motor de comandos, presentaciones
@@ -175,7 +194,7 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 - La asociatividad de cotas y sombreados no se exporta a DXF: AutoCAD los abre como cotas y sombreados normales (las cotas sí como entidades DIMENSION editables). Una cota asociada a un punto de una polilínea sigue al vértice por su número; si se recorta o parte el objeto, la cota pierde la asociación.
 - En DXF 2000 las directrices se exportan como LEADER + MTEXT (ese formato no tiene MULTILEADER) y los globos como círculo y texto; en DXF 2007, como MULTILEADER. Las flechas abiertas, de trazo oblicuo y de punto se exportan como cerradas en los MULTILEADER. En DXF 2007 las tablas se exportan como ACAD_TABLE con sus estilos (sólo celdas de texto, sin formato por celda); en DXF 2000 y R12, descompuestas en líneas y MTEXT.
 - En las fracciones apiladas y los colores de MTEXT se admite el subconjunto de códigos indicado; los códigos de párrafo (tabulaciones, sangrías, columnas) se descartan al importar.
-- Las referencias externas se leen con el selector de archivos del navegador (una web no puede abrir rutas por sí sola): «Recargar» pide de nuevo el archivo salvo en la misma sesión. En DXF se exportan unidas (como bloques normales).
+- Las referencias externas se leen con el selector de archivos del navegador (una web no puede abrir rutas por sí sola). Recordar el archivo entre sesiones necesita la API de acceso al sistema de archivos (Chrome, Edge): el navegador puede volver a pedir permiso, y entonces se recarga con XREF › Recargar. En los demás navegadores se guarda una copia del archivo, que sólo se usa si la referencia llega vacía (DXF de otro programa). En DXF 2000/2007 se escriben como bloques XREF con la ruta del archivo `.tcad` o `.dxf`, que AutoCAD no puede resolver (sólo enlaza DWG): allí aparecen como referencias no encontradas. R12 las escribe unidas.
 - Las splines cerradas se escriben en DXF como splines abiertas con los vértices repetidos (geometría idéntica). Al recortar o alargar una spline por vértices de control se convierte en una spline sin puntos de ajuste.
 - Los atributos de una referencia no se pueden desplazar por separado: siguen la posición definida en el bloque. Al descomponer la referencia se convierten en textos con su valor.
 - La exportación R12 sigue siendo sólo del espacio modelo y escribe las cotas, directrices y tablas descompuestas. En la importación, las referencias con escala no uniforme se descomponen.
@@ -193,12 +212,16 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 - DIMARC y DIMJOGGED se exportan descompuestas en DXF 2000 y R12; DIMARC no tiene directriz y el símbolo de arco va siempre encima del texto.
 - Las marcas y líneas de centro se exportan a DXF como líneas y arcos sueltos, sin asociatividad; los cortes de DIMBREAK se escriben en DXF 2000 y 2007 como datos extendidos propios, que AutoCAD ignora.
 - XCLIP no tiene planos de recorte delantero y trasero. La delimitación invertida o desactivada se guarda en el DXF como datos extendidos propios; R12 no conserva la delimitación, ni tampoco las referencias a bloques dinámicos en DXF. CONTORNO, como SOMBREADO, busca el contorno entre los objetos visibles en pantalla.
-- Las imágenes raster se incrustan en el `.tcad` y se escriben en DXF 2007 y 2000 como IMAGE + IMAGEDEF, con la fuente y el recorte en datos extendidos propios: TrazoCAD las recupera completas al importar, pero AutoCAD necesita el archivo original en la ruta indicada y las abre sin recorte ni transparencia. R12 no admite imágenes. WIPEOUT se exporta como HATCH sólido y al importar vuelve como sombreado, así que el marco de las coberturas (WIPEOUTFRAME) no viaja en el DXF.
+- Las imágenes raster se incrustan en el `.tcad` y se escriben en DXF 2007 y 2000 como IMAGE + IMAGEDEF, con la fuente y el recorte en datos extendidos propios: TrazoCAD las recupera completas al importar, pero AutoCAD necesita el archivo original en la ruta indicada y las abre sin recorte ni transparencia. De un recorte con varios contornos, AutoCAD sólo usa el primero. La resolución se lee de PNG, JPEG y BMP (no de GIF ni WebP, que no la guardan). R12 no admite imágenes. WIPEOUT se exporta como HATCH sólido y al importar vuelve como sombreado, así que el marco de las coberturas (WIPEOUTFRAME) no viaja en el DXF.
 - Una nube de revisión convertida en polilínea con `REVCLOUDEDIT` vuelve a reconocerse como nube al exportar e importar DXF, porque el formato sólo guarda sus arcos (curvaturas).
+- Las tolerancias se dibujan siempre centradas en vertical respecto al texto (DIMTOLJ = 1) y no hay unidades alternativas ni supresión de ceros. DIMOVERRIDE admite las variables de la lista que muestra la orden; las demás variables de cota de AutoCAD se ignoran al importar.
+- Quitar islas de un sombreado asociativo designado por objetos (no por punto interior) le quita la asociatividad. En DXF el estilo de islas se escribe en el código 75; las islas quitadas a mano, como contornos ya resueltos.
+- Las tablas de estilos de trazado aplican color, escala de grises, intensidad, grosor y tipo de línea; no el relleno, los finales ni las uniones de línea, ni la separación de pluma. Los estilos con nombre de capas y objetos y la escala de tipo de línea de cada ventana gráfica no se escriben en el DXF (sí la tabla de cada presentación y `PSLTSCALE`).
+- En la paleta Propiedades con varios objetos no se editan a la vez los textos de líneas múltiples ni las celdas de las tablas.
 
-## Hoja de ruta (v0.10+)
+## Hoja de ruta (v0.11+)
 
-Escala real de las imágenes (píxeles por unidad y DPI al adjuntar) y recorte poligonal con varios contornos; cotas con tolerancias y estilos aplicados por objeto; sombreados con islas designadas y degradados de varias paradas; referencias externas recordadas entre sesiones y escritas como XREF; impresión con tablas de estilos de trazado (CTB/STB) y escala de tipo de línea por ventana gráfica; y una paleta de Propiedades múltiple para editar varios objetos a la vez.
+Sistemas de coordenadas personales (SCP) con su icono, guardados por nombre y alineados con objetos o tres puntos, y vistas con nombre; ventanas en mosaico en el espacio modelo; selección rápida por propiedades (QSELECT) y filtros de selección guardados (FILTER); buscar y reemplazar texto en textos, atributos, cotas y tablas (FIND); limpieza de objetos duplicados o solapados (OVERKILL) y comprobación y reparación del dibujo (AUDIT); y herramientas de capas: aislar y desaislar, recorrer (LAYWALK), fusionar capas y filtros de capa por propiedades y por grupos.
 
 ## Hacia la v1.0: CAD + SIG para ingeniería vial
 
@@ -216,8 +239,8 @@ El objetivo final es un programa con las capacidades de AutoCAD, orientado a la 
 
 | Versión | Bloque | Contenido |
 |---|---|---|
-| **v0.10** | CAD | Lo indicado arriba |
-| **v0.11** | CAD | SCP (UCS) y vistas guardadas, ventanas en el espacio modelo, QSELECT, FILTER, FIND, OVERKILL, AUDIT, herramientas de capas (aislar, recorrer, fusionar, filtros) |
+| **v0.10** | CAD | Terminada: imágenes a escala real y con varios contornos, tolerancias y DIMOVERRIDE, islas y degradados de varios colores, XREF recordadas y en DXF, tablas CTB/STB, LTSCALE por ventana y Propiedades de varios objetos |
+| **v0.11** | CAD | Lo indicado arriba: SCP (UCS) y vistas guardadas, ventanas en el espacio modelo, QSELECT, FILTER, FIND, OVERKILL, AUDIT, herramientas de capas (aislar, recorrer, fusionar, filtros) |
 | **v0.12** | CAD | Escalas anotativas, guiones `.scr` y una API en JavaScript para automatizar, paletas de herramientas y **bibliotecas de bloques** (señalización, planos tipo de alcantarillas, defensas, cordones) |
 | **v0.13** | Base | Cota Z en los objetos, polilíneas y caras 3D, **coordenadas grandes** sin pérdida de precisión (origen local de dibujo) y rendimiento con más de 100 000 objetos (índice espacial, dibujo por teselas) |
 | **v0.14** | SIG 1 | Motor de proyecciones y datums, georreferenciación del dibujo (sistema de coordenadas, punto de referencia, norte), coordenadas geográficas en la barra de estado, **mapa base** sobre el dibujo (teselas XYZ, WMS y WMTS configurables, con OpenStreetMap por defecto y caché sin conexión) y posición GPS del dispositivo |

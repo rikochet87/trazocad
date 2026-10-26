@@ -1,6 +1,6 @@
 // Tipos de entidad: geometría, referencias, pinzamientos, transformaciones y propiedades.
 import * as G from './geom.js';
-import { PATTERNS, famsOf, famLines, gradientSpec, GRADIENTS, GRAD_DEFAULT, USER_DEFAULT } from './patterns.js';
+import { PATTERNS, famsOf, famLines, gradientSpec, GRADIENTS, GRAD_DEFAULT, USER_DEFAULT, stopsText, parseStops } from './patterns.js';
 import { splinePts, rebuild as rebuildSpline } from './spline.js';
 import { parseRich, baseFmt, richPlain } from './richtext.js';
 import { mlineGeom, mlinePrims, mlStyleOf, ML_JUST, reverseCuts } from './mline.js';
@@ -182,8 +182,22 @@ export function drawText(c, R, t) {
 }
 
 // ---------- Cotas ----------
-export const DEFAULT_DIMSTYLE = { name: 'ISO-25', txt: 2.5, asz: 2.5, exo: 0.625, exe: 1.25, gap: 0.625, dec: 2, adec: 0, dli: 3.75, scale: 1, arrow: 'closed', textStyle: 'Standard', suffix: '' };
-const dimStyleOf = e => (D()?.dimStyle ? D().dimStyle(e.style) : DEFAULT_DIMSTYLE);
+export const DEFAULT_DIMSTYLE = { name: 'ISO-25', txt: 2.5, asz: 2.5, exo: 0.625, exe: 1.25, gap: 0.625, dec: 2, adec: 0, dli: 3.75, scale: 1, arrow: 'closed', textStyle: 'Standard', suffix: '',
+  tol: 'none', tp: 0, tm: 0, tdec: 2, tfac: 1 };
+// Estilo efectivo de una cota: su estilo con las modificaciones propias (e.ov, como las de DIMOVERRIDE en AutoCAD)
+export const dimStyleOf = e => ({ ...DEFAULT_DIMSTYLE, ...(D()?.dimStyle ? D().dimStyle(e.style) : null), ...e.ov });
+// Tolerancias: simétrica (±), desviación (+sup / −inf apiladas), límites (máximo sobre mínimo) y básica (texto enmarcado)
+export const TOL_MODES = { none: 'Ninguna', sym: 'Simétrica', dev: 'Desviación', lim: 'Límites', basic: 'Básica' };
+// Variables de cota de AutoCAD → [propiedad del estilo, tipo, código DXF]. DIMTOL y DIMLIM se traducen a `tol`
+export const DIM_VARS = {
+  DIMTXT: ['txt', 'num', 140], DIMASZ: ['asz', 'num', 41], DIMEXO: ['exo', 'num', 42], DIMEXE: ['exe', 'num', 44], DIMGAP: ['gap', 'num', 147],
+  DIMDEC: ['dec', 'int', 271], DIMADEC: ['adec', 'int', 179], DIMDLI: ['dli', 'num', 43], DIMSCALE: ['scale', 'num', 40], DIMPOST: ['suffix', 'str', 3],
+  DIMTP: ['tp', 'num', 47], DIMTM: ['tm', 'num', 48], DIMTDEC: ['tdec', 'int', 272], DIMTFAC: ['tfac', 'num', 146],
+  DIMTOL: ['tol', 'flag', 71], DIMLIM: ['tol', 'flag', 72],
+};
+// Valor de DIMTOL/DIMLIM para un modo de tolerancia, y modo a partir de esas variables
+export const tolFlags = (mode, tp, tm) => ({ tol: mode === 'sym' || mode === 'dev' ? 1 : 0, lim: mode === 'lim' ? 1 : 0, tp, tm: mode === 'sym' ? tp : tm });
+export const tolMode = (dimtol, dimlim, tp, tm, gap) => (dimlim ? 'lim' : dimtol ? (Math.abs((tp || 0) - (tm || 0)) < 1e-12 ? 'sym' : 'dev') : gap < 0 ? 'basic' : 'none');
 
 // Punta de flecha en tip, apuntando hacia fuera de dirIn (vector unitario hacia el interior de la línea)
 export function arrowHead(kind, tip, dirIn, asz, lines, arrows, dots) {
@@ -339,9 +353,45 @@ function dimPartsBase(e) {
   return { lines, arrows, dots, arcs, val, d1, d2, text: { p: G.add(G.mid(d1, d2), G.mul(up, gap)), rot: ta, h, str, align: 'c', style: ds.textStyle } };
 }
 
+// Textos de tolerancia (d.tols) y marco de las cotas básicas, a partir del texto principal ya situado
+function dimTolerance(e, d, ds) {
+  const mode = ds.tol || 'none', t = d.text;
+  d.tols = [];
+  if (mode === 'none' || !t) return;
+  const ang = e.kind === 'ang', dec = ds.tdec ?? ds.dec, f = v => fmt(v, dec) + (ang ? '°' : ds.suffix || '');
+  const tp = +ds.tp || 0, tm = mode === 'sym' ? tp : +ds.tm || 0, th = t.h * (ds.tfac || 1);
+  const u = P(Math.cos(t.rot || 0), Math.sin(t.rot || 0)), up = G.perp(u);
+  if (mode === 'sym') { t.str += ` ±${f(tp)}`; return; }
+  if (mode === 'basic') {
+    const b = textBox(t), m = Math.abs(ds.gap * (ds.scale || 1)) / 2;
+    const q = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy], i) => G.add(b[i], G.add(G.mul(u, sx * m), G.mul(up, sy * m))));
+    for (let i = 0; i < 4; i++) d.lines.push([q[i], q[(i + 1) % 4]]);
+    return;
+  }
+  const mid = G.add(t.p, G.mul(up, 0.425 * t.h)); // centro vertical del texto principal
+  if (mode === 'lim') {
+    const pre = { rad: 'R', jog: 'R', dia: 'Ø' }[e.kind] || '', base = d.val;
+    const hi = pre + f(base + tp), lo = pre + f(base - tm);
+    d.tols.push({ ...t, h: th, str: lo, p: G.add(mid, G.mul(up, -1.05 * th)) });
+    Object.assign(t, { h: th, str: e.text ? fieldText(e.text).replace('<>', hi) : hi, p: G.add(mid, G.mul(up, 0.3 * th)) });
+    return;
+  }
+  // Desviación: el texto principal se desplaza para dejar sitio a las dos desviaciones, alineadas a su derecha
+  const hiS = (tp >= 0 ? '+' : '−') + f(Math.abs(tp)), loS = tm === 0 ? f(0) : (tm > 0 ? '−' : '+') + f(Math.abs(tm));
+  const gx = 0.4 * th, wt = Math.max(textWidth(hiS, th, t.style), textWidth(loS, th, t.style)) + gx;
+  const shift = t.align === 'c' ? -wt / 2 : t.align === 'r' ? -wt : 0;
+  t.p = G.add(t.p, G.mul(u, shift));
+  const b = textBox(t), right = G.add(G.mid(b[1], b[2]), G.mul(u, gx));
+  const ms = G.add(mid, G.mul(u, shift)), at = dy => G.add(G.add(ms, G.mul(u, G.dot(G.sub(right, ms), u))), G.mul(up, dy));
+  d.tols.push({ ...t, h: th, align: 'l', str: hiS, p: at(0.1 * th) }, { ...t, h: th, align: 'l', str: loS, p: at(-0.95 * th) });
+}
+// Todos los textos de la cota: el principal y los de tolerancia
+export const dimTexts = d => [d.text, ...(d.tols || [])];
+
 // Cortes de cota (DIMBREAK): e.breaks = [{p, len}] son huecos centrados en los puntos de cruce con otros objetos
 export function dimParts(e) {
   const d = dimPartsBase(e);
+  dimTolerance(e, d, dimStyleOf(e));
   if (!e.breaks?.length) return d;
   const out = [];
   for (const [a, b] of d.lines) {
@@ -1030,11 +1080,11 @@ export const DIM_KINDS = { lin: 'Lineal', ali: 'Alineada', rad: 'Radio', dia: 'D
 TYPES.dim = {
   name: 'Cota',
   prims: e => dimSegs(dimParts(e)),
-  selPrims: e => { const d = dimParts(e); return [...dimSegs(d), ...closedSegs(textBox(d.text))]; },
-  bbox: e => { const d = dimParts(e); return d.arcs.reduce((b, [c, r, a1, a2]) => bbUnion(b, arcBB(c, r, a1, a2)), bbPts([...d.lines.flat(), ...d.arrows.flat(), ...textBox(d.text)])); },
+  selPrims: e => { const d = dimParts(e); return [...dimSegs(d), ...dimTexts(d).flatMap(t => closedSegs(textBox(t)))]; },
+  bbox: e => { const d = dimParts(e); return d.arcs.reduce((b, [c, r, a1, a2]) => bbUnion(b, arcBB(c, r, a1, a2)), bbPts([...d.lines.flat(), ...d.arrows.flat(), ...dimTexts(d).flatMap(textBox)])); },
   hit(e, p) {
     const d = dimParts(e);
-    if (G.pointInPoly(p, textBox(d.text))) return 0;
+    if (dimTexts(d).some(t => G.pointInPoly(p, textBox(t)))) return 0;
     return Math.min(...dimSegs(d).map(q => G.dist(p, G.nearPrim(p, q))));
   },
   snaps: e => { const d = dimParts(e); return { end: d.lines.flat(), nod: e.kind === 'ord' ? [e.p1] : e.kind === 'ang' ? [e.c] : [e.p1, e.p2] }; },
@@ -1069,13 +1119,38 @@ TYPES.dim = {
     for (const [a, b, q] of d.arrows) { c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.lineTo(q.x, q.y); c.closePath(); }
     for (const [p, r] of d.dots) { c.moveTo(p.x + r, p.y); c.arc(p.x, p.y, r, 0, TAU); }
     c.fill();
-    drawText(c, R, d.text);
+    for (const t of dimTexts(d)) drawText(c, R, t);
   },
   props: [ro('Tipo', e => DIM_KINDS[e.kind] || e.kind, 'text'), ro('Medida', e => dimParts(e).val),
     { label: 'Estilo de cota', type: 'select', options: () => D().dimStyles.map(s => [s.name, s.name]), get: e => e.style || D().dimStyles[0].name, set: (e, v) => { e.style = v; } },
     { label: 'Texto (<> = medida)', type: 'text', get: e => e.text || '', set: (e, v) => { e.text = v; } },
-    { label: 'Asociativa', type: 'bool', get: e => !!e.assoc, set: (e, v) => { if (!v) delete e.assoc; } }],
+    { label: 'Asociativa', type: 'bool', get: e => !!e.assoc, set: (e, v) => { if (!v) delete e.assoc; } },
+    { sec: 'Tolerancias' },
+    sel('Tolerancia', () => Object.entries(TOL_MODES), e => dimStyleOf(e).tol, dimOv('tol')),
+    num('Desviación superior', e => dimStyleOf(e).tp, dimOv('tp')),
+    num('Desviación inferior', e => dimStyleOf(e).tm, dimOv('tm')),
+    num('Decimales de tolerancia', e => dimStyleOf(e).tdec, dimOv('tdec', v => Math.max(0, Math.min(8, Math.round(v))))),
+    num('Escala de altura', e => dimStyleOf(e).tfac, dimOv('tfac', v => (v > 0 ? v : null))),
+    { sec: 'Modificaciones de estilo' },
+    num('Altura de texto', e => dimStyleOf(e).txt, dimOv('txt', v => (v > 0 ? v : null))),
+    num('Tamaño de flecha', e => dimStyleOf(e).asz, dimOv('asz', v => (v >= 0 ? v : null))),
+    num('Decimales', e => dimStyleOf(e).dec, dimOv('dec', v => Math.max(0, Math.min(8, Math.round(v))))),
+    num('Separación del texto', e => dimStyleOf(e).gap, dimOv('gap', v => (v >= 0 ? v : null))),
+    num('Escala global', e => dimStyleOf(e).scale, dimOv('scale', v => (v > 0 ? v : null))),
+    ro('Modificaciones', e => Object.keys(e.ov || {}).length, 'int'),
+    { label: 'Quitar modificaciones', type: 'action', get: () => 'Restablecer estilo', set: e => { delete e.ov; } }],
 };
+// Modificación de una variable en una cota: si coincide con la de su estilo se quita (no hace falta guardarla)
+function dimOv(key, conv = v => v) {
+  return (e, raw) => {
+    const v = typeof DEFAULT_DIMSTYLE[key] === 'number' ? conv(+raw) : conv(raw);
+    if (v === null || v === undefined || (typeof v === 'number' && !Number.isFinite(v))) return;
+    const base = { ...DEFAULT_DIMSTYLE, ...(D()?.dimStyle ? D().dimStyle(e.style) : null) }[key];
+    const ov = { ...e.ov };
+    if (v === base) delete ov[key]; else ov[key] = v;
+    if (Object.keys(ov).length) e.ov = ov; else delete e.ov;
+  };
+}
 
 // ---------- Marcas y líneas de centro (asociativas) ----------
 TYPES.center = {
@@ -1146,10 +1221,16 @@ export const imageCorners = e => {
 };
 // Transparencia de imagen (0 = opaca, 90 = casi transparente, como IMAGEADJUST de AutoCAD)
 export const imageAlpha = e => 1 - Math.max(0, Math.min(90, +e.transparency || 0)) / 100;
-const imageClipPts = e => (e.clip?.pts?.length ? e.clip.pts : []);
+// Contornos de recorte: el principal (clip.pts) y los adicionales (clip.loops). Se combinan par-impar:
+// un contorno dentro de otro abre un hueco y los contornos separados muestran varias zonas de la imagen
+export const imageClipLoops = e => (e.clip?.pts?.length ? [e.clip.pts, ...(e.clip.loops || []).filter(l => l.length > 2)] : []);
+const imageClipPts = e => imageClipLoops(e).flat();
+const mapClip = (e, fn) => { if (e.clip?.pts) e.clip = { ...e.clip, pts: e.clip.pts.map(fn), ...(e.clip.loops ? { loops: e.clip.loops.map(l => l.map(fn)) } : {}) }; };
+// Resolución efectiva en puntos por pulgada (unitsPerInch: unidades del dibujo por pulgada, 25,4 en milímetros)
+export const imageDpi = e => (e.pxw && e.w > 0 ? e.pxw / (e.w / (D()?.settings?.unitsPerInch || 25.4)) : 0);
 TYPES.image = {
   name: 'Imagen',
-  prims: e => closedSegs(imageClipPts(e).length ? imageClipPts(e) : imageCorners(e)),
+  prims: e => (imageClipPts(e).length ? imageClipLoops(e).flatMap(l => closedSegs(l)) : closedSegs(imageCorners(e))),
   bbox: e => bbPts(imageClipPts(e).length ? imageClipPts(e) : imageCorners(e)),
   snaps: e => ({ end: imageCorners(e), mid: imageCorners(e).map((p, i, q) => G.mid(p, q[(i + 1) % 4])), ins: [e.p] }),
   grips: e => [e.p, ...imageCorners(e), ...imageClipPts(e)],
@@ -1158,28 +1239,31 @@ TYPES.image = {
     if (i <= 4) {
       const d = i === 0 ? G.sub(p, e.p) : G.sub(p, imageCorners(e)[i - 1]);
       e.p = G.add(e.p, d);
-      if (e.clip?.pts) e.clip = { ...e.clip, pts: e.clip.pts.map(q => G.add(q, d)) };
+      mapClip(e, q => G.add(q, d));
       return;
     }
-    const j = i - 5;
-    if (e.clip?.pts?.[j]) e.clip = { ...e.clip, pts: e.clip.pts.map((q, k) => (k === j ? p : q)) };
+    // Vértice j de la lista plana de contornos: se busca a qué contorno pertenece
+    let j = i - 5;
+    const k = imageClipLoops(e).findIndex(l => { if (j < l.length) return true; j -= l.length; return false; });
+    if (k < 0) return;
+    const put = l => l.map((q, m) => (m === j ? p : q));
+    if (k === 0) e.clip = { ...e.clip, pts: put(e.clip.pts) };
+    else { const extra = e.clip.loops.filter(l => l.length > 2); extra[k - 1] = put(extra[k - 1]); e.clip = { ...e.clip, loops: extra }; }
   },
   xform(e, m) {
     e.p = Mx.ap(m, e.p); e.w *= Mx.scaleOf(m); e.h *= Mx.scaleOf(m); e.rot = (e.rot || 0) + Math.atan2(m[1], m[0]);
-    if (e.clip?.pts) e.clip = { ...e.clip, pts: e.clip.pts.map(q => Mx.ap(m, q)) };
+    mapClip(e, q => Mx.ap(m, q));
   },
   draw(c, e, R, st) {
-    const clip = e.clip?.pts?.length && !e.clip.off ? e.clip : null;
+    const clip = e.clip?.pts?.length && !e.clip.off ? e.clip : null, loops = clip ? imageClipLoops(e) : [imageCorners(e)];
+    const outline = () => { c.beginPath(); for (const l of loops) TYPES.pline.path(c, { pts: l, closed: true }); c.stroke(); };
     // Resaltado: sólo el contorno (volver a pintar el ráster sobre la escena ocultaría lo que tiene detrás)
-    if (st.hl) {
-      c.beginPath(); TYPES.pline.path(c, { pts: clip ? clip.pts : imageCorners(e), closed: true }); c.stroke();
-      return;
-    }
+    if (st.hl) { outline(); return; }
     if (clip) {
       c.save(); c.beginPath();
       if (e.clip.invert) { const b = bbPts(imageCorners(e)), m = Math.max(b.x2 - b.x1, b.y2 - b.y1) + 1; c.rect(b.x1 - m, b.y1 - m, b.x2 - b.x1 + 2 * m, b.y2 - b.y1 + 2 * m); }
-      clip.pts.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y)));
-      c.closePath(); c.clip('evenodd');
+      for (const l of loops) { l.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); c.closePath(); }
+      c.clip('evenodd');
     }
     const im = imageOf(e.src), alpha = imageAlpha(e);
     c.save(); c.globalAlpha *= alpha; c.translate(e.p.x, e.p.y); c.rotate(e.rot || 0); c.scale(1, -1);
@@ -1190,15 +1274,23 @@ TYPES.image = {
     if (clip) {
       c.restore();
       const fr = ENV.doc?.settings?.xclipFrame ?? 2;
-      if (fr === 1 || (fr === 2 && ENV.onScreen) || st.hl) { c.beginPath(); TYPES.pline.path(c, { pts: clip.pts, closed: true }); c.stroke(); }
+      if (fr === 1 || (fr === 2 && ENV.onScreen)) outline();
     }
   },
   props: [ro('Archivo', e => e.name || 'Imagen', 'text'), num('Anchura', e => e.w, (e, v) => { if (v > 0) e.w = v; }),
     num('Altura', e => e.h, (e, v) => { if (v > 0) e.h = v; }),
+    // Escala en unidades del dibujo por píxel: cambia el tamaño desde el punto de inserción, con el recorte
+    num('Escala (unidades/píxel)', e => (e.pxw ? e.w / e.pxw : 1), (e, v) => {
+      if (!(v > 0) || !e.pxw) return;
+      const k = v / (e.w / e.pxw), o = e.p;
+      e.w *= k; e.h *= k;
+      mapClip(e, q => G.add(o, G.mul(G.sub(q, o), k)));
+    }),
+    ro('Resolución', e => (imageDpi(e) ? `${fmt(imageDpi(e), 1)} ppp` : '—'), 'text'),
     angp('Rotación', e => e.rot || 0, (e, v) => { e.rot = v; }),
     num('Transparencia', e => e.transparency || 0, (e, v) => { e.transparency = Math.max(0, Math.min(90, +v || 0)); }),
     ro('Píxeles', e => (e.pxw && e.pxh ? `${e.pxw} × ${e.pxh} px` : '—'), 'text'),
-    ro('Delimitada', e => (e.clip ? 'Sí' : 'No'), 'text')],
+    ro('Delimitada', e => { const n = imageClipLoops(e).length; return e.clip ? `Sí (${n} contorno${n > 1 ? 's' : ''})` : 'No'; }, 'text')],
 };
 
 // ---------- Sombreado ----------
@@ -1272,12 +1364,27 @@ TYPES.hatch = {
     ] : []),
     ...(e.pattern === 'GRADIENT' ? [
       sel('Tipo de degradado', () => Object.entries(GRADIENTS), x => x.grad?.type || 'LINEAR', (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, type: v }; }),
-      { label: 'Color 1', type: 'color', get: x => x.grad?.c1 || GRAD_DEFAULT.c1, set: (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, c1: v }; } },
-      { label: 'Color 2', type: 'color', get: x => x.grad?.c2 || GRAD_DEFAULT.c2, set: (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, c2: v }; } },
+      { label: 'Color 1', type: 'color', get: x => x.grad?.c1 || GRAD_DEFAULT.c1, set: (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, c1: v, ...(x.grad?.stops ? { stops: x.grad.stops.map((s, i) => (i ? s : [s[0], v])) } : {}) }; } },
+      { label: 'Color 2', type: 'color', get: x => x.grad?.c2 || GRAD_DEFAULT.c2, set: (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, c2: v, ...(x.grad?.stops ? { stops: x.grad.stops.map((s, i, l) => (i === l.length - 1 ? [s[0], v] : s)) } : {}) }; } },
+      // Varios colores: "0% #1e90d6, 50% #ffff00, 100% #ffffff" (con dos paradas vuelve a ser un degradado de dos colores)
+      { label: 'Paradas de color', type: 'text', get: x => stopsText({ ...GRAD_DEFAULT, ...x.grad }), set: (x, v) => {
+        const s = parseStops(v);
+        if (!s) return;
+        const g = { ...GRAD_DEFAULT, ...x.grad, c1: s[0][1], c2: s[s.length - 1][1] };
+        if (s.length > 2) g.stops = s; else delete g.stops;
+        x.grad = g;
+      } },
       { label: 'Centrado', type: 'bool', get: x => x.grad?.centered !== false, set: (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, centered: v }; } },
     ] : e.pattern === 'USER' ? [] : [num('Escala', x => x.scale || 1, (x, v) => { if (v > 0) x.scale = v; })]),
     num('Ángulo (°)', x => x.angle || 0, (x, v) => { x.angle = v; }),
     { label: 'Asociativo', type: 'bool', get: e => !!e.assoc, set: (e, v) => { if (!v) { delete e.assoc; delete e.seed; } } },
+    // Estilo de islas: en los sombreados asociativos con punto interior se vuelve a detectar el contorno
+    sel('Detección de islas', () => [['normal', 'Normal'], ['outer', 'Exterior'], ['ignore', 'Ignorar']], x => x.islands || 'normal', (x, v) => {
+      if (v === 'normal') delete x.islands; else x.islands = v;
+      const srcs = x.seed && x.assoc ? x.assoc.map(id => D()?.get(id)) : null;
+      const r = srcs && !srcs.some(s => !s) && ENV.assocLoops ? ENV.assocLoops(x, srcs) : null;
+      if (r) x.loops = [...r.loops];
+    }),
     ro('Contornos', e => e.loops.length, 'int'),
     ro('Área', e => hatchArea(e)),
   ],
@@ -1495,6 +1602,8 @@ TYPES.vport = {
     num('Centro modelo Y', e => e.cy, (e, v) => { e.cy = v; }),
     ro('Ancho', e => e.p2.x - e.p1.x), ro('Alto', e => e.p2.y - e.p1.y),
     ro('Capas inutilizadas', e => (e.frozen?.length ? e.frozen.join(', ') : '—'), 'text'),
+    // Factor de los tipos de línea en esta ventana (se multiplica por LTSCALE y, con PSLTSCALE = 1, por la inversa de la escala)
+    num('Escala de tipo de línea', e => e.ltscale || 1, (e, v) => { if (v > 0) { if (v === 1) delete e.ltscale; else e.ltscale = v; } }),
   ],
 };
 

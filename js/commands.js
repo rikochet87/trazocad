@@ -1,15 +1,16 @@
 // Comandos estilo AutoCAD. Cada comando es una función asíncrona que pide datos con el contexto `c`.
 import * as G from './geom.js';
-import { TYPES, cloneEnt, xformEnt, crosses, bboxOf, bbPts, describe, fmt, dimParts, plArea, plLength, plPieces, pieceAt, plPolygon, hatchArea, blockAttdefs, mlEff, fieldText, FIELD_PROPS, DATE_FORMATS, insertMatrix, LTYPES, primsOf, ellPts } from './entities.js';
+import { TYPES, cloneEnt, xformEnt, crosses, bboxOf, bbPts, describe, fmt, dimParts, plArea, plLength, plPieces, pieceAt, plPolygon, hatchArea, blockAttdefs, mlEff, fieldText, FIELD_PROPS, DATE_FORMATS, insertMatrix, LTYPES, primsOf, ellPts, imageClipLoops, DIM_VARS, dimStyleOf, DEFAULT_DIMSTYLE } from './entities.js';
 import { entityLoop, chainLoops, booleanLoops, nestLoops, regionArea, regionPerimeter } from './region.js';
 import { srcCenter, toLocal, itemCount, pathFit, localPath, pathable, ARRAY_KINDS, arrayInv, arrayM, invertM, itemWorld, itemMatrices, rectLevels } from './arrays.js';
 import { rectClip } from './xclip.js';
 import { mlineStyleRefs, MLEDIT_TOOLS, mlCross, mlTee, mlCorner, mlAddVertex, mlDelVertex, mlCutRange, nearestElem as mlNearestElem, sortedElems } from './mline.js';
 import { readLas, writeLas } from './layerstates.js';
-import { findBoundary, loopsOfEntity } from './hatch.js';
+import { findBoundary, loopsOfEntity, applyIslands, islandAt, ISLAND_MODES } from './hatch.js';
 import { rebuild as rebuildSpline, splinePts } from './spline.js';
 import { angBase, remapDim, updateDim, updateCenter } from './assoc.js';
-import { parseSource, defineXref, detachXref, bindXref, xrefNames, xrefRefs, cleanXrefName } from './xref.js';
+import { parseSource, defineXref, detachXref, bindXref, xrefNames, xrefRefs, cleanXrefName, rememberXref, recallXref, recalledFile, forgetXref } from './xref.js';
+import { activeStb, stbNames } from './plotstyles.js';
 import * as OPS from './ops.js';
 import { GRADIENTS, GRAD_DEFAULT, USER_DEFAULT, PATTERNS, parsePat, patText } from './patterns.js';
 import { solve, evalParams, parseExpr, nearestPointRef, lineRefAt, refGeom, consDim, constrainable, entVals, refIds, GEOM_NAMES, autoConstrain, AUTO_TYPES, AUTO_DEFAULT } from './constraints.js';
@@ -498,11 +499,67 @@ def('IMAGEATTACH', ['IMAGEN', 'ADJUNTARIMAGEN', 'IMATTACH'], 'Adjunta una imagen
   const im = new Image();
   const ok = await new Promise(res => { im.onload = () => res(true); im.onerror = () => res(false); im.src = src; });
   if (!ok) return c.print('No se puede leer la imagen.');
+  const dpi = imageFileDpi(new Uint8Array(await f.file.arrayBuffer()));
   const p = await c.getPoint('Precise punto de inserción de la imagen');
-  const sc = await c.getNumber('Escala de la imagen (1 píxel = 1 unidad)', { def: 1, min: 1e-6 });
+  const sc = await imageScale(c, dpi);
   c.add({ type: 'image', p, w: im.naturalWidth * sc, h: im.naturalHeight * sc, src, name: f.file.name, rot: 0, pxw: im.naturalWidth, pxh: im.naturalHeight });
-  c.print(`Imagen "${f.file.name}" adjuntada (${im.naturalWidth} × ${im.naturalHeight} px).`);
+  c.print(`Imagen "${f.file.name}" adjuntada (${im.naturalWidth} × ${im.naturalHeight} px, ${fmt(im.naturalWidth * sc, 4)} × ${fmt(im.naturalHeight * sc, 4)} unidades).`);
 }, { group: 'Insertar' });
+// Resolución guardada en el archivo (ppp), o 0 si no consta: PNG (pHYs), JPEG (JFIF y EXIF) y BMP
+export function imageFileDpi(b) {
+  const u32 = i => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+    for (let i = 8; i + 12 <= b.length;) {
+      const len = u32(i), type = String.fromCharCode(b[i + 4], b[i + 5], b[i + 6], b[i + 7]);
+      if (type === 'pHYs' && b[i + 16] === 1) return u32(i + 8) * 0.0254; // píxeles por metro
+      if (type === 'IDAT' || type === 'IEND') break;
+      i += 12 + len;
+    }
+    return 0;
+  }
+  if (b[0] === 0xff && b[1] === 0xd8) {
+    for (let i = 2; i + 4 < b.length && b[i] === 0xff;) {
+      const m = b[i + 1], len = (b[i + 2] << 8) | b[i + 3];
+      if (m === 0xe0 && String.fromCharCode(...b.slice(i + 4, i + 9)) === 'JFIF\0') {
+        const unit = b[i + 11], x = (b[i + 12] << 8) | b[i + 13];
+        if (unit === 1 && x > 1) return x;
+        if (unit === 2 && x > 1) return x * 2.54;
+      }
+      if (m === 0xe1 && String.fromCharCode(...b.slice(i + 4, i + 8)) === 'Exif') { const d = exifDpi(b, i + 10); if (d) return d; }
+      if (m === 0xda) break;
+      i += 2 + len;
+    }
+    return 0;
+  }
+  if (b[0] === 0x42 && b[1] === 0x4d && b.length > 42) { const ppm = (b[38] | (b[39] << 8) | (b[40] << 16) | (b[41] << 24)) >>> 0; return ppm > 0 ? ppm * 0.0254 : 0; }
+  return 0;
+}
+// XResolution (282) y ResolutionUnit (296) del IFD0 de un bloque EXIF que empieza en t
+function exifDpi(b, t) {
+  const le = b[t] === 0x49, r16 = i => (le ? b[i] | (b[i + 1] << 8) : (b[i] << 8) | b[i + 1]);
+  const r32 = i => (le ? (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) : ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3])) >>> 0;
+  const ifd = t + r32(t + 4);
+  if (ifd + 2 > b.length) return 0;
+  let x = 0, unit = 2;
+  for (let k = 0, n = r16(ifd); k < n; k++) {
+    const e = ifd + 2 + k * 12, tag = r16(e);
+    if (tag === 282) { const o = t + r32(e + 8), d = r32(o + 4); x = d ? r32(o) / d : 0; }
+    if (tag === 296) unit = r16(e + 8);
+  }
+  return x > 1 ? (unit === 3 ? x * 2.54 : x) : 0;
+}
+// Escala en unidades del dibujo por píxel. Con resolución conocida, la propuesta es el tamaño real
+// (unitsPerInch: unidades del dibujo por pulgada, 25,4 si se dibuja en milímetros)
+async function imageScale(c, dpi) {
+  const S = c.settings, upi = S.unitsPerInch || 25.4;
+  if (dpi) c.print(`Resolución del archivo: ${fmt(dpi, 1)} ppp (tamaño real con ${fmt(upi, 4)} unidades por pulgada).`);
+  const r = await c.getNumber('Indique escala de la imagen en unidades por píxel', { def: dpi ? upi / dpi : 1, min: 1e-12, options: ['Resolución', 'Píxeles por unidad'] });
+  if (r === 'Píxeles por unidad') return 1 / (await c.getNumber('Indique píxeles por unidad del dibujo', { def: 1, min: 1e-12 }));
+  if (r !== 'Resolución') return r;
+  const d = await c.getNumber('Indique resolución de la imagen en puntos por pulgada (ppp)', { def: dpi || 96, min: 1e-6 });
+  S.unitsPerInch = await c.getNumber('Indique unidades del dibujo por pulgada (25.4 en milímetros, 1 en pulgadas)', { def: upi, min: 1e-12 });
+  return S.unitsPerInch / d;
+}
 def('POINT', ['PO', 'PUNTO'], 'Crea objetos punto', async c => {
   for (;;) {
     const p = await c.getPoint('Precise un punto', { allowEnter: true });
@@ -561,18 +618,63 @@ async function hatchLoop(c, grad) {
   const G0 = () => ({ ...GRAD_DEFAULT, ...S.gradient });
   for (;;) {
     const g = G0(), u = { ...USER_DEFAULT, ...S.hatchUser };
-    const info = grad ? `degradado ${GRADIENTS[g.type].toLowerCase()}, ${g.c1} → ${g.c2}, ${S.hatchAng}°`
+    const info = grad ? `degradado ${GRADIENTS[g.type].toLowerCase()}, ${g.stops?.length > 2 ? `${g.stops.length} colores` : `${g.c1} → ${g.c2}`}, ${S.hatchAng}°`
       : S.hatchPat === 'USER' ? `definido por el usuario, separación ${fmt(u.sp, 4)}${u.dbl ? ', doble' : ''}, ${S.hatchAng}°` : `${S.hatchPat}, escala ${S.hatchScale}, ${S.hatchAng}°`;
-    const opts = grad ? ['Seleccionar objetos', 'Tipo', 'Colores', 'Ángulo', 'Centrado', 'asOciativo', 'desHacer'] : ['Seleccionar objetos', 'Patrón', 'Usuario', 'Escala', 'Ángulo', 'asOciativo', 'desHacer'];
-    const r = await c.getPoint(`Designe punto interno [${info}, ${S.hatchAssoc ? 'asociativo' : 'no asociativo'}]`, { options: opts, allowEnter: true, noSnap: true });
+    const opts = [...(grad ? ['Seleccionar objetos', 'Tipo', 'Colores', 'Ángulo', 'Centrado'] : ['Seleccionar objetos', 'Patrón', 'Usuario', 'Escala', 'Ángulo']), 'asOciativo', 'Detección de islas', 'Incluir islas', 'Quitar islas', 'desHacer'];
+    const isl = ISLAND_MODES[S.hatchIslands || 'normal'].toLowerCase();
+    const r = await c.getPoint(`Designe punto interno [${info}, ${S.hatchAssoc ? 'asociativo' : 'no asociativo'}, islas: ${isl}]`, { options: opts, allowEnter: true, noSnap: true });
     if (r === null) break;
+    if (r === 'Detección de islas') {
+      const k = await c.getKeyword('Indique estilo de detección de islas', ['Normal', 'Exterior', 'Ignorar'], ISLAND_MODES[S.hatchIslands || 'normal']);
+      S.hatchIslands = Object.keys(ISLAND_MODES).find(x => ISLAND_MODES[x] === k) || 'normal';
+      continue;
+    }
+    if (r === 'Incluir islas' || r === 'Quitar islas') {
+      const h = made.length ? c.doc.get(made[made.length - 1]) : null;
+      if (!h) { c.print('Cree primero un sombreado: las islas se añaden o quitan del último creado.'); continue; }
+      if (r === 'Incluir islas') {
+        const picked = (await c.getSelection('Designe objetos cerrados que serán islas', { noPickfirst: true })).filter(id => id !== h.id && loopsOfEntity(c.doc.get(id)));
+        const ids = picked.filter(id => !h.assoc?.includes(id)); // los que ya forman parte del contorno no se repiten
+        const add = ids.flatMap(id => loopsOfEntity(c.doc.get(id)));
+        if (!add.length) { c.print(picked.length ? 'Los objetos designados ya forman parte del contorno del sombreado.' : 'Los objetos designados no son contornos cerrados.'); continue; }
+        c.doc.modify(h.id, x => { x.loops = [...x.loops, ...add]; if (x.assoc) x.assoc = [...new Set([...x.assoc, ...ids])]; });
+        c.print(`${add.length} isla(s) añadida(s) al sombreado.`);
+      } else {
+        for (;;) {
+          const p = await c.getPoint('Designe un punto dentro de la isla que desea quitar', { allowEnter: true, noSnap: true });
+          if (!p) break;
+          const cur = c.doc.get(h.id), i = islandAt(cur.loops, p);
+          if (i < 0) { c.print('El punto no está dentro de ninguna isla del sombreado.'); continue; }
+          c.doc.modify(h.id, x => {
+            x.loops = applyIslands(x.loops, 'normal', [p]);
+            if (x.seed) x.rmIsl = [...(x.rmIsl || []), p]; // se recuerda para cuando cambie el contorno
+            else delete x.assoc; // asociativo por objetos: la isla quitada ya no se podría reconstruir
+          });
+          c.print('Isla quitada.');
+        }
+      }
+      continue;
+    }
     if (r === 'Tipo') {
       const names = Object.values(GRADIENTS), k = await c.getString(`Tipo de degradado (${names.join(', ')})`, { spaces: true, def: GRADIENTS[g.type] });
       const t = Object.keys(GRADIENTS).find(x => GRADIENTS[x].toLowerCase() === k.trim().toLowerCase());
       if (t) S.gradient = { ...g, type: t }; else c.print('Tipo no válido.');
       continue;
     }
-    if (r === 'Colores') { const a = await c.app.ui.pickColor(g.c1), b = a ? await c.app.ui.pickColor(g.c2) : null; S.gradient = { ...g, ...(a ? { c1: a } : {}), ...(b ? { c2: b } : {}) }; continue; }
+    if (r === 'Colores') { // dos colores y, si se quiere, colores intermedios en posiciones de 0 a 1
+      const a = await c.app.ui.pickColor(g.c1), b = a ? await c.app.ui.pickColor(g.c2) : null;
+      if (!a || !b) continue;
+      const mids = [];
+      while ((await c.getKeyword(`¿Añadir un color intermedio? (${mids.length + 2} colores)`, ['Sí', 'No'], 'No')) === 'Sí') {
+        const m = await c.app.ui.pickColor('#ffffff');
+        if (!m) break;
+        mids.push([await c.getNumber('Indique posición del color (0 = primer color, 1 = último)', { def: 0.5, min: 0, max: 1 }), m]);
+      }
+      const ng = { ...g, c1: a, c2: b };
+      if (mids.length) ng.stops = [[0, a], ...mids, [1, b]].sort((x, y) => x[0] - y[0]); else delete ng.stops;
+      S.gradient = ng;
+      continue;
+    }
     if (r === 'Centrado') { S.gradient = { ...g, centered: !g.centered }; c.print(S.gradient.centered ? 'Degradado centrado.' : 'Degradado desplazado.'); continue; }
     if (r === 'asOciativo') { S.hatchAssoc = !S.hatchAssoc; c.print(S.hatchAssoc ? 'Los sombreados nuevos se actualizarán al modificar su contorno.' : 'Los sombreados nuevos no serán asociativos.'); continue; }
     if (r === 'Patrón') {
@@ -601,12 +703,14 @@ async function hatchLoop(c, grad) {
       const ents = c.app.idx().query(c.app.view.rect()).filter(e => c.doc.visible(e));
       loops = findBoundary(ents, r);
       if (!loops) { c.print('No se ha encontrado un contorno cerrado válido alrededor del punto.'); continue; }
+      loops = applyIslands(loops, S.hatchIslands);
       c.print(`Contorno encontrado${loops.length > 1 ? ` con ${loops.length - 1} isla(s)` : ''}.`);
       assoc = loops.ids; seed = r;
     }
     const user = !grad && S.hatchPat === 'USER';
     const e = c.add({ type: 'hatch', loops: [...loops], pattern: grad ? 'GRADIENT' : S.hatchPat, scale: user ? 1 : S.hatchScale, angle: S.hatchAng, ...(grad ? { grad: G0() } : {}), ...(user ? { user: { ...USER_DEFAULT, ...S.hatchUser } } : {}) });
     if (S.hatchAssoc && assoc?.length) { e.assoc = assoc; if (seed) e.seed = seed; }
+    if (seed && S.hatchIslands && S.hatchIslands !== 'normal') e.islands = S.hatchIslands;
     sendToBack(c, e);
     made.push(e.id);
   }
@@ -1169,6 +1273,43 @@ def('DIMREASSOCIATE', ['DRE', 'REASOCIARCOTA'], 'Asocia los puntos de las cotas 
 
 def('STYLE', ['ST', 'ESTILO'], 'Administra los estilos de texto', async c => { await c.app.ui.textStyleManager(); }, { group: 'Anotación' });
 def('DIMSTYLE', ['D', 'DST', 'ACOESTIL', 'ESTILOCOTA'], 'Administra los estilos de cota', async c => { await c.app.ui.dimStyleManager(); }, { group: 'Anotación' });
+// DIMOVERRIDE: cambia variables de cota sólo en las cotas designadas (sin tocar su estilo) o borra esas modificaciones
+def('DIMOVERRIDE', ['DOV', 'DIMOVER', 'MODIFCOTA', 'ANULARCOTA'], 'Modifica variables de cota (DIMTXT, DIMTOL, DIMTP…) sólo en las cotas designadas, o borra las modificaciones', async c => {
+  const ov = {};
+  let clear = false;
+  for (;;) {
+    const raw = (await c.getString(`Indique nombre de variable de cota que desea modificar o [Borrar modificaciones]${Object.keys(ov).length ? ' (Intro para designar cotas)' : ''}`, { def: '' })).trim().toUpperCase();
+    if (!raw) break;
+    if (/^B(ORRAR)?/.test(raw) && !DIM_VARS[raw]) { clear = true; break; }
+    const v = DIM_VARS[raw];
+    if (!v) { c.print(`Variable desconocida. Variables admitidas: ${Object.keys(DIM_VARS).join(', ')}.`); continue; }
+    const [key, type] = v;
+    if (type === 'flag') {
+      const on = (await c.getNumber(`Indique valor nuevo para ${raw} (0 desactivada, 1 activada)`, { def: 1, int: true, min: 0, max: 1 })) === 1;
+      ov[raw] = on; continue;
+    }
+    if (type === 'str') { ov[key] = (await c.getString(`Indique sufijo para ${raw} (texto tras la medida)`, { spaces: true, def: '' })).replace('<>', ''); continue; }
+    const n = await c.getNumber(`Indique valor nuevo para ${raw}`, { ...(type === 'int' ? { int: true, min: 0, max: 8 } : {}) });
+    ov[key] = n;
+  }
+  if (!clear && !Object.keys(ov).length) return;
+  const ids = (await c.getSelection('Designe cotas')).filter(id => c.doc.get(id)?.type === 'dim');
+  if (!ids.length) return c.print('No se ha designado ninguna cota.');
+  for (const id of ids) c.doc.modify(id, e => {
+    if (clear) { delete e.ov; return; }
+    const st = dimStyleOf(e), nv = { ...e.ov };
+    for (const [k, v] of Object.entries(ov)) if (k !== 'DIMTOL' && k !== 'DIMLIM') nv[k] = v;
+    if ('DIMTOL' in ov || 'DIMLIM' in ov || 'tp' in ov || 'tm' in ov) { // DIMLIM manda sobre DIMTOL; con DIMTP = DIMTM la tolerancia es simétrica
+      const cur = st.tol, lim = ov.DIMLIM ?? cur === 'lim', tol = ov.DIMTOL ?? (cur === 'sym' || cur === 'dev');
+      const tp = nv.tp ?? st.tp, tm = nv.tm ?? st.tm;
+      nv.tol = lim ? 'lim' : tol ? (Math.abs(tp - tm) < 1e-12 ? 'sym' : 'dev') : cur === 'basic' ? 'basic' : 'none';
+    }
+    const base = { ...DEFAULT_DIMSTYLE, ...c.doc.dimStyle(e.style) };
+    for (const k of Object.keys(nv)) if (nv[k] === base[k]) delete nv[k];
+    if (Object.keys(nv).length) e.ov = nv; else delete e.ov;
+  });
+  c.print(clear ? `Modificaciones borradas en ${ids.length} cota(s).` : `${ids.length} cota(s) modificada(s): ${Object.keys(ov).join(', ')}.`);
+}, { group: 'Anotación', sel: true });
 
 // ---- DIMBREAK: cortes en las cotas donde las cruzan otros objetos ----
 def('DIMBREAK', ['DBR', 'CORTARCOTA', 'ROMPERCOTA'], 'Rompe la línea de cota (y sus líneas de referencia) donde la cruzan otros objetos', async c => {
@@ -1283,16 +1424,22 @@ async function placeInsert(c, name) {
 }
 
 // ---- Referencias externas ----
+// Archivo de una referencia: el manejador de esta sesión, el recordado de otras (IndexedDB) o, si no, el selector
 async function readXrefFile(c, name, hint) {
   const app = c.app, h = app.xrefHandles?.[name];
   let picked = null;
   if (h) { try { picked = { file: await h.getFile(), handle: h }; } catch { picked = null; } }
+  if (!picked && hint) {
+    const src = await recallXref(hint), f = await recalledFile(src, true);
+    if (f && !(src instanceof Blob)) picked = { file: f, handle: src };
+  }
   if (!picked) {
     if (hint) c.print(`Seleccione el archivo de la referencia "${name}" (${hint}).`);
     picked = await app.io.pickFile('Dibujos de referencia');
   }
   if (!picked) return null;
   (app.xrefHandles ||= {})[name] = picked.handle;
+  await rememberXref(picked.file.name, picked.handle || picked.file);
   return { src: parseSource(await app.io.readText(picked.file), picked.file.name), file: picked.file.name };
 }
 def('XATTACH', ['XA', 'ENLAZARX', 'REFXENLAZAR'], 'Enlaza otro dibujo (.tcad o .dxf) como referencia externa', async c => {
@@ -1308,6 +1455,7 @@ def('XATTACH', ['XA', 'ENLAZARX', 'REFXENLAZAR'], 'Enlaza otro dibujo (.tcad o .
     try { src = parseSource(await c.app.io.readText(picked.file), picked.file.name); } catch (err) { return c.print(`No se puede leer la referencia: ${err.message}`); }
     const n = defineXref(doc, name, src, picked.file.name);
     (c.app.xrefHandles ||= {})[name] = picked.handle;
+    await rememberXref(picked.file.name, picked.handle || picked.file); // para recargarla al abrir el dibujo otro día
     c.print(`Referencia externa "${name}" enlazada: ${n} objeto(s) de ${picked.file.name}.`);
   }
   await placeInsert(c, name);
@@ -1326,8 +1474,9 @@ def('XREF', ['XR', 'REFEXTERNAS', 'REFX'], 'Administra las referencias externas:
       if (!got) continue;
       try { defineXref(doc, name, got.src, got.file); c.print(`Referencia "${name}" recargada desde ${got.file}.`); } catch (err) { c.print(`No se puede recargar: ${err.message}`); }
     } else if (action === 'detach') {
-      const n = xrefRefs(doc, name);
+      const n = xrefRefs(doc, name), file = doc.blocks[name].xref.file;
       detachXref(doc, name);
+      if (!xrefNames(doc).some(x => doc.blocks[x].xref.file === file)) await forgetXref(file);
       c.print(`Referencia "${name}" desenlazada (${n} inserción(es) eliminada(s)).`);
     } else if (action === 'bind') {
       bindXref(doc, name);
@@ -1344,23 +1493,34 @@ def('XCLIP', ['XC', 'DELIMITARX', 'DELIMITAR', 'CLIPX'], 'Delimita referencias a
   const ins = (await c.getSelection()).map(id => c.doc.get(id)).filter(e => (e?.type === 'insert' && c.doc.blocks[e.name]) || e?.type === 'image');
   if (!ins.length) return c.print('No se ha designado ninguna referencia a bloque o imagen.');
   c.print(`${ins.length} referencia(s) designada(s).`);
-  const k = await c.getKeyword('Indique opción de delimitación', ['ACtivar', 'DEsactivar', 'Suprimir', 'generar Polilínea', 'Nuevo contorno'], 'Nuevo contorno');
-  const clipped = ins.filter(e => e.clip);
+  const clipped = ins.filter(e => e.clip), imgs = clipped.filter(e => e.type === 'image');
+  const k = await c.getKeyword('Indique opción de delimitación', ['ACtivar', 'DEsactivar', 'Suprimir', 'generar Polilínea', 'Nuevo contorno', ...(imgs.length ? ['Añadir contorno'] : [])], 'Nuevo contorno');
+  if (k === 'Añadir contorno') { // imágenes: contornos adicionales (huecos o zonas visibles separadas, par-impar)
+    const { poly } = await clipPoly(c, false);
+    for (const e of imgs) c.doc.modify(e.id, x => { x.clip = { ...x.clip, loops: [...(x.clip.loops || []), poly] }; });
+    return c.print(`Contorno añadido a ${imgs.length} imagen(es): ${imageClipLoops(c.doc.get(imgs[0].id)).length} contornos.`);
+  }
   if (k === 'ACtivar' || k === 'DEsactivar') { for (const e of clipped) c.doc.modify(e.id, x => { x.clip = { ...x.clip, off: k === 'DEsactivar' }; }); return c.print(`${clipped.length} delimitación(es) ${k === 'ACtivar' ? 'activada(s)' : 'desactivada(s)'}.`); }
   if (k === 'Suprimir') { for (const e of clipped) c.doc.modify(e.id, x => { delete x.clip; }); return c.print(`${clipped.length} delimitación(es) suprimida(s).`); }
   if (k === 'generar Polilínea') {
+    let n = 0;
     for (const e of clipped) {
-      const pts = e.type === 'image' ? e.clip.pts : e.clip.pts.map(q => Mx.ap(insertMatrix(e, c.doc.blocks[e.name]), q));
-      c.add({ type: 'pline', pts, closed: true });
+      for (const l of e.type === 'image' ? imageClipLoops(e) : [e.clip.pts.map(q => Mx.ap(insertMatrix(e, c.doc.blocks[e.name]), q))]) { c.add({ type: 'pline', pts: l, closed: true }); n++; }
     }
-    return c.print(`${clipped.length} polilínea(s) creada(s) con el contorno de delimitación.`);
+    return c.print(`${n} polilínea(s) creada(s) con el contorno de delimitación.`);
   }
   let targets = ins;
   if (clipped.length && (await c.getKeyword('¿Desea suprimir el contorno anterior?', ['Sí', 'No'], 'Sí')) === 'No') targets = ins.filter(e => !e.clip);
   if (!targets.length) return;
+  const { poly, invert } = await clipPoly(c, true);
+  for (const e of targets) c.doc.modify(e.id, x => { x.clip = { pts: x.type === 'image' ? poly : toBlockCoords(c, x, poly), ...(invert ? { invert: true } : {}) }; });
+  c.print(`${targets.length} referencia(s) delimitada(s)${invert ? ' (delimitación invertida)' : ''}.`);
+}, { group: 'Bloques', sel: true });
+// Contorno de delimitación en coordenadas del dibujo: rectangular, poligonal o de una polilínea cerrada
+async function clipPoly(c, canInvert) {
   let invert = false, poly = null;
   while (!poly) {
-    const m = await c.getKeyword(`Precise opción de delimitación${invert ? ' (invertida: se ocultará lo de dentro)' : ''}`, ['Seleccionar polilínea', 'Poligonal', 'Rectangular', 'Invertir delimitación'], 'Rectangular');
+    const m = await c.getKeyword(`Precise opción de delimitación${invert ? ' (invertida: se ocultará lo de dentro)' : ''}`, ['Seleccionar polilínea', 'Poligonal', 'Rectangular', ...(canInvert ? ['Invertir delimitación'] : [])], 'Rectangular');
     if (m === 'Invertir delimitación') { invert = !invert; c.print(invert ? 'Delimitación invertida: se ocultará lo que quede dentro del contorno.' : 'Delimitación normal: se ocultará lo que quede fuera del contorno.'); continue; }
     if (m === 'Rectangular') {
       const a = await c.getPoint('Precise primera esquina');
@@ -1382,9 +1542,8 @@ def('XCLIP', ['XC', 'DELIMITARX', 'DELIMITAR', 'CLIPX'], 'Delimita referencias a
       poly = plPolygon(o.e, 48);
     }
   }
-  for (const e of targets) c.doc.modify(e.id, x => { x.clip = { pts: x.type === 'image' ? poly : toBlockCoords(c, x, poly), ...(invert ? { invert: true } : {}) }; });
-  c.print(`${targets.length} referencia(s) delimitada(s)${invert ? ' (delimitación invertida)' : ''}.`);
-}, { group: 'Bloques', sel: true });
+  return { poly, invert };
+}
 def('XCLIPFRAME', ['MARCODELIMITAR', 'XCF'], 'Marco de las delimitaciones: 0 oculto, 1 visible e impreso, 2 visible sólo en pantalla', async c => {
   const v = await c.getNumber('Indique valor nuevo para XCLIPFRAME (0 oculto, 1 visible e impreso, 2 sólo en pantalla)', { def: c.settings.xclipFrame ?? 2, int: true, min: 0, max: 2 });
   c.settings.xclipFrame = v; c.doc.changed();
@@ -2283,10 +2442,44 @@ def('MVIEW', ['MV', 'VMULT', 'VENTANAS'], 'Crea una ventana gráfica en la prese
   c.print(`Ventana gráfica creada a escala ${vp.label}.`);
 }, { group: 'Presentación' });
 
-def('PAGESETUP', ['CONFIGPAG', 'PAGINA'], 'Tamaño de papel de la presentación actual', async c => {
-  if (c.app.tab === 'model') return c.print('Active una presentación para configurar la página.');
+def('PAGESETUP', ['CONFIGPAG', 'PAGINA'], 'Tamaño de papel y tabla de estilos de trazado de la presentación actual (o del modelo)', async c => {
+  if (c.app.tab === 'model') return c.app.ui.pageSetup(null);
   await c.app.ui.pageSetup(c.doc.layouts[c.app.tab]);
   c.app.zoomExtents();
+}, { group: 'Presentación' });
+def('STYLESMANAGER', ['ESTILOSTRAZADO', 'ADMINESTILOS', 'TABLASTRAZADO', 'CTB'], 'Crea, edita, importa y exporta tablas de estilos de trazado (.ctb y .stb)', async c => { await c.app.ui.plotStyleManager(); }, { group: 'Presentación', noTx: true });
+// Estilo de trazado con nombre (tablas .stb) de objetos o de una capa
+def('PLOTSTYLE', ['ESTILOTRAZADO', 'PSTYLE'], 'Asigna un estilo de trazado con nombre (tabla .stb) a objetos o a una capa', async c => {
+  const t = activeStb(c.doc, c.app.layoutShown());
+  if (!t) return c.print('Ninguna presentación usa una tabla de estilos con nombre (.stb). Elíjala en CONFIGPAG.');
+  const names = stbNames(t);
+  const k = await c.getKeyword('Asignar estilo de trazado a', ['Objetos', 'Capa'], 'Objetos');
+  const ask = async def => {
+    const v = (await c.getString(`Indique estilo de trazado (${['PorCapa', ...names].join(', ')})`, { spaces: true, def })).trim();
+    const n = /^porcapa$/i.test(v) ? 'BYLAYER' : names.find(x => x.toLowerCase() === v.toLowerCase());
+    if (!n) c.print(`El estilo "${v}" no existe en la tabla ${t.name}.`);
+    return n;
+  };
+  if (k === 'Capa') {
+    const name = (await c.getString('Indique nombre de la capa', { spaces: true, def: c.doc.cur.layer })).trim();
+    const l = c.doc.layers.find(x => x.name.toLowerCase() === name.toLowerCase());
+    if (!l) return c.print(`La capa "${name}" no existe.`);
+    const n = await ask(l.pstyle || 'Normal');
+    if (!n || n === 'BYLAYER') return;
+    if (n === 'Normal') delete l.pstyle; else l.pstyle = n;
+    c.doc.changed();
+    return c.print(`Capa "${l.name}": estilo de trazado ${n}.`);
+  }
+  const ids = await c.getSelection();
+  if (!ids.length) return;
+  const n = await ask('PorCapa');
+  if (!n) return;
+  for (const id of ids) c.doc.modify(id, e => { if (n === 'BYLAYER') delete e.pstyle; else e.pstyle = n; });
+  c.print(`${ids.length} objeto(s) con estilo de trazado ${n === 'BYLAYER' ? 'PorCapa' : n}.`);
+}, { group: 'Presentación', sel: true });
+def('PSLTSCALE', ['ESCALATLPAPEL'], 'Escala de los tipos de línea en las ventanas: 1 = igual tamaño en el papel con cualquier escala de ventana', async c => {
+  const v = await c.getNumber('Indique valor nuevo para PSLTSCALE (0 o 1)', { def: c.settings.psltscale ? 1 : 0, int: true, min: 0, max: 1 });
+  c.settings.psltscale = v; c.doc.changed();
 }, { group: 'Presentación' });
 def('MSPACE', ['MS', 'EM', 'ESPACIOM'], 'Trabaja en el modelo a través de una ventana gráfica', async c => { c.app.mspace(); }, { group: 'Presentación', noTx: true });
 def('PSPACE', ['PS', 'EP', 'ESPACIOP'], 'Vuelve al espacio papel de la presentación', async c => { c.app.pspace(); }, { group: 'Presentación', noTx: true });

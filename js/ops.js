@@ -1,6 +1,6 @@
 // Operaciones de edición geométrica: recortar, alargar, partir, longitud, desfase, empalme, chaflán, descomponer, unir, estirar.
 import * as G from './geom.js';
-import { primsOf, bboxOf, dimParts, plPieces, pieceAt, pieceParam, pieceLen, plLength, cloneEnt, inWindow, xformEnt, blockEnts, mtextGeom, mleaderGeom, tableGeom, ellPts, mlGeom, ENV } from './entities.js';
+import { primsOf, bboxOf, dimParts, plPieces, pieceAt, pieceParam, pieceLen, plLength, cloneEnt, inWindow, xformEnt, blockEnts, mtextGeom, mleaderGeom, tableGeom, ellPts, mlGeom, ENV, dimTexts } from './entities.js';
 import { mlineParts, mlStyleOf } from './mline.js';
 import { hatchSegments } from './patterns.js';
 import { splinePts, rebuild as rebuildSpline, deBoor, domain, nearestParam, tangentAt, subSpline, joinSplines, reverseSpline, lineSpline, interpolate } from './spline.js';
@@ -484,7 +484,7 @@ export function explodeEntity(e) {
       ...d.arcs.map(([c, r, a1, a2]) => ({ ...b, type: 'arc', c, r, a1, a2 })),
       ...d.arrows.map(pts => ({ ...b, type: 'hatch', pattern: 'SOLID', scale: 1, angle: 0, loops: [pts] })),
       ...d.dots.map(([c, r]) => ({ ...b, type: 'circle', c, r })),
-      { ...b, type: 'text', p: d.text.p, h: d.text.h, rot: d.text.rot, text: d.text.str, align: d.text.align, style: d.text.style },
+      ...dimTexts(d).map(t => ({ ...b, type: 'text', p: t.p, h: t.h, rot: t.rot, text: t.str, align: t.align, style: t.style })),
     ];
   }
   if (e.type === 'insert') return blockEnts(e).map(v => { const c = cloneEnt(v); delete c.id; return c; });

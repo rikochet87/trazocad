@@ -5,6 +5,61 @@ import { cloneEnt } from './entities.js';
 import { readDXF } from './dxf.js';
 
 export const isXref = (doc, name) => !!doc.blocks[name]?.xref;
+
+// ---- Archivos recordados entre sesiones (IndexedDB, clave = nombre del archivo) ----
+// Con acceso al sistema de archivos se guarda su manejador (el archivo se relee al abrir el dibujo si el navegador mantiene
+// el permiso); sin él, una copia del archivo, que basta para recuperar la referencia de un DXF exportado.
+const XDB = 'trazocad', XSTORE = 'xrefs';
+function xdb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(XDB, 1);
+    r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains(XSTORE)) r.result.createObjectStore(XSTORE); };
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+}
+async function xtx(mode, fn) {
+  const db = await xdb();
+  return new Promise((res, rej) => {
+    const t = db.transaction(XSTORE, mode), req = fn(t.objectStore(XSTORE));
+    t.oncomplete = () => { db.close(); res(req?.result); };
+    t.onerror = t.onabort = () => { db.close(); rej(t.error); };
+  });
+}
+export async function rememberXref(file, source) {
+  if (!file || !source || typeof indexedDB === 'undefined') return false;
+  try { await xtx('readwrite', st => st.put(source, file)); return true; } catch { return false; }
+}
+export async function recallXref(file) {
+  if (!file || typeof indexedDB === 'undefined') return null;
+  try { return (await xtx('readonly', st => st.get(file))) || null; } catch { return null; }
+}
+export async function forgetXref(file) { try { await xtx('readwrite', st => st.delete(file)); } catch { /* sin almacenamiento */ } }
+// Archivo de lo recordado: copia guardada o manejador (pide permiso de lectura sólo con ask, que necesita un gesto del usuario)
+export async function recalledFile(src, ask = false) {
+  if (!src) return null;
+  if (typeof Blob !== 'undefined' && src instanceof Blob) return src;
+  try {
+    if (src.queryPermission) {
+      let p = await src.queryPermission({ mode: 'read' });
+      if (p !== 'granted' && ask && src.requestPermission) p = await src.requestPermission({ mode: 'read' });
+      if (p !== 'granted') return null;
+    }
+    return await src.getFile();
+  } catch { return null; }
+}
+// Recarga las referencias del dibujo cuyos archivos se recuerdan y se pueden leer sin preguntar.
+// Las copias guardadas sólo se usan si la referencia está vacía (DXF exportado). Devuelve {loaded, missing}
+export async function restoreXrefs(doc) {
+  let loaded = 0, missing = 0;
+  for (const name of xrefNames(doc)) {
+    const b = doc.blocks[name], src = await recallXref(b.xref.file);
+    const isCopy = typeof Blob !== 'undefined' && src instanceof Blob;
+    const f = src && (!isCopy || !b.ents.length) ? await recalledFile(src) : null;
+    if (!f) { if (!b.ents.length) missing++; continue; }
+    try { defineXref(doc, name, parseSource(await f.text(), b.xref.file), b.xref.file); loaded++; } catch { missing++; }
+  }
+  return { loaded, missing };
+}
 export const xrefNames = doc => Object.keys(doc.blocks).filter(n => doc.blocks[n].xref);
 export const cleanXrefName = s => String(s).replace(/\.[^.]+$/, '').replace(/[|<>/\\":;?*=`]/g, '_').trim() || 'Referencia';
 

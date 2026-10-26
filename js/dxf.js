@@ -5,9 +5,12 @@ import { LTYPES, aciToHex, hexToAci, dimParts, ellPts, mtextGeom, mleaderGeom, i
 import { explodeEntity } from './ops.js';
 import { isDynamic } from './dynblock.js';
 import { hasCodes, richPlain } from './richtext.js';
-import { PATTERNS, famsOf, hatchSegments, GRADIENTS, GRAD_DEFAULT, baseFams } from './patterns.js';
+import { PATTERNS, famsOf, hatchSegments, GRADIENTS, GRAD_DEFAULT, baseFams, gradStops } from './patterns.js';
+// Estilo de detección de islas del sombreado ↔ código 75 del HATCH
+const ISLAND_CODE = { normal: 0, outer: 1, ignore: 2 };
+const islandsOf = gr => { const v = +(gr.d.find(x => x[0] === 75)?.[1] ?? 0); return v === 1 ? { islands: 'outer' } : v === 2 ? { islands: 'ignore' } : {}; };
 import { splinePts, interpolate, rebuild as rebuildSpline } from './spline.js';
-import { mlGeom, insertMatrix, tableGeom, DEFAULT_TBLSTYLE } from './entities.js';
+import { mlGeom, insertMatrix, tableGeom, DEFAULT_TBLSTYLE, dimTexts, dimStyleOf, DIM_VARS, tolFlags, tolMode } from './entities.js';
 import { sortedElems, justShift, DEFAULT_MLINESTYLE, cutParams } from './mline.js';
 import { arrayEnts } from './arrays.js';
 const { P } = G;
@@ -39,7 +42,12 @@ export function writeDXF(doc, version = '2000') {
   const xy = (k, p) => { g(10 + k, num(p.x)); g(20 + k, num(p.y)); g(30 + k, num(zOff)); };
 
   // Registros de bloque (2000): modelo, un espacio papel por presentación y bloques de usuario
-  const userBlocks = Object.values(doc.blocks).filter(b => !b.name.startsWith('*'));
+  // Las referencias externas se escriben como bloques XREF (sin contenido) salvo en R12, que las escribe unidas;
+  // sus bloques dependientes no se escriben (los aporta el archivo de la referencia)
+  const userBlocks = Object.values(doc.blocks).filter(b => !b.name.startsWith('*') && (R12 || !b.xrefDep));
+  const xrefPre = R12 ? [] : userBlocks.filter(b => b.xref).map(b => `${b.name}|`);
+  const blockLists = userBlocks.filter(b => R12 || !b.xref).map(b => b.ents); // listas de entidades que se escriben
+  const depName = s => (xrefPre.some(p => String(s).startsWith(p)) ? String(s) : nm(s)); // nombre dependiente de una referencia: conserva el |
   const layouts = R12 ? [] : doc.layouts;
   const brMS = H(), brPS = H(), brUser = Object.fromEntries(userBlocks.map(b => [b.name, H()]));
   const brLay = layouts.map((_, i) => (i ? H() : brPS));
@@ -58,14 +66,14 @@ export function writeDXF(doc, version = '2000') {
   const dimBlocks = new Map(); // cota → [nombre del bloque anónimo, identificador del registro]
   if (!R12) {
     let nd = 0;
-    for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if (e.type === 'dim' && (V07 || (e.kind !== 'arc' && e.kind !== 'jog'))) dimBlocks.set(e, [`*D${++nd}`, H()]);
+    for (const list of [doc.model, ...layouts.map(l => l.ents), ...blockLists]) for (const e of list) if (e.type === 'dim' && (V07 || (e.kind !== 'arc' && e.kind !== 'jog'))) dimBlocks.set(e, [`*D${++nd}`, H()]);
   }
   // Referencias a bloques dinámicos: cada una se escribe como bloque anónimo (*U1…) con su geometría según su estado
   // Las matrices asociativas se escriben igual: un bloque anónimo con todos sus elementos
   const dynIns = new Map();
   if (!R12) {
     let nu = 0;
-    for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if ((e.type === 'insert' && isDynamic(doc.blocks[e.name])) || e.type === 'array') dynIns.set(e, [`*U${++nu}`, H()]);
+    for (const list of [doc.model, ...layouts.map(l => l.ents), ...blockLists]) for (const e of list) if ((e.type === 'insert' && isDynamic(doc.blocks[e.name])) || e.type === 'array') dynIns.set(e, [`*U${++nu}`, H()]);
   }
   const anonEnts = e => (e.type === 'array' ? arrayEnts(e) : blockEnts(e));
   // Imágenes raster: una definición IMAGEDEF compartida por cada fuente; la imagen se guarda en XDATA de la definición
@@ -85,21 +93,21 @@ export function writeDXF(doc, version = '2000') {
         else if (e.type === 'array') for (const x of arrayEnts(e)) if (x.type === 'image') addImg(x);
       }
     };
-    for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) scan(list);
+    for (const list of [doc.model, ...layouts.map(l => l.ents), ...blockLists]) scan(list);
   }
   const imgDictH = !R12 && imgDefs.size ? H() : null;
   // Tablas (DXF 2007): entidad ACAD_TABLE con su bloque anónimo *T y sus estilos (TABLESTYLE)
   const tblBlocks = new Map(), tsDict = V07 ? H() : null, tsH = V07 ? Object.fromEntries(doc.tableStyles.map(st => [st.name, H()])) : {};
-  if (V07) { let nt = 0; for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if (e.type === 'table') tblBlocks.set(e, [`*T${++nt}`, H()]); }
+  if (V07) { let nt = 0; for (const list of [doc.model, ...layouts.map(l => l.ents), ...blockLists]) for (const e of list) if (e.type === 'table') tblBlocks.set(e, [`*T${++nt}`, H()]); }
   // Estilos de línea múltiple (MLINESTYLE) y delimitaciones de referencias (SPATIAL_FILTER en el diccionario de extensión)
   const mlstDict = R12 ? null : H(), mlstH = R12 ? {} : Object.fromEntries(doc.mlineStyles.map(st => [st.name, H()]));
   const lsDict = R12 || !doc.layerStates.length ? null : H(), lsH = R12 ? [] : doc.layerStates.map(() => H());
-  const clips = [], clipsPlanned = !R12 && [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)].some(list => list.some(e => e.type === 'insert' && e.clip?.pts?.length > 2));
+  const clips = [], clipsPlanned = !R12 && [doc.model, ...layouts.map(l => l.ents), ...blockLists].some(list => list.some(e => e.type === 'insert' && e.clip?.pts?.length > 2));
   // Globos (directrices con contenido de bloque) en DXF 2007: un bloque _TrazoGlobo (círculo de radio 1 y atributo NUM)
   // por cada proporción altura de texto / radio, que el MULTILEADER inserta escalado al radio del globo
   const balloonBlk = new Map();
   if (V07) {
-    for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) {
+    for (const list of [doc.model, ...layouts.map(l => l.ents), ...blockLists]) for (const e of list) {
       if (e.type !== 'mleader' || e.content !== 'block') continue;
       const gm = mleaderGeom(e);
       if (!gm.circle) continue;
@@ -192,7 +200,7 @@ export function writeDXF(doc, version = '2000') {
     }
     // DXF 2000 no tiene degradados: se escribe un relleno sólido con el color medio
     const grad = e.pattern === 'GRADIENT' && V07 ? { ...GRAD_DEFAULT, ...e.grad } : null;
-    if (e.pattern === 'GRADIENT' && !V07) { const gg = { ...GRAD_DEFAULT, ...e.grad }; e = { ...e, pattern: 'SOLID', color: mixHex(gg.c1, gg.c2) }; }
+    if (e.pattern === 'GRADIENT' && !V07) { const gs = gradStops({ ...GRAD_DEFAULT, ...e.grad }); e = { ...e, pattern: 'SOLID', color: mixHex(gs[0][1], gs[gs.length - 1][1]) }; }
     const solidFill = e.pattern === 'SOLID' || !!grad, user = e.pattern === 'USER';
     common('HATCH', e, ow, 'AcDbHatch');
     xy(0, P(0, 0)); g(210, 0); g(220, 0); g(230, 1);
@@ -202,7 +210,8 @@ export function writeDXF(doc, version = '2000') {
       for (const p of l) { g(10, num(p.x)); g(20, num(p.y)); }
       g(97, 0);
     });
-    g(75, 0); g(76, solidFill || PATTERNS[e.pattern] ? 1 : user ? 0 : 2); // predefinido, definido por el usuario o personalizado
+    g(75, ISLAND_CODE[e.islands] ?? 0); // estilo de islas: normal, exterior o ignorar
+    g(76, solidFill || PATTERNS[e.pattern] ? 1 : user ? 0 : 2); // predefinido, definido por el usuario o personalizado
     if (!solidFill) {
       g(52, num(e.angle || 0)); g(41, num(e.scale || 1)); g(77, user && e.user?.dbl ? 1 : 0);
       const fams = famsOf(e);
@@ -217,8 +226,9 @@ export function writeDXF(doc, version = '2000') {
     g(98, 0);
     if (grad) { // degradado (DXF 2004 y posteriores)
       const ink = c => { g(63, hexToAci(c)); g(421, tcolor(c)); };
-      g(450, 1); g(451, 0); g(460, num(G.rad(e.angle || 0))); g(461, grad.centered === false ? 0.25 : 0); g(452, 0); g(462, 0); g(453, 2);
-      g(463, 0); ink(grad.c1); g(463, 1); ink(grad.c2);
+      const stops = gradStops(grad);
+      g(450, 1); g(451, 0); g(460, num(G.rad(e.angle || 0))); g(461, grad.centered === false ? 0.25 : 0); g(452, 0); g(462, 0); g(453, stops.length);
+      for (const [t, c] of stops) { g(463, num(t)); ink(c); }
       g(470, GRADIENTS[grad.type] ? grad.type : 'LINEAR');
     }
   };
@@ -237,7 +247,8 @@ export function writeDXF(doc, version = '2000') {
     for (const q of cp) { g(14, num(q.x)); g(24, num(q.y)); }
     g(70, 1 | 2 | 4 | (+e.transparency > 0 ? 8 : 0)); g(280, cp.length > 4 ? 2 : 1);
     g(1001, 'TRAZOCAD'); g(1000, 'IMAGEN');
-    gLong(JSON.stringify({ transparency: +e.transparency || 0, clip: e.clip ? { pts: cp, invert: !!e.clip.invert, off: !!e.clip.off } : null }));
+    const extra = (e.clip?.loops || []).filter(l => l.length > 2).map(l => l.map(local)); // contornos adicionales (sólo TrazoCAD)
+    gLong(JSON.stringify({ transparency: +e.transparency || 0, clip: e.clip ? { pts: cp, ...(extra.length ? { loops: extra } : {}), invert: !!e.clip.invert, off: !!e.clip.off } : null }));
   };
   const insert = (e, ow) => {
     if (isDynamic(doc.blocks[e.name])) { // bloque dinámico: geometría ya evaluada
@@ -285,7 +296,28 @@ export function writeDXF(doc, version = '2000') {
     for (const [c, r, a1, a2] of d.arcs) arc(b, c, r, a1, a2, ow);
     for (const tri of d.arrows) solid(b, tri, ow);
     for (const [c, r] of d.dots) { common('CIRCLE', b, ow, 'AcDbCircle'); xy(0, c); g(40, num(r)); }
-    text(b, d.text, ow);
+    for (const t of dimTexts(d)) text(b, t, ow);
+  };
+  // Modificaciones de estilo de la cota en XDATA ACAD/DSTYLE (como DIMOVERRIDE): pares código de variable + valor
+  const dimOverrides = e => {
+    if (!e.ov || !Object.keys(e.ov).length) return;
+    const st = dimStyleOf(e), pairs = [];
+    for (const [key, type, code] of Object.values(DIM_VARS)) {
+      if (!(key in e.ov) || type === 'flag') continue;
+      if (type === 'str') pairs.push([code, 1000, '<>' + (st.suffix || '')]);
+      else pairs.push([code, type === 'int' ? 1070 : 1040, key === 'gap' && st.tol === 'basic' ? -Math.abs(st.gap) : st[key]]);
+    }
+    if ('tol' in e.ov || 'tp' in e.ov || 'tm' in e.ov) {
+      const fl = tolFlags(st.tol, st.tp, st.tm);
+      pairs.push([71, 1070, fl.tol], [72, 1070, fl.lim]);
+      if (!('tp' in e.ov)) pairs.push([47, 1040, fl.tp]);
+      if (!('tm' in e.ov)) pairs.push([48, 1040, fl.tm]);
+      if (st.tol === 'basic' && !('gap' in e.ov)) pairs.push([147, 1040, -Math.abs(st.gap)]);
+    }
+    if (!pairs.length) return;
+    g(1001, 'ACAD'); g(1000, 'DSTYLE'); g(1002, '{');
+    for (const [code, tc, v] of pairs) { g(1070, code); g(tc, tc === 1000 ? v : tc === 1070 ? Math.round(v) : num(v)); }
+    g(1002, '}');
   };
   const DIM_TYPE = { lin: 0, ali: 1, dia: 3, rad: 4, ord: 6 };
   // Huecos de DIMBREAK en XDATA: punto central (1010/1020/1030) y longitud del corte (1040)
@@ -317,6 +349,7 @@ export function writeDXF(doc, version = '2000') {
         else { g(100, 'AcDb3PointAngularDimension'); xy(3, e.p1); xy(4, e.p2); xy(5, e.c); }
         break;
     }
+    dimOverrides(e);
     dimBreaks(e);
   };
   // Cotas de longitud de arco y de radio con recodo (DXF 2007): ARC_DIMENSION y LARGE_RADIAL_DIMENSION
@@ -328,6 +361,7 @@ export function writeDXF(doc, version = '2000') {
     g(42, num(d.val)); g(3, nm(doc.dimStyle(e.style).name));
     g(100, 'AcDbArcDimension'); xy(3, e.p1); xy(4, e.p2); xy(5, e.c);
     g(40, num(G.normAng(G.ang(e.c, e.p1)))); g(41, num(G.normAng(G.ang(e.c, e.p2)))); g(70, e.partial ? 1 : 0); g(71, 0); xy(6, e.p1); xy(7, e.p2);
+    dimOverrides(e);
     dimBreaks(e);
   };
   const jogDimension = (e, ow) => {
@@ -337,6 +371,7 @@ export function writeDXF(doc, version = '2000') {
     if (e.text) g(1, fieldText(e.text));
     g(42, num(d.val)); g(3, nm(doc.dimStyle(e.style).name));
     g(100, 'AcDbRadialDimensionLarge'); xy(3, e.p4); xy(4, e.p5); xy(5, G.add(e.p1, G.mul(u, d.val)));     g(40, num(Math.PI / 4));
+    dimOverrides(e);
     dimBreaks(e);
   };
   // Línea múltiple: vértices con la dirección de su tramo y el vector de inglete; cada elemento, su distancia sobre el inglete,
@@ -478,7 +513,7 @@ export function writeDXF(doc, version = '2000') {
         for (const [c, r, a1, a2] of d.arcs) arc(e, c, r, a1, a2, ow);
         for (const tri of d.arrows) solid(e, tri, ow);
         for (const [c, r] of d.dots) { common('CIRCLE', e, ow, 'AcDbCircle'); xy(0, c); g(40, num(r)); }
-        text(e, d.text, ow);
+        for (const t of dimTexts(d)) text(e, t, ow);
         break;
       }
     }
@@ -506,6 +541,7 @@ export function writeDXF(doc, version = '2000') {
   g(9, '$ACADVER'); g(1, R12 ? 'AC1009' : V07 ? 'AC1021' : 'AC1015');
   if (!R12) { g(9, '$DWGCODEPAGE'); g(3, 'ANSI_1252'); g(9, '$INSUNITS'); g(70, 4); g(9, '$MEASUREMENT'); g(70, 1); g(9, '$TILEMODE'); g(70, 1); }
   g(9, '$LTSCALE'); g(40, doc.settings.ltscale);
+  g(9, '$PSLTSCALE'); g(70, doc.settings.psltscale ? 1 : 0);
   const ib = doc.settings.insBase || P(0, 0);
   g(9, '$INSBASE'); xy(0, ib);
   if (!R12) { g(9, '$DIMSTYLE'); g(2, nm(doc.dimStyle(doc.cur.dimStyle).name)); }
@@ -563,7 +599,8 @@ export function writeDXF(doc, version = '2000') {
     for (const l of doc.layers) {
       const aci = hexToAci(l.color);
       rec('LAYER', th, 'AcDbLayerTableRecord', 5, layerH[l.name]);
-      g(2, nm(l.name)); g(70, l.lock ? 4 : 0); g(62, l.on ? aci : -aci);
+      const dep = depName(l.name) !== nm(l.name); // capa de una referencia externa: dependiente (16) y resuelta (32)
+      g(2, depName(l.name)); g(70, (l.lock ? 4 : 0) | (dep ? 48 : 0)); g(62, l.on ? aci : -aci);
       g(6, l.ltype === 'CONTINUOUS' ? 'Continuous' : l.ltype);
       if (!R12) g(370, lwCode(l.lw));
     }
@@ -589,7 +626,9 @@ export function writeDXF(doc, version = '2000') {
       if (d.suffix) g(3, '<>' + d.suffix);
       g(40, num(d.scale || 1)); g(41, num(d.asz)); g(42, num(d.exo)); g(43, num(d.dli ?? 3.75)); g(44, num(d.exe));
       if (d.arrow === 'tick') g(142, num(d.asz / 2));
-      g(73, 0); g(74, 0); g(77, 1); g(140, num(d.txt)); g(147, num(d.gap)); g(179, d.adec ?? 0); g(271, d.dec ?? 2);
+      const t = { ...DEFAULT_DIMSTYLE, ...d }, fl = tolFlags(t.tol, t.tp, t.tm);
+      g(47, num(fl.tp)); g(48, num(fl.tm)); g(71, fl.tol); g(72, fl.lim);
+      g(73, 0); g(74, 0); g(77, 1); g(140, num(d.txt)); g(146, num(t.tfac || 1)); g(147, num(t.tol === 'basic' ? -Math.abs(d.gap) : d.gap)); g(179, d.adec ?? 0); g(271, d.dec ?? 2); g(272, t.tdec ?? 2);
       if (!R12 && styleH[doc.textStyle(d.textStyle).name]) g(340, styleH[doc.textStyle(d.textStyle).name]);
     }
   }, 'AcDbDimStyleTable');
@@ -610,13 +649,14 @@ export function writeDXF(doc, version = '2000') {
 
   // ---- BLOCKS ----
   g(0, 'SECTION'); g(2, 'BLOCKS');
-  const block = (name, base, brh, body, paper = false, flags = 0) => {
+  const block = (name, base, brh, body, paper = false, flags = 0, path = '', xdata = null) => {
     g(0, 'BLOCK');
     if (!R12) { g(5, H()); g(330, brh); g(100, 'AcDbEntity'); }
     if (paper) g(67, 1);
     g(8, '0');
     if (!R12) g(100, 'AcDbBlockBegin');
-    g(2, name); g(70, flags); xy(0, base); g(3, name); g(1, '');
+    g(2, name); g(70, flags); xy(0, base); g(3, name); g(1, path);
+    if (xdata) xdata();
     body();
     g(0, 'ENDBLK');
     if (!R12) { g(5, H()); g(330, brh); g(100, 'AcDbEntity'); }
@@ -630,7 +670,17 @@ export function writeDXF(doc, version = '2000') {
     // La primera presentación va en ENTITIES; las demás, dentro de su bloque *Paper_SpaceN
     for (let i = 1; i < layouts.length; i++) block(psName(i), P(0, 0), brLay[i], () => writePaper(layouts[i], i, brLay[i]), true);
   }
-  for (const b of userBlocks) block(nm(b.name), b.base, brUser[b.name], () => { for (const e of b.ents) writeEnt(e, brUser[b.name]); });
+  // Referencia externa: bloque con el indicador 4 y la ruta del archivo (código 1). Su contenido en caché, con los bloques
+  // dependientes, va en XDATA propios para que TrazoCAD la recupere aunque no encuentre el archivo
+  const xrefCache = b => () => {
+    const deps = Object.fromEntries(Object.values(doc.blocks).filter(x => x.xrefDep === b.name).map(x => [x.name, { base: x.base, ents: x.ents }]));
+    g(1001, 'TRAZOCAD'); g(1000, 'XREF');
+    gLong(JSON.stringify({ file: b.xref.file, loaded: b.xref.loaded, ents: b.ents, deps }));
+  };
+  for (const b of userBlocks) {
+    if (b.xref && !R12) block(nm(b.name), b.base, brUser[b.name], () => {}, false, 4, b.xref.file, xrefCache(b));
+    else block(nm(b.name), b.base, brUser[b.name], () => { for (const e of b.ents) writeEnt(e, brUser[b.name]); });
+  }
   // Bloques anónimos con la geometría de cada cota (*D1, *D2…)
   for (const [e, [name, h]] of dimBlocks) block(name, P(0, 0), h, () => dimGeometry(e, h), false, 1);
   for (const [e, [name, h]] of dynIns) block(name, P(0, 0), h, () => { for (const x of anonEnts(e)) writeEnt(x, h); }, false, 1);
@@ -755,12 +805,12 @@ export function writeDXF(doc, version = '2000') {
       g(0, 'DICTIONARY'); g(5, layDict); g(330, root); g(100, 'AcDbDictionary'); g(281, 1);
       g(3, 'Model'); g(350, layModel);
       layouts.forEach((l, i) => { g(3, l.name); g(350, layH[i]); });
-      const layoutObj = (h, name, tab, br, w, hh, vp) => {
+      const layoutObj = (h, name, tab, br, w, hh, vp, pst = '') => {
         g(0, 'LAYOUT'); g(5, h); g(102, '{ACAD_REACTORS'); g(330, layDict); g(102, '}'); g(330, layDict);
         g(100, 'AcDbPlotSettings'); g(1, ''); g(2, 'none_device'); g(4, ''); g(6, '');
         g(40, 0); g(41, 0); g(42, 0); g(43, 0); g(44, num(w)); g(45, num(hh)); g(46, 0); g(47, 0);
         g(48, 0); g(49, 0); g(140, 0); g(141, 0); g(142, 1); g(143, 1);
-        g(70, 688); g(72, 1); g(73, 0); g(74, 5); g(7, ''); g(75, 16); g(76, 0); g(77, 2); g(78, 300); g(147, 1); g(148, 0); g(149, 0);
+        g(70, 688); g(72, 1); g(73, 0); g(74, 5); g(7, pst || ''); g(75, 16); g(76, 0); g(77, 2); g(78, 300); g(147, 1); g(148, 0); g(149, 0); // 7: tabla de estilos de trazado
         g(100, 'AcDbLayout'); g(1, name); g(70, 1); g(71, tab);
         g(10, 0); g(20, 0); g(11, num(w)); g(21, num(hh)); g(12, 0); g(22, 0); g(32, 0);
         g(14, 0); g(24, 0); g(34, 0); g(15, num(w)); g(25, num(hh)); g(35, 0); g(146, 0);
@@ -768,8 +818,8 @@ export function writeDXF(doc, version = '2000') {
         g(330, br);
         if (vp) g(331, vp);
       };
-      layoutObj(layModel, 'Model', 0, brMS, 297, 210, null);
-      layouts.forEach((l, i) => layoutObj(layH[i], l.name, i + 1, brLay[i], l.w, l.h, lastVp[i]));
+      layoutObj(layModel, 'Model', 0, brMS, 297, 210, null, doc.settings.modelPlotStyle);
+      layouts.forEach((l, i) => layoutObj(layH[i], l.name, i + 1, brLay[i], l.w, l.h, lastVp[i], l.plotStyle));
     }
     g(0, 'ENDSEC');
     o[seedAt + 3] = hseed.toString(16).toUpperCase();
@@ -925,6 +975,7 @@ export function readDXF(text) {
         name, color: tc ? '#' + (+tc).toString(16).padStart(6, '0') : aciToHex(Math.abs(aci) || 7),
         ltype: LTYPES[lt] ? lt : 'CONTINUOUS', lw: val(gr, 370) !== undefined ? (v => (v === 'BYLAYER' || v === 'BYBLOCK' ? 'DEFAULT' : v))(lwFrom(val(gr, 370))) : 'DEFAULT',
         on: aci >= 0 && !(flags & 1), lock: !!(flags & 4),
+        ...(flags & 16 && name.includes('|') ? { xref: name.split('|')[0] } : {}), // capa dependiente de una referencia externa
       });
     } else if (gr.type === 'STYLE') {
       const name = val(gr, 2, '');
@@ -942,7 +993,9 @@ export function readDXF(text) {
     const D = DEFAULT_DIMSTYLE, post = val(gr, 3, '') || '';
     dimStyles.push({ ...D, name, txt: numv(gr, 140, D.txt), asz: numv(gr, 41, D.asz), exo: numv(gr, 42, D.exo), dli: numv(gr, 43, D.dli), exe: numv(gr, 44, D.exe), gap: Math.abs(numv(gr, 147, D.gap)),
       dec: parseInt(val(gr, 271, String(D.dec)), 10), adec: parseInt(val(gr, 179, '0'), 10), scale: numv(gr, 40, 1) || 1,
-      arrow: numv(gr, 142, 0) > 0 ? 'tick' : 'closed', textStyle: styleByHandle.get(val(gr, 340)) || 'Standard', suffix: post.includes('<>') ? post.split('<>')[1] : '' });
+      arrow: numv(gr, 142, 0) > 0 ? 'tick' : 'closed', textStyle: styleByHandle.get(val(gr, 340)) || 'Standard', suffix: post.includes('<>') ? post.split('<>')[1] : '',
+      tol: tolMode(+val(gr, 71, '0'), +val(gr, 72, '0'), numv(gr, 47, 0), numv(gr, 48, 0), numv(gr, 147, D.gap)), tp: numv(gr, 47, 0), tm: numv(gr, 48, 0),
+      tdec: parseInt(val(gr, 272, String(D.tdec)), 10), tfac: numv(gr, 146, 1) || 1 });
   }
   const dimStyleName = n => (dimStyles.some(d => d.name === n) ? n : dimStyles[0]?.name || 'ISO-25');
 
@@ -953,7 +1006,7 @@ export function readDXF(text) {
   const rawBlocks = new Map();
   let curBlock = null;
   for (const gr of sections.BLOCKS || []) {
-    if (gr.type === 'BLOCK') { curBlock = { name: val(gr, 2, ''), base: P(numv(gr, 10), numv(gr, 20)), items: [] }; rawBlocks.set(curBlock.name, curBlock); }
+    if (gr.type === 'BLOCK') { curBlock = { name: val(gr, 2, ''), base: P(numv(gr, 10), numv(gr, 20)), items: [], flags: parseInt(val(gr, 70, '0'), 10) || 0, path: val(gr, 1, '') || '', gr }; rawBlocks.set(curBlock.name, curBlock); }
     else if (gr.type === 'ENDBLK') curBlock = null;
     else if (curBlock) curBlock.items.push(gr);
   }
@@ -1023,7 +1076,10 @@ export function readDXF(text) {
           if (val(gr, 450) === '1') { // degradado (DXF 2004+)
             const cols = gr.d.filter(x => x[0] === 421).map(x => '#' + (+x[1] & 0xffffff).toString(16).padStart(6, '0'));
             const gname = (val(gr, 470, 'LINEAR') || 'LINEAR').toUpperCase(), type = GRADIENTS[gname] ? gname : 'LINEAR';
-            push({ type: 'hatch', loops, pattern: 'GRADIENT', scale: 1, angle: G.deg(numv(gr, 460, 0)) + G.deg(Math.atan2(v.y, v.x)), grad: { type, c1: cols[0] || GRAD_DEFAULT.c1, c2: cols[1] || GRAD_DEFAULT.c2, centered: !numv(gr, 461, 0) } });
+            // Paradas: posición (463) y color (421) de cada una, tras el número de colores (453)
+            const k453 = gr.d.findIndex(x => x[0] === 453), pos = k453 < 0 ? [] : gr.d.slice(k453).filter(x => x[0] === 463).map(x => parseFloat(x[1]));
+            const stops = cols.length > 2 && pos.length === cols.length ? cols.map((c, i) => [pos[i], c]) : null;
+            push({ type: 'hatch', loops, pattern: 'GRADIENT', scale: 1, angle: G.deg(numv(gr, 460, 0)) + G.deg(Math.atan2(v.y, v.x)), grad: { type, c1: cols[0] || GRAD_DEFAULT.c1, c2: cols[cols.length - 1] || GRAD_DEFAULT.c2, centered: !numv(gr, 461, 0), ...(stops ? { stops } : {}) }, ...islandsOf(gr) });
             break;
           }
           const ang = numv(gr, 52, 0), sc = numv(gr, 41, 1) || 1, rot = G.deg(Math.atan2(v.y, v.x));
@@ -1185,6 +1241,8 @@ export function readDXF(text) {
           }
           if (!dm) { const b = rawBlocks.get(val(gr, 2, '')); if (b && depth <= 8) convert(b.items, M, depth + 1, layer, out); else skipped++; break; }
           if (text) dm.text = text;
+          const ov = dimOvFrom(gr);
+          if (ov) dm.ov = ov;
           dm.style = dimStyleName(val(gr, 3, ''));
           push(xformEnt(dm, M));
           break;
@@ -1214,8 +1272,9 @@ export function readDXF(text) {
           const e = { type: 'image', p, w, h, rot: Math.atan2(u.y, u.x), src: def.src, name: def.name, pxw, pxh };
           if (meta && 'clip' in meta && meta.clip === null) { /* sin recorte */ }
           else if (cp.length >= 3) {
-            const pts = cp.map(q => G.add(p, G.add(G.mul(u, q.x), G.mul(v, q.y))));
-            e.clip = { pts, ...(meta.clip?.invert ? { invert: true } : {}), ...(meta.clip?.off ? { off: true } : {}) };
+            const world = q => G.add(p, G.add(G.mul(u, q.x), G.mul(v, q.y))), pts = cp.map(world);
+            const loops = Array.isArray(meta.clip?.loops) ? meta.clip.loops.filter(l => Array.isArray(l) && l.length > 2).map(l => l.map(world)) : [];
+            e.clip = { pts, ...(loops.length ? { loops } : {}), ...(meta.clip?.invert ? { invert: true } : {}), ...(meta.clip?.off ? { off: true } : {}) };
           }
           if (+meta.transparency) e.transparency = Math.min(90, Math.max(0, +meta.transparency));
           push(e);
@@ -1265,6 +1324,27 @@ export function readDXF(text) {
       }
     }
   };
+  // Modificaciones de estilo (XDATA ACAD/DSTYLE) → e.ov, relativas al estilo de la cota
+  function dimOvFrom(gr) {
+    const xd = xdataOf(gr, 'ACAD');
+    const i = xd ? xd.findIndex(x => x[0] === 1000 && x[1] === 'DSTYLE') : -1;
+    if (i < 0) return null;
+    const vals = new Map();
+    for (let k = i + 1; k + 1 < xd.length; k++) if (xd[k][0] === 1070 && xd[k + 1][0] !== 1002) { vals.set(+xd[k][1], xd[k + 1][1]); k++; }
+    const st = { ...DEFAULT_DIMSTYLE, ...(dimStyles.find(d => d.name === val(gr, 3, '')) || dimStyles[0]) }, ov = {};
+    for (const [key, type, code] of Object.values(DIM_VARS)) {
+      if (!vals.has(code) || type === 'flag') continue;
+      const raw = vals.get(code);
+      const v = type === 'str' ? (String(raw).includes('<>') ? String(raw).split('<>')[1] : '') : type === 'int' ? parseInt(raw, 10) : key === 'gap' ? Math.abs(parseFloat(raw)) : parseFloat(raw);
+      if (v !== st[key]) ov[key] = v;
+    }
+    if (vals.has(71) || vals.has(72) || (vals.has(147) && parseFloat(vals.get(147)) < 0)) {
+      const tol = tolMode(+(vals.get(71) ?? (st.tol === 'sym' || st.tol === 'dev' ? 1 : 0)), +(vals.get(72) ?? (st.tol === 'lim' ? 1 : 0)),
+        vals.has(47) ? parseFloat(vals.get(47)) : st.tp, vals.has(48) ? parseFloat(vals.get(48)) : st.tm, vals.has(147) ? parseFloat(vals.get(147)) : st.gap);
+      if (tol !== st.tol) ov.tol = tol;
+    }
+    return Object.keys(ov).length ? ov : null;
+  }
   // Cota DIMENSION → entidad de cota (null si el tipo no se admite)
   function dimFrom(gr) {
     const pt = k => (val(gr, 10 + k) === undefined ? null : P(numv(gr, 10 + k), numv(gr, 20 + k)));
@@ -1281,7 +1361,8 @@ export function readDXF(text) {
         else if (c === 1040 && cur) { cur.len = parseFloat(v); breaks.push(cur); cur = null; }
       }
     }
-    const base = { type: 'dim', ...(text ? { text } : {}), ...(breaks.length ? { breaks } : {}) };
+    const ov = dimOvFrom(gr);
+    const base = { type: 'dim', ...(text ? { text } : {}), ...(breaks.length ? { breaks } : {}), ...(ov ? { ov } : {}) };
     const p10 = pt(0), p11 = pt(1), p13 = pt(3), p14 = pt(4), p15 = pt(5), p16 = pt(6);
     switch (type) {
       case 0: return p13 && p14 && p10 ? { ...base, kind: 'lin', p1: p13, p2: p14, p3: p10, rot: G.rad(numv(gr, 50, 0)) } : null;
@@ -1369,6 +1450,14 @@ export function readDXF(text) {
     if (outBlocks[name] || defining.has(name)) return;
     defining.add(name);
     const b = rawBlocks.get(name), ents = [];
+    if (b.flags & 4) { // referencia externa: contenido en caché (si lo escribió TrazoCAD) o vacía hasta recargarla
+      let meta = null;
+      try { const raw = xdataText(b.gr, 'XREF'); if (raw) meta = JSON.parse(raw); } catch { meta = null; }
+      const file = meta?.file || b.path.split(/[\\/]/).pop() || name;
+      outBlocks[name] = { name, base: b.base, ents: Array.isArray(meta?.ents) ? meta.ents : [], ver: 1, xref: { file, loaded: meta?.loaded || null, ...(b.path && b.path !== file ? { path: b.path } : {}) } };
+      for (const [dn, d] of Object.entries(meta?.deps || {})) outBlocks[dn] = { name: dn, base: d.base, ents: d.ents || [], ver: 1, xrefDep: name };
+      return;
+    }
     // Dentro de un bloque las referencias anidadas uniformes también se conservan
     const conv = list => {
       let run = [];
@@ -1508,21 +1597,23 @@ export function readDXF(text) {
   const ents = [];
   convert(modelG, G.Mx.I(), 0, null, ents, linkCtx(modelG));
 
-  // Presentaciones (objetos LAYOUT): nombre, orden, tamaño de papel y bloque *Paper_Space correspondiente
+  // Presentaciones (objetos LAYOUT): nombre, orden, tamaño de papel, tabla de estilos de trazado y bloque *Paper_Space
   const layouts = [];
+  let modelPlotStyle = '';
   for (const gr of sections.OBJECTS || []) {
     if (gr.type !== 'LAYOUT') continue;
     const k = gr.d.findIndex(x => x[0] === 100 && x[1] === 'AcDbLayout');
     if (k < 0) continue;
     const ps = { d: gr.d.slice(0, k) }, ly = { d: gr.d.slice(k) }, name = val(ly, 1, '');
     const block = brName.get(val(ly, 330));
+    if (name === 'Model' && val(ps, 7, '')) modelPlotStyle = val(ps, 7, '');
     if (!name || name === 'Model' || !block || !/^\*paper_space/i.test(block)) continue;
     let w = numv(ps, 44, 0), h = numv(ps, 45, 0);
     if (!parseInt(val(ps, 72, '1'), 10)) { w *= 25.4; h *= 25.4; }
     if (parseInt(val(ps, 73, '0'), 10) % 2) [w, h] = [h, w];
     if (!(w > 1 && h > 1)) { w = numv(ly, 11, 297) - numv(ly, 10, 0); h = numv(ly, 21, 210) - numv(ly, 20, 0); }
     if (!(w > 1 && h > 1)) { w = 297; h = 210; }
-    layouts.push({ name, block, tab: parseInt(val(ly, 71, '1'), 10), w, h });
+    layouts.push({ name, block, tab: parseInt(val(ly, 71, '1'), 10), w, h, plotStyle: val(ps, 7, '') || '' });
   }
   layouts.sort((a, b) => a.tab - b.tab);
   if (paperG.length && !layouts.some(l => l.block.toLowerCase() === '*paper_space')) layouts.unshift({ name: 'Presentación1', block: '*Paper_Space', tab: 0, w: 297, h: 210 });
@@ -1535,7 +1626,7 @@ export function readDXF(text) {
     const le = [];
     convert(src, G.Mx.I(), 0, null, le, linkCtx(src, { paper: true }));
     const paper = Object.entries(PAPERS_MM).find(([, [a, b]]) => Math.abs(Math.max(a, b) - Math.max(l.w, l.h)) < 1 && Math.abs(Math.min(a, b) - Math.min(l.w, l.h)) < 1)?.[0] || 'A4';
-    outLayouts.push({ name: l.name, paper, w: l.w, h: l.h, ents: le });
+    outLayouts.push({ name: l.name, paper, w: l.w, h: l.h, ents: le, ...(l.plotStyle ? { plotStyle: l.plotStyle } : {}) });
   }
   // Estados de capa (objetos LAYERSTATE): mismas propiedades que los archivos .las
   const layerStates = [];
@@ -1554,7 +1645,13 @@ export function readDXF(text) {
     }
     if (s.name) layerStates.push(s);
   }
-  return { layers: [...layers.values()], ents, blocks: outBlocks, textStyles, dimStyles, mleaderStyles, mlineStyles, tableStyles, layouts: outLayouts, groups: groupsOut, patterns, layerStates, insBase: headerPoint(pairs, '$INSBASE') || P(0, 0), skipped };
+  return { layers: [...layers.values()], ents, blocks: outBlocks, textStyles, dimStyles, mleaderStyles, mlineStyles, tableStyles, layouts: outLayouts, groups: groupsOut, patterns, layerStates, insBase: headerPoint(pairs, '$INSBASE') || P(0, 0),
+    psltscale: headerInt(pairs, '$PSLTSCALE'), modelPlotStyle, skipped };
+}
+// Entero de una variable de cabecera (código 9 seguido de 70), o null
+function headerInt(pairs, name) {
+  const i = pairs.findIndex(p => p[0] === 9 && p[1] === name);
+  return i < 0 || pairs[i + 1]?.[0] !== 70 ? null : parseInt(pairs[i + 1][1], 10) || 0;
 }
 
 // Punto de una variable de cabecera (código 9 seguido de 10/20)

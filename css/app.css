@@ -284,3 +284,16 @@ input.full { width: 100%; }
 .fld.wide { grid-column: 1 / -1; }
 .ml-elems { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .ml-elems input[type=number] { width: 80px; }
+
+/* Tablas de estilos de trazado (STYLESMANAGER) */
+.plot-mgr { display: flex; flex-direction: column; gap: 10px; min-width: min(760px, 86vw); }
+.plot-top { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.plot-list { min-width: 240px; flex: 1; background: var(--bg1); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
+.plot-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.plot-scroll { max-height: 42vh; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+.plot-scroll select, .plot-scroll input { height: 26px; background: var(--bg1); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
+.plot-scroll input[type=number] { width: 64px; padding: 0 4px; }
+.plot-add { display: flex; gap: 8px; }
+.aci { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.aci i { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--line); display: inline-block; }
+.prop-type { width: 100%; color: var(--fg); font: inherit; font-weight: 600; cursor: pointer; }

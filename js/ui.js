@@ -1,7 +1,7 @@
 // Interfaz: cinta de opciones, paletas (propiedades y capas), barra de estado, línea de comandos y diálogos.
 import { icon } from './icons.js';
 import { CMDS, loadPatterns } from './commands.js';
-import { TYPES, LTYPES, LWEIGHTS, COLORS, FONTS, ARROWS, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, DEFAULT_TBLSTYLE, ML_CONTENT, DATE_FORMATS, formatDate, fmt, bboxOf, bbUnion, propsOf, blockAttdefs, attVal } from './entities.js';
+import { TYPES, LTYPES, LWEIGHTS, COLORS, FONTS, ARROWS, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, DEFAULT_TBLSTYLE, ML_CONTENT, DATE_FORMATS, formatDate, fmt, bboxOf, bbUnion, propsOf, blockAttdefs, attVal, TOL_MODES, hexToAci } from './entities.js';
 import { OSNAP_MODES } from './snap.js';
 import { PATTERNS, USER_DEFAULT, patText } from './patterns.js';
 import { groupsOf, isAnonGroup } from './groups.js';
@@ -12,7 +12,8 @@ import { CAP_KEYS, samplePts, MLEDIT_TOOLS, sortedElems, mlCross, mlTee, mlCorne
 import { makeRV, setWorld, paintEntity } from './render.js';
 import * as G from './geom.js';
 import { parseRich, buildRich, baseFmt } from './richtext.js';
-import { xrefNames, xrefRefs } from './xref.js';
+import { xrefNames, xrefRefs, recallXref } from './xref.js';
+import { plotTables, BUILTIN_PLOT, OBJECT, stbNames, readPlotFile, writePlotFile, aciSample, activeStb } from './plotstyles.js';
 import { evalParams } from './constraints.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -50,7 +51,7 @@ const RIBBON = [
   ] },
   { tab: 'Anotar', groups: [
     { name: 'Texto', items: [['MTEXT', 'Líneas múltiples', 'mtext'], ['TEXT', 'Una línea', 'text'], ['FIELD', 'Campo', 'field'], ['STYLE', 'Estilo de texto', 'textstyle']] },
-    { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMORDINATE', 'Coordenada', 'dimord'], ['DIMARC', 'Long. de arco', 'dimarc'], ['DIMJOGGED', 'Recodo', 'dimjog'], ['CENTERMARK', 'Marca centro', 'centermark'], ['CENTERLINE', 'Línea centro', 'centerline'], ['DIMBREAK', 'Romper cota', 'dimbreak'], ['DIMSPACE', 'Espaciar cotas', 'dimspace'], ['DIMREASSOCIATE', 'Reasociar', 'dimassoc'], ['DIMDISASSOCIATE', 'Desasociar', 'unlink'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
+    { name: 'Cotas', items: [['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['DIMDIAMETER', 'Diámetro', 'dimdia'], ['DIMORDINATE', 'Coordenada', 'dimord'], ['DIMARC', 'Long. de arco', 'dimarc'], ['DIMJOGGED', 'Recodo', 'dimjog'], ['CENTERMARK', 'Marca centro', 'centermark'], ['CENTERLINE', 'Línea centro', 'centerline'], ['DIMBREAK', 'Romper cota', 'dimbreak'], ['DIMOVERRIDE', 'Modificar cota', 'dimovr'], ['DIMSPACE', 'Espaciar cotas', 'dimspace'], ['DIMREASSOCIATE', 'Reasociar', 'dimassoc'], ['DIMDISASSOCIATE', 'Desasociar', 'unlink'], ['DIMSTYLE', 'Estilo de cota', 'dimstyle']] },
     { name: 'Series', items: [['DIMCONTINUE', 'Continua', 'dimcont'], ['DIMBASELINE', 'Línea base', 'dimbase'], ['QDIM', 'Rápida', 'qdim']] },
     { name: 'Directrices y tablas', items: [['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table'], ['MLEADERSTYLE', 'Estilo dir.', 'mlstyle'], ['TABLESTYLE', 'Estilo tabla', 'tblstyle']] },
     { name: 'Sombreado', items: [['HATCH', 'Sombreado', 'hatch'], ['GRADIENT', 'Degradado', 'gradient'], ['PATTERNS', 'Patrones', 'patlib']] },
@@ -69,7 +70,7 @@ const RIBBON = [
   { tab: 'Presentación', groups: [
     { name: 'Presentación', items: [['!newlayout', 'Nueva', 'layout'], ['PAGESETUP', 'Configurar página', 'page'], ['!model', 'Modelo', 'model']] },
     { name: 'Ventanas gráficas', items: [['MVIEW', 'Ventana', 'vport'], ['MSPACE', 'Espacio modelo', 'mspace'], ['PSPACE', 'Espacio papel', 'page'], ['VPLAYER', 'Capas ventana', 'freeze']] },
-    { name: 'Trazar', items: [['PLOT', 'Imprimir', 'print'], ['PDFOUT', 'PDF', 'pdf'], ['SVGOUT', 'SVG', 'svg'], ['PNGOUT', 'PNG', 'png']] },
+    { name: 'Trazar', items: [['PLOT', 'Imprimir', 'print'], ['STYLESMANAGER', 'Estilos de trazado', 'plotstyle'], ['PDFOUT', 'PDF', 'pdf'], ['SVGOUT', 'SVG', 'svg'], ['PNGOUT', 'PNG', 'png']] },
   ] },
   { tab: 'Salida', groups: [
     { name: 'Archivo', items: [['NEW', 'Nuevo', 'new'], ['OPEN', 'Abrir', 'open'], ['QSAVE', 'Guardar', 'save'], ['SAVEAS', 'Guardar como', 'save']] },
@@ -195,11 +196,12 @@ export class UI {
   }
 
   // Aplica una propiedad a la selección, o la fija como actual si no hay selección
-  applyProp(key, value) {
+  // ids: objetos a los que se aplica (por defecto, toda la designación); sin designación cambia la propiedad actual
+  applyProp(key, value, ids = [...this.app.sel]) {
     const app = this.app, doc = app.doc;
     if (app.sel.size) {
       doc.begin();
-      for (const id of app.sel) doc.modify(id, e => { e[key] = value; });
+      for (const id of ids) doc.modify(id, e => { if (key === 'pstyle' && value === 'BYLAYER') delete e.pstyle; else e[key] = value; });
       doc.commit();
     } else {
       doc.cur[key] = value;
@@ -338,63 +340,83 @@ export class UI {
     const sel = [...app.sel].map(id => doc.get(id)).filter(Boolean);
     body.replaceChildren();
     const types = [...new Set(sel.map(e => e.type))];
-    const head = sel.length ? (types.length === 1 ? `${TYPES[types[0]].name} (${sel.length})` : `Todos (${sel.length})`) : 'Sin selección';
-    body.append(h('div', { class: 'prop-head' }, head));
-    const common = k => { if (!sel.length) return doc.cur[k]; const v = sel[0][k]; return sel.every(e => e[k] === v) ? v : '*'; };
-    const mkSel = (opts, val, onch) => { const s = h('select', { onchange: e => onch(e.target.value) }, ...opts); if (val === '*') s.prepend(h('option', { value: '*' }, '*Varios*')); s.value = String(val); return s; };
+    // Con tipos distintos, la lista de la cabecera elige qué objetos se editan (todos o los de un tipo), como en AutoCAD
+    if (!types.includes(this.propType)) this.propType = '';
+    const shown = this.propType ? sel.filter(e => e.type === this.propType) : sel;
+    if (types.length > 1) {
+      const pick = h('select', { class: 'prop-head prop-type', onchange: ev => { this.propType = ev.target.value; this.refresh(); } },
+        h('option', { value: '' }, `Todos (${sel.length})`), ...types.map(t => h('option', { value: t }, `${TYPES[t].name} (${sel.filter(e => e.type === t).length})`)));
+      pick.value = this.propType;
+      body.append(pick);
+    } else body.append(h('div', { class: 'prop-head' }, sel.length ? `${TYPES[types[0]].name} (${sel.length})` : 'Sin selección'));
+    const ids = shown.map(e => e.id);
+    const common = k => { if (!shown.length) return doc.cur[k]; const v = shown[0][k]; return shown.every(e => e[k] === v) ? v : '*'; };
+    const mkSel = (opts, val, onch) => { const s = h('select', { onchange: e => { if (e.target.value !== '*') onch(e.target.value); } }, ...opts); if (val === '*') s.prepend(h('option', { value: '*' }, '*Varios*')); s.value = String(val); return s; };
 
     body.append(h('div', { class: 'prop-sec' }, 'General'));
-    body.append(this.propRow('Capa', mkSel(doc.layers.map(l => h('option', { value: l.name }, l.name)), common('layer'), v => this.applyProp('layer', v))));
+    body.append(this.propRow('Capa', mkSel(doc.layers.map(l => h('option', { value: l.name }, l.name)), common('layer'), v => this.applyProp('layer', v, ids))));
     const col = common('color');
     body.append(this.propRow('Color', mkSel(this.colorOptions(col), col, async v => {
       if (v === '__custom') { v = await this.pickColor('#ffffff'); if (!v) return this.refresh(); }
-      this.applyProp('color', v);
+      this.applyProp('color', v, ids);
     })));
-    body.append(this.propRow('Tipo de línea', mkSel(this.ltypeOptions(), common('ltype'), v => this.applyProp('ltype', v))));
-    body.append(this.propRow('Grosor de línea', mkSel(this.lwOptions(), common('lw'), v => this.applyProp('lw', v === 'BYLAYER' || v === 'DEFAULT' ? v : +v))));
-    if (sel.length && doc.groups.length) { // grupos a los que pertenecen todos los objetos designados
-      const gs = groupsOf(doc, sel[0].id).filter(g => sel.every(e => g.ids.includes(e.id)));
+    body.append(this.propRow('Tipo de línea', mkSel(this.ltypeOptions(), common('ltype'), v => this.applyProp('ltype', v, ids))));
+    body.append(this.propRow('Grosor de línea', mkSel(this.lwOptions(), common('lw'), v => this.applyProp('lw', v === 'BYLAYER' || v === 'DEFAULT' ? v : +v, ids))));
+    const stb = activeStb(doc, app.layoutShown()); // estilo de trazado con nombre, si alguna presentación usa una tabla .stb
+    if (stb) {
+      const ps = shown.length ? (shown.every(e => (e.pstyle || 'BYLAYER') === (shown[0].pstyle || 'BYLAYER')) ? shown[0].pstyle || 'BYLAYER' : '*') : doc.cur.pstyle || 'BYLAYER';
+      body.append(this.propRow('Estilo de trazado', mkSel([h('option', { value: 'BYLAYER' }, 'PorCapa'), ...stbNames(stb).map(n => h('option', { value: n }, n))], ps, v => this.applyProp('pstyle', v, ids))));
+    }
+    if (shown.length && doc.groups.length) { // grupos a los que pertenecen todos los objetos designados
+      const gs = groupsOf(doc, shown[0].id).filter(g => shown.every(e => g.ids.includes(e.id)));
       if (gs.length) body.append(this.propRow('Grupo', h('span', { class: 'prop-ro', title: gs.map(g => g.desc ? `${g.name}: ${g.desc}` : g.name).join('\n') }, gs.map(g => (isAnonGroup(g.name) ? `${g.name} (sin nombre)` : g.name)).join(', '))));
     }
 
-    if (sel.length === 1) {
-      const e = sel[0];
-      body.append(h('div', { class: 'prop-sec' }, 'Geometría'));
-      for (const pr of propsOf(e)) {
+    // Geometría: de un objeto o, si todos los mostrados son del mismo tipo, de todos a la vez (*Varios* si difieren)
+    if (shown.length && shown.every(e => e.type === shown[0].type)) {
+      const one = shown.length === 1, e0 = shown[0], lists = shown.map(e => propsOf(e));
+      const find = (list, label) => list.find(q => !q.sec && q.label === label);
+      body.append(h('div', { class: 'prop-sec' }, one ? 'Geometría' : `Geometría (${shown.length} objetos)`));
+      for (const pr of lists[0]) {
         if (pr.sec) { body.append(h('div', { class: 'prop-sec' }, pr.sec)); continue; }
-        const raw = pr.get(e);
+        if (!one && (pr.type === 'mtext' || pr.type === 'table' || !lists.every(l => find(l, pr.label)))) continue;
+        const vals = shown.map((e, i) => find(lists[i], pr.label).get(e)), same = vals.every(v => JSON.stringify(v) === JSON.stringify(vals[0]));
+        const raw = vals[0], VAR = '*Varios*';
+        const set = v => (one ? this.setGeom(e0.id, pr, v) : this.setGeomAll(shown.map(e => e.id), pr.label, v));
         let input;
         if (pr.type === 'mtext') {
-          input = h('button', { class: 'btn prop-btn', title: raw, onclick: async () => { const v = await this.editMText(e, 'Editar texto de líneas múltiples'); if (v?.text) this.setGeom(e.id, pr, v); } },
+          input = h('button', { class: 'btn prop-btn', title: raw, onclick: async () => { const v = await this.editMText(e0, 'Editar texto de líneas múltiples'); if (v?.text) this.setGeom(e0.id, pr, v); } },
             (String(raw).split('\n')[0] || '…').slice(0, 28) + (String(raw).length > 28 || String(raw).includes('\n') ? '…' : ''));
         } else if (pr.type === 'action') {
-          input = h('button', { class: 'btn prop-btn', onclick: () => this.setGeom(e.id, pr, true) }, raw);
+          input = h('button', { class: 'btn prop-btn', onclick: () => set(true) }, raw);
         } else if (pr.type === 'color') {
-          input = h('input', { type: 'color', value: raw, class: 'prop-color', onchange: ev => this.setGeom(e.id, pr, ev.target.value) });
+          input = h('input', { type: 'color', value: raw, class: 'prop-color', title: same ? raw : VAR, onchange: ev => set(ev.target.value) });
         } else if (pr.type === 'table') {
-          input = h('button', { class: 'btn prop-btn', onclick: async () => { const v = await this.editTable(e); if (v) this.setGeom(e.id, { set: (x, val) => Object.assign(x, val) }, v); } }, `Editar celdas (${raw})…`);
+          input = h('button', { class: 'btn prop-btn', onclick: async () => { const v = await this.editTable(e0); if (v) this.setGeom(e0.id, { set: (x, val) => Object.assign(x, val) }, v); } }, `Editar celdas (${raw})…`);
         } else if (pr.ro) {
-          const txt = pr.type === 'num' ? fmt(raw, 4) : pr.type === 'deg' ? fmt(raw, 2) + '°' : String(raw);
+          const txt = !same ? VAR : pr.type === 'num' ? fmt(raw, 4) : pr.type === 'deg' ? fmt(raw, 2) + '°' : String(raw);
           input = h('span', { class: 'prop-ro' }, txt);
         } else if (pr.type === 'bool') {
-          input = h('input', { type: 'checkbox', checked: raw, onchange: ev => this.setGeom(e.id, pr, ev.target.checked) });
+          input = h('input', { type: 'checkbox', checked: same && raw, onchange: ev => set(ev.target.checked) });
+          if (!same) input.indeterminate = true;
         } else if (pr.type === 'select') {
-          input = h('select', { onchange: ev => this.setGeom(e.id, pr, ev.target.value) }, ...(typeof pr.options === 'function' ? pr.options(e) : pr.options).map(([v, l]) => h('option', { value: v }, l)));
-          input.value = raw;
+          input = h('select', { onchange: ev => { if (ev.target.value !== '*') set(ev.target.value); } }, ...(typeof pr.options === 'function' ? pr.options(e0) : pr.options).map(([v, l]) => h('option', { value: v }, l)));
+          if (!same) input.prepend(h('option', { value: '*' }, VAR));
+          input.value = same ? raw : '*';
         } else {
-          const shown = pr.type === 'num' ? fmt(raw, 4) : pr.type === 'ang' ? fmt(G.deg(G.normAng(raw)), 2) : raw;
-          input = h('input', { type: 'text', value: shown, onkeydown: ev => { if (ev.key === 'Enter') ev.target.blur(); if (ev.key === 'Escape') { ev.target.value = shown; ev.target.blur(); } },
+          const shownV = !same ? '' : pr.type === 'num' ? fmt(raw, 4) : pr.type === 'ang' ? fmt(G.deg(G.normAng(raw)), 2) : raw;
+          input = h('input', { type: 'text', value: shownV, placeholder: same ? '' : VAR, onkeydown: ev => { if (ev.key === 'Enter') ev.target.blur(); if (ev.key === 'Escape') { ev.target.value = shownV; ev.target.blur(); } },
             onchange: ev => {
               const s = ev.target.value;
-              if (pr.type === 'text') return this.setGeom(e.id, pr, s);
+              if (pr.type === 'text') return set(s);
               const v = parseFloat(s.replace(',', '.'));
-              if (!Number.isFinite(v)) { ev.target.value = shown; return; }
-              this.setGeom(e.id, pr, pr.type === 'ang' ? G.rad(v) : v);
+              if (!Number.isFinite(v)) { ev.target.value = shownV; return; }
+              set(pr.type === 'ang' ? G.rad(v) : v);
             } });
         }
         body.append(this.propRow(pr.label, input));
       }
-    }
+    } else if (shown.length > 1) body.append(h('p', { class: 'hint' }, 'Objetos de tipos distintos: sólo se editan las propiedades generales. Elija un tipo en la lista de arriba para editar su geometría.'));
     if (!sel.length) {
       body.append(h('div', { class: 'prop-sec' }, 'Dibujo'));
       body.append(this.propRow(doc.bedit ? 'Objetos (bloque)' : app.tab === 'model' ? 'Objetos (modelo)' : 'Objetos (papel)', h('span', { class: 'prop-ro' }, String(doc.ents.length))));
@@ -410,6 +432,14 @@ export class UI {
   setGeom(id, pr, v) {
     const doc = this.app.doc;
     doc.begin(); doc.modify(id, e => pr.set(e, v)); doc.commit();
+    this.app.renderer.invalidate(); this.refresh();
+  }
+  // Cambia la propiedad de nombre label en varios objetos a la vez (una sola operación de deshacer)
+  setGeomAll(ids, label, v) {
+    const doc = this.app.doc;
+    doc.begin();
+    for (const id of ids) doc.modify(id, e => { const pr = propsOf(e).find(q => !q.sec && q.label === label); if (pr && !pr.ro) pr.set(e, v); });
+    doc.commit();
     this.app.renderer.invalidate(); this.refresh();
   }
 
@@ -1037,15 +1067,16 @@ export class UI {
     let sel = names[0];
     const tbody = h('tbody');
     for (const n of names) {
-      const b = doc.blocks[n], d = new Date(b.xref.loaded);
+      const b = doc.blocks[n], d = new Date(b.xref.loaded), mem = h('td', {}, '…');
+      recallXref(b.xref.file).then(src => { mem.textContent = !src ? 'No' : src instanceof Blob ? 'Copia' : 'Sí'; });
       const tr = h('tr', { class: n === sel ? 'sel' : '', onclick: () => { sel = n; tbody.querySelectorAll('tr').forEach(x => x.classList.toggle('sel', x === tr)); } },
         h('td', {}, h('b', {}, n)), h('td', {}, b.xref.file), h('td', {}, String(xrefRefs(doc, n))), h('td', {}, String(b.ents.length)),
-        h('td', {}, Number.isNaN(+d) ? '—' : d.toLocaleString('es')));
+        h('td', {}, b.xref.loaded && !Number.isNaN(+d) ? d.toLocaleString('es') : 'Sin cargar'), mem);
       tbody.append(tr);
     }
     const box = h('div', {},
-      h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...['Nombre', 'Archivo', 'Inserciones', 'Objetos', 'Cargada'].map(t => h('th', {}, t)))), tbody),
-      h('p', { class: 'hint' }, 'El contenido de cada referencia se guarda en caché dentro del dibujo. «Recargar» vuelve a leer el archivo; «Unir» la convierte en un bloque normal; «Desenlazar» la elimina.'));
+      h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...['Nombre', 'Archivo', 'Inserciones', 'Objetos', 'Cargada', 'Recordada'].map(t => h('th', {}, t)))), tbody),
+      h('p', { class: 'hint' }, 'El contenido de cada referencia se guarda en caché dentro del dibujo. «Recargar» vuelve a leer el archivo; «Unir» la convierte en un bloque normal; «Desenlazar» la elimina. Los archivos «recordados» se vuelven a leer solos al abrir el dibujo en otra sesión (si el navegador conserva el permiso).'));
     const act = a => () => ({ action: a, name: sel });
     return this.modal('Referencias externas', box, [{ label: 'Cerrar', value: null }, { label: 'Enlazar…', value: act('attach') }, { label: 'Desenlazar', value: act('detach') },
       { label: 'Unir', value: act('bind') }, { label: 'Recargar', value: act('reload'), primary: true }]);
@@ -1294,6 +1325,8 @@ export class UI {
         { key: 'gap', label: 'Separación del texto' }, { key: 'exo', label: 'Desfase desde origen' },
         { key: 'exe', label: 'Prolongación línea ref.' }, { key: 'dec', label: 'Decimales' }, { key: 'adec', label: 'Decimales angulares' }, { key: 'dli', label: 'Separación línea base' },
         { key: 'scale', label: 'Escala global' }, { key: 'suffix', label: 'Sufijo (p. ej. mm)', type: 'text' },
+        { key: 'tol', label: 'Tolerancia', options: Object.entries(TOL_MODES) }, { key: 'tp', label: 'Desviación superior' },
+        { key: 'tm', label: 'Desviación inferior' }, { key: 'tdec', label: 'Decimales de tolerancia' }, { key: 'tfac', label: 'Escala de altura de tolerancia' },
       ],
       preview: s => {
         const name = '__prev__', saved = doc.dimStyles;
@@ -1310,21 +1343,117 @@ export class UI {
     });
   }
 
+  // Configurar página de una presentación (papel, orientación y estilos de trazado) o, con layout = null, del modelo
   async pageSetup(layout) {
-    const sizeSel = h('select', {}, ...Object.entries(PAPERS).map(([k, [w, hh]]) => h('option', { value: k }, `${k} (${w} × ${hh} mm)`)));
-    sizeSel.value = layout.paper in PAPERS ? layout.paper : 'A4';
-    const orient = h('select', {}, h('option', { value: 'h' }, 'Horizontal'), h('option', { value: 'v' }, 'Vertical'));
-    orient.value = layout.w >= layout.h ? 'h' : 'v';
-    const box = h('div', { class: 'grid2' }, h('label', { class: 'fld' }, 'Tamaño de papel', sizeSel), h('label', { class: 'fld' }, 'Orientación', orient));
-    const ok = await this.modal(`Configurar página · ${layout.name}`, box, [{ label: 'Cancelar', value: false }, { label: 'Aceptar', value: true, primary: true }]);
+    const doc = this.app.doc;
+    const tables = () => [h('option', { value: '' }, 'Ninguna (colores del objeto, blanco en negro)'), ...Object.values(plotTables(doc)).map(t => h('option', { value: t.name }, `${t.name} · ${t.desc || (t.type === 'ctb' ? 'por color' : 'con nombre')}`))];
+    const pst = h('select', {}, ...tables());
+    pst.value = (layout ? layout.plotStyle : doc.settings.modelPlotStyle) || '';
+    const edit = h('button', { class: 'btn', onclick: async () => { const v = pst.value; await this.plotStyleManager(); pst.replaceChildren(...tables()); pst.value = plotTables(doc)[v] ? v : ''; } }, 'Editar tablas…');
+    const show = h('input', { type: 'checkbox', checked: !!layout?.showPlot });
+    let sizeSel = null, orient = null;
+    const rows = [h('label', { class: 'fld' }, 'Tabla de estilos de trazado', pst), h('div', { class: 'fld' }, ' ', edit)];
+    if (layout) {
+      sizeSel = h('select', {}, ...Object.entries(PAPERS).map(([k, [w, hh]]) => h('option', { value: k }, `${k} (${w} × ${hh} mm)`)));
+      sizeSel.value = layout.paper in PAPERS ? layout.paper : 'A4';
+      orient = h('select', {}, h('option', { value: 'h' }, 'Horizontal'), h('option', { value: 'v' }, 'Vertical'));
+      orient.value = layout.w >= layout.h ? 'h' : 'v';
+      rows.unshift(h('label', { class: 'fld' }, 'Tamaño de papel', sizeSel), h('label', { class: 'fld' }, 'Orientación', orient));
+      rows.push(h('label', { class: 'chk' }, show, 'Mostrar estilos de trazado en la presentación'));
+    }
+    const box = h('div', {}, h('div', { class: 'grid2' }, ...rows),
+      h('p', { class: 'hint' }, 'La tabla cambia el color, el grosor, la intensidad y el tipo de línea al imprimir y exportar a PDF, SVG y PNG. Las tablas .ctb van por color; las .stb, por el estilo con nombre de cada capa u objeto (ESTILOTRAZADO).'));
+    const ok = await this.modal(`Configurar página · ${layout ? layout.name : 'Modelo'}`, box, [{ label: 'Cancelar', value: false }, { label: 'Aceptar', value: true, primary: true }]);
     if (!ok) return;
-    const [a, b] = PAPERS[sizeSel.value], doc = this.app.doc;
     doc.begin();
-    layout.paper = sizeSel.value;
-    [layout.w, layout.h] = orient.value === 'h' ? [Math.max(a, b), Math.min(a, b)] : [Math.min(a, b), Math.max(a, b)];
+    if (layout) {
+      const [a, b] = PAPERS[sizeSel.value];
+      layout.paper = sizeSel.value;
+      [layout.w, layout.h] = orient.value === 'h' ? [Math.max(a, b), Math.min(a, b)] : [Math.min(a, b), Math.max(a, b)];
+      if (pst.value) layout.plotStyle = pst.value; else delete layout.plotStyle;
+      if (show.checked) layout.showPlot = true; else delete layout.showPlot;
+    } else if (pst.value) doc.settings.modelPlotStyle = pst.value; else delete doc.settings.modelPlotStyle;
     doc.changed();
     doc.commit();
-    this.app.print(`Página: ${layout.paper} ${orient.value === 'h' ? 'horizontal' : 'vertical'} (${layout.w} × ${layout.h} mm).`);
+    this.app.renderer.invalidate();
+    const tb = pst.value ? `, estilos de trazado ${pst.value}` : '';
+    this.app.print(layout ? `Página: ${layout.paper} ${orient.value === 'h' ? 'horizontal' : 'vertical'} (${layout.w} × ${layout.h} mm)${tb}.` : `Modelo${tb || ': sin tabla de estilos de trazado'}.`);
+  }
+
+  // Administrador de tablas de estilos de trazado: predefinidas (sólo lectura) y propias del dibujo, que se pueden
+  // crear, copiar, editar, importar y exportar como archivos .ctb/.stb de AutoCAD
+  async plotStyleManager() {
+    const app = this.app, doc = app.doc;
+    let cur = Object.keys(plotTables(doc))[0], all = false;
+    const box = h('div', { class: 'plot-mgr' });
+    const tx = fn => { doc.begin(); fn(); doc.changed(); doc.commit(); app.renderer.invalidate(); draw(); };
+    const uniq = base => { let n = base, i = 2; while (plotTables(doc)[n]) n = base.replace(/(\.\w+)?$/, m => ` (${i})${m}`), i++; return n; };
+    const usedAci = () => [...new Set([...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)].map(e => hexToAci(doc.style(e).color)))].sort((a, b) => a - b);
+    const draw = () => {
+      const tabs = plotTables(doc), t = tabs[cur], ro = !!BUILTIN_PLOT[cur];
+      const list = h('select', { size: 9, class: 'plot-list', onchange: ev => { cur = ev.target.value; draw(); } },
+        ...Object.keys(tabs).map(n => h('option', { value: n }, `${n}${BUILTIN_PLOT[n] ? ' (predefinida)' : ''}`)));
+      list.value = cur;
+      const act = (label, fn, dis = false) => h('button', { class: 'btn', disabled: dis, onclick: fn }, label);
+      const fresh = (kind, desc) => tx(() => { const n = uniq(`nueva.${kind}`); doc.plotStyles[n] = { ...JSON.parse(JSON.stringify(BUILTIN_PLOT[`acad.${kind}`])), name: n, desc }; cur = n; });
+      const btns = h('div', { class: 'plot-btns' },
+        act('Nueva .ctb', () => fresh('ctb', 'Por color')), act('Nueva .stb', () => fresh('stb', 'Con nombre')),
+        act('Copiar', () => tx(() => { const n = uniq(cur); doc.plotStyles[n] = { ...JSON.parse(JSON.stringify(t)), name: n }; cur = n; })),
+        act('Eliminar', () => tx(() => {
+          delete doc.plotStyles[cur];
+          for (const l of doc.layouts) if (l.plotStyle === cur) delete l.plotStyle;
+          if (doc.settings.modelPlotStyle === cur) delete doc.settings.modelPlotStyle;
+          cur = Object.keys(plotTables(doc))[0];
+        }), ro),
+        act('Importar…', async () => {
+          const f = await app.io.pickFile('Tablas de estilos de trazado', ['.ctb', '.stb']);
+          if (!f) return;
+          try {
+            const t2 = await readPlotFile(await f.file.arrayBuffer(), f.file.name), n = plotTables(doc)[t2.name] ? uniq(t2.name) : t2.name;
+            tx(() => { doc.plotStyles[n] = { ...t2, name: n }; cur = n; });
+            app.print(`Tabla de estilos de trazado "${n}" importada (${Object.keys(t2.styles).length} estilos).`);
+          } catch (err) { app.print(`No se puede leer la tabla de estilos: ${err.message}`, 'err'); }
+        }),
+        act('Exportar…', async () => {
+          const bytes = await writePlotFile(t);
+          const ok = await app.io.writeFile(new Blob([bytes], { type: 'application/octet-stream' }), t.name, 'application/octet-stream', t.type === 'ctb' ? '.ctb' : '.stb', 'Tabla de estilos de trazado', false);
+          if (ok) app.print(`Tabla "${t.name}" exportada.`);
+        }));
+      // Editor de los estilos de la tabla
+      const setSt = (key, patch) => tx(() => { const T = doc.plotStyles[cur]; T.styles[key] = { ...OBJECT, ...T.styles[key], ...patch }; });
+      const ltOpts = [['', 'Del objeto'], ...Object.keys(LTYPES).map(k => [k, k])], lwOpts = [['', 'Del objeto'], ...LWEIGHTS.map(v => [String(v), `${v.toFixed(2)} mm`])];
+      const opt = (sel, opts, v) => { sel.append(...opts.map(([k, l]) => h('option', { value: k }, l))); sel.value = v; return sel; };
+      const row = (key, head) => {
+        const s = { ...OBJECT, ...t.styles[key] }, cv = s.gray ? '__gray' : s.color || '';
+        const own = s.color && s.color !== '#000000' ? [[s.color, s.color]] : [];
+        const col = opt(h('select', { disabled: ro, onchange: async ev => {
+          let v = ev.target.value;
+          if (v === '__custom') { v = await this.pickColor(s.color || '#000000'); if (!v) return draw(); }
+          setSt(key, v === '__gray' ? { color: null, gray: true } : { color: v || null, gray: false });
+        } }), [['', 'Del objeto'], ['__gray', 'Escala de grises'], ['#000000', 'Negro'], ...own, ['__custom', 'Otro…']], cv);
+        const lw = opt(h('select', { disabled: ro, onchange: ev => setSt(key, { lw: ev.target.value === '' ? null : +ev.target.value }) }), lwOpts, s.lw == null ? '' : String(s.lw));
+        const lt = opt(h('select', { disabled: ro, onchange: ev => setSt(key, { ltype: ev.target.value || null }) }), ltOpts, s.ltype || '');
+        const scr = h('input', { type: 'number', min: 0, max: 100, step: 1, value: s.screen ?? 100, disabled: ro, onchange: ev => { const v = Math.max(0, Math.min(100, +ev.target.value)); if (Number.isFinite(v)) setSt(key, { screen: v }); } });
+        const del = t.type === 'stb' && key !== 'Normal' && !ro ? h('button', { class: 'btn', title: 'Quitar estilo', onclick: () => tx(() => { delete doc.plotStyles[cur].styles[key]; }) }, '×') : '';
+        return h('tr', {}, h('td', {}, head), h('td', {}, col), h('td', {}, lw), h('td', {}, scr), h('td', {}, lt), h('td', {}, del));
+      };
+      const keys = t.type === 'ctb' ? (all ? Array.from({ length: 255 }, (_, i) => i + 1) : (usedAci().length ? usedAci() : [1, 2, 3, 4, 5, 6, 7])) : stbNames(t);
+      const rows = keys.map(k => row(k, t.type === 'ctb' ? h('span', { class: 'aci' }, h('i', { style: `background:${aciSample(k)}` }), `Color ${k}`) : h('b', {}, k)));
+      const desc = h('input', { type: 'text', value: t.desc || '', disabled: ro, class: 'full', onchange: ev => tx(() => { doc.plotStyles[cur].desc = ev.target.value; }) });
+      const extra = t.type === 'ctb'
+        ? h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: all, onchange: ev => { all = ev.target.checked; draw(); } }), 'Mostrar los 255 colores (si no, sólo los usados en el dibujo)')
+        : (() => {
+          const inp = h('input', { type: 'text', placeholder: 'Nombre del estilo nuevo', disabled: ro });
+          return h('div', { class: 'plot-add' }, inp, h('button', { class: 'btn', disabled: ro, onclick: () => { const n = inp.value.trim(); if (n && !t.styles[n]) tx(() => { doc.plotStyles[cur].styles[n] = { ...OBJECT }; }); } }, 'Añadir estilo'));
+        })();
+      box.replaceChildren(h('div', { class: 'plot-top' }, list, btns),
+        h('label', { class: 'fld' }, 'Descripción', desc),
+        h('div', { class: 'plot-scroll' }, h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...[t.type === 'ctb' ? 'Color del objeto' : 'Estilo', 'Color de trazado', 'Grosor', 'Intensidad %', 'Tipo de línea', ''].map(x => h('th', {}, x)))), h('tbody', {}, ...rows))),
+        extra,
+        h('p', { class: 'hint' }, ro ? 'Las tablas predefinidas no se pueden modificar: use «Copiar» para crear una editable.' : 'Los cambios se aplican al momento y se pueden deshacer.'));
+    };
+    draw();
+    await this.modal('Tablas de estilos de trazado', box, [{ label: 'Cerrar', value: null, primary: true }]);
   }
 
   openHelp() {
@@ -1349,6 +1478,16 @@ export class UI {
         <li>Pestañas <b>Modelo / Presentación</b> abajo a la izquierda; <b>+</b> crea una presentación con marco, cajetín y una ventana gráfica a escala estándar.</li>
         <li>Doble clic dentro de una ventana gráfica: trabaja en el modelo a través de ella (zoom y encuadre cambian su vista). Doble clic fuera: vuelve al papel.</li>
         <li>La escala de la ventana se cambia en la paleta de Propiedades. Imprimir, SVG y PNG de una presentación salen a escala real en milímetros.</li>
+      </ul>
+      <h4>Novedades de la v0.10</h4>
+      <ul>
+        <li><b>Imágenes a escala real</b>: IMAGEATTACH lee la resolución del archivo (PNG, JPEG, BMP) y propone el tamaño real; también admite <b>Píxeles por unidad</b> y <b>Resolución</b> (ppp). Propiedades muestra la <b>Escala (unidades/píxel)</b> y la <b>Resolución</b>.</li>
+        <li><b>XCLIP › Añadir contorno</b>: una imagen recortada admite más contornos (par-impar: huecos o zonas separadas), editables con pinzamientos y exportados a SVG, PDF y DXF.</li>
+        <li><b>Tolerancias</b> en los estilos de cota (simétrica, desviación, límites y básica) y <b>DIMOVERRIDE</b> (<code>DOV</code>) para cambiar variables sólo en las cotas designadas o borrar esas modificaciones; Propiedades tiene las secciones <i>Tolerancias</i> y <i>Modificaciones de estilo</i>.</li>
+        <li><b>Sombreados</b>: detección de islas Normal, Exterior o Ignorar, <b>Incluir islas</b> y <b>Quitar islas</b>; <b>degradados de varios colores</b> (GRADIENT › Colores o Propiedades › Paradas de color).</li>
+        <li><b>Referencias externas recordadas</b>: al abrir un dibujo se recargan solas si el navegador conserva el permiso; en DXF 2000/2007 se escriben como bloques XREF.</li>
+        <li><b>Estilos de trazado</b>: CONFIGPAG elige la tabla .ctb o .stb de cada presentación (y del modelo) y puede mostrarla en pantalla; <b>STYLESMANAGER</b> (<code>ESTILOSTRAZADO</code>) crea, edita, importa y exporta tablas; <b>ESTILOTRAZADO</b> asigna estilos con nombre a objetos y capas.</li>
+        <li><b>Ventanas gráficas</b>: escala de tipo de línea propia (Propiedades) y <b>PSLTSCALE</b>. <b>Propiedades</b> con varios objetos: elija <i>Todos</i> o un tipo en la cabecera y edite la geometría de todos a la vez.</li>
       </ul>
       <h4>Novedades de la v0.9</h4>
       <ul>

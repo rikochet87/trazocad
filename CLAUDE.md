@@ -15,7 +15,7 @@ CAD 2D tipo AutoCAD hecho como PWA en JavaScript puro con módulos ES. Sin depen
 2. README: título `TrazoCAD — v0.N`, tabla «Novedades de la v0.N» con su captura, estructura de archivos, limitaciones conocidas y nueva «Hoja de ruta (v0.N+1+)».
 3. Captura nueva en `docs/` hecha con un guion como `tools/tests/captura-v05.js`.
 4. `sw.js`: subir `CACHE` (`trazocad-vN`) y añadir los módulos nuevos a `ASSETS`.
-5. Comprobar la sintaxis de todos los módulos: `for f in js/*.js sw.js; do node --check "$f"; done`.
+5. Comprobar la sintaxis de todos los módulos como módulos ES: `for f in js/*.js sw.js; do node --input-type=module --check < "$f" || echo "FALLO $f"; done`.
 
 ## Pruebas en Chrome sin interfaz
 
@@ -38,3 +38,5 @@ Una prueba es el cuerpo de una función async que recibe `app` (= `window.app`) 
 ## Trampas conocidas
 
 - Al parchear archivos con un guion de Node, `String.replace(texto, nuevo)` interpreta `$'`, `$&` y `$1` dentro de `nuevo` y corrompe el archivo. Usar un reemplazo con función (`() => nuevo`) o `slice`. En la v0.5 una inserción en `js/icons.js` se comió una clave y rompió la carga de la app.
+- `node --check archivo.js` no analiza los archivos como módulos ES y deja pasar errores que rompen la app en el navegador (en la v0.10, un comentario que perdió una barra). Usar `node --input-type=module --check < archivo.js`.
+- Los archivos de `js/` tienen finales de línea CRLF: al parchear con un guion, normalizar a LF para buscar y volver a escribir con CRLF.

@@ -107,13 +107,7 @@ export function findBoundary(ents, Pt) {
     return bh;
   };
 
-  const O = P(Pt.x, Pt.y + size * 1.2345e-7);
-  const h0 = castRay(O);
-  if (h0 < 0) return null;
-  const outer = trace(h0);
-  if (G.polyArea(outer.loop) <= 0 || !G.pointInPoly(O, outer.loop)) return null;
-
-  // 3. Islas: componentes conexas no unidas al contorno y situadas dentro de él
+  // Componentes conexas del grafo (las islas son componentes separadas del contorno)
   const comp = new Int32Array(V.length).fill(-1);
   let nc = 0;
   for (let s = 0; s < V.length; s++) {
@@ -122,6 +116,22 @@ export function findBoundary(ents, Pt) {
     while (st.length) { const v = st.pop(); for (const h of V[v].out) { const w = H[h].to; if (comp[w] < 0) { comp[w] = nc; st.push(w); } } }
     nc++;
   }
+
+  // Contorno exterior: si el rayo choca antes con una isla (su cara exterior tiene área negativa), se ignora esa
+  // componente y se vuelve a lanzar hasta llegar al contorno que rodea el punto
+  const O = P(Pt.x, Pt.y + size * 1.2345e-7), skip = new Set();
+  let outer = null;
+  for (let k = 0; k < 256 && !outer; k++) {
+    const h0 = castRay(O, skip.size ? v => !skip.has(comp[v]) : null);
+    if (h0 < 0) return null;
+    const t = trace(h0);
+    if (G.polyArea(t.loop) > 0 && G.pointInPoly(O, t.loop)) outer = t;
+    else if (G.polyArea(t.loop) <= 0) skip.add(comp[t.vs[0]]);
+    else return null;
+  }
+  if (!outer) return null;
+
+  // 3. Islas: componentes conexas no unidas al contorno y situadas dentro de él
   const outerComp = new Set(outer.vs.map(v => comp[v]));
   const loops = [outer.loop], seen = new Set(), traced = [outer];
   for (let v = 0; v < V.length; v++) {
@@ -162,7 +172,7 @@ export function interiorPoint(loops) {
 
 // Contornos de un sombreado asociativo a partir de sus entidades de origen (null si ya no hay contorno válido).
 // Con punto interior (seed) se repite la detección sólo con esas entidades; si el punto quedó fuera,
-// se prueba con un punto interior del contorno anterior.
+// se prueba con un punto interior del contorno anterior. Se respetan su estilo de islas y las islas quitadas.
 export function assocLoops(h, srcs) {
   if (!h.seed) {
     const loops = srcs.flatMap(e => loopsOfEntity(e) || []);
@@ -170,5 +180,34 @@ export function assocLoops(h, srcs) {
   }
   let seed = h.seed, loops = findBoundary(srcs, seed);
   if (!loops) { seed = interiorPoint(h.loops); loops = seed && findBoundary(srcs, seed); }
-  return loops ? { loops, ids: loops.ids, seed } : null;
+  return loops ? { loops: applyIslands(loops, h.islands, h.rmIsl), ids: loops.ids, seed } : null;
+}
+
+// Estilo de detección de islas (como HPISLANDDETECTION de AutoCAD) sobre [contorno, ...islas]:
+// normal: todas (se alternan relleno y hueco), outer: sólo las del primer nivel, ignore: ninguna.
+// removed: puntos que marcan islas quitadas a mano (se quita la isla más interior que contiene cada punto)
+export const ISLAND_MODES = { normal: 'Normal', outer: 'Exterior', ignore: 'Ignorar' };
+const inLoop = (l, p) => G.pointInPoly(p, l);
+export function islandDepths(loops) {
+  return loops.map((l, i) => (i ? loops.reduce((n, o, j) => n + (j && j !== i && inLoop(o, l[0]) ? 1 : 0), 0) : -1));
+}
+export function applyIslands(loops, mode = 'normal', removed = []) {
+  const dep = islandDepths(loops), drop = new Set();
+  loops.forEach((l, i) => { if (i && (mode === 'ignore' || (mode === 'outer' && dep[i] > 0))) drop.add(i); });
+  for (const p of removed || []) {
+    let best = -1;
+    loops.forEach((l, i) => { if (i && !drop.has(i) && inLoop(l, p) && (best < 0 || dep[i] > dep[best])) best = i; });
+    if (best > 0) { drop.add(best); loops.forEach((l, i) => { if (i && dep[i] > dep[best] && inLoop(loops[best], l[0])) drop.add(i); }); }
+  }
+  if (!drop.size) return loops;
+  const out = loops.filter((_, i) => !drop.has(i));
+  out.ids = loops.ids;
+  return out;
+}
+// Isla (índice > 0) más interior del sombreado que contiene p, o -1
+export function islandAt(loops, p) {
+  const dep = islandDepths(loops);
+  let best = -1;
+  loops.forEach((l, i) => { if (i && inLoop(l, p) && (best < 0 || dep[i] > dep[best])) best = i; });
+  return best;
 }

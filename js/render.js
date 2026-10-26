@@ -31,6 +31,9 @@ export function vpModelRect(vp) {
   return { x1: vp.cx + (vp.p1.x - vcx) / vp.s, y1: vp.cy + (vp.p1.y - vcy) / vp.s, x2: vp.cx + (vp.p2.x - vcx) / vp.s, y2: vp.cy + (vp.p2.y - vcy) / vp.s };
 }
 
+// Factor de escala de tipo de línea dentro de una ventana: el suyo y, con PSLTSCALE = 1, el que deja los trazos con el
+// mismo tamaño en el papel en todas las ventanas (como en AutoCAD)
+export const vpLtk = (doc, vp) => (vp.ltscale || 1) * (doc.settings.psltscale ? 1 / (vp.s || 1) : 1);
 // st: {color, px, pat, ltscale}; sty: función entidad → st (para las entidades de los bloques);
 // vis: función entidad → visible, aplicada también a las entidades de los bloques
 export function paintEntity(c, e, R, st, sty, vis) {
@@ -101,7 +104,8 @@ export class Renderer {
     c.save();
     setWorld(c, R);
     c.beginPath(); c.rect(vp.p1.x, vp.p1.y, vp.p2.x - vp.p1.x, vp.p2.y - vp.p1.y); c.clip();
-    this.drawModel(c, vpR(R, vp), vpModelRect(vp), sty, this.app.doc.visibleIn(vp));
+    const k = vpLtk(this.app.doc, vp), vsty = k === 1 ? sty : e => { const s = sty(e); return { ...s, ltscale: (s.ltscale || 1) * k }; };
+    this.drawModel(c, vpR(R, vp), vpModelRect(vp), vsty, this.app.doc.visibleIn(vp));
     c.restore();
   }
   drawLayout(c, R, layout, sty, forExport = false) {

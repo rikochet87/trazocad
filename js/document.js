@@ -2,6 +2,8 @@
 // deshacer/rehacer, sombreados asociativos y serialización.
 import { bboxOf, bbUnion, cloneEnt, LTYPES, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, DEFAULT_TBLSTYLE } from './entities.js';
 import { assocLoops } from './hatch.js';
+import { ENV } from './entities.js';
+ENV.assocLoops = assocLoops; // para recalcular un sombreado al cambiar su estilo de islas en Propiedades
 import { updateDim, updateCenter, centerRefs, dropMissing, dimRefIds } from './assoc.js';
 import { remapDyn } from './dynblock.js';
 import { solve, consValid, refIds } from './constraints.js';
@@ -15,6 +17,7 @@ export const DEFAULT_SETTINGS = {
   hatchPat: 'ANSI31', hatchScale: 1, hatchAng: 0, hatchAssoc: true, iso: false, isoPlane: 'top', splineMethod: 'fit',
   dimAssoc: true, mleaderContent: 'mtext', balloonNum: 0, insBase: { x: 0, y: 0 },
   mlScale: 20, mlJust: 'top', arrayAssoc: true, xclipFrame: 2, wipeoutFrame: 2, boundaryType: 'pline', boundaryIslands: true, revcloud: 5,
+  unitsPerInch: 25.4, hatchIslands: 'normal', psltscale: 0,
 };
 const newMlStyle = () => JSON.parse(JSON.stringify(DEFAULT_MLINESTYLE));
 export const PAPERS = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841], Carta: [279.4, 215.9], Oficio: [355.6, 215.9] };
@@ -38,6 +41,7 @@ export class Doc {
     this.groups = [];      // grupos (groups.js)
     this.layerStates = []; // estados de capa (layerstates.js)
     this.patterns = {};    // patrones de sombreado personalizados {NOMBRE: {desc, fam}} (patterns.js)
+    this.plotStyles = {};  // tablas de estilos de trazado propias {nombre.ctb|nombre.stb: tabla} (plotstyles.js)
     this.space = 'model';
     this.textStyles = [{ name: 'Standard', font: 'Arial', width: 1, oblique: 0 }];
     this.dimStyles = [{ ...DEFAULT_DIMSTYLE }];
@@ -67,11 +71,11 @@ export class Doc {
 
   // ----- Deshacer / rehacer por instantáneas -----
   state() {
-    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns });
+    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles });
   }
   loadState(s) {
     const o = JSON.parse(s);
-    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {} });
+    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {}, plotStyles: o.plotStyles || {} });
     if (this.bedit) this.space = 'bedit';
     else if (this.space === 'bedit') this.space = 'model';
     else if (this.space !== 'model' && this.space !== 'bedit' && !this.layouts[this.space]) this.space = 'model';
@@ -109,6 +113,7 @@ export class Doc {
   add(e, target = this.ents) {
     e.id = this.nextId++;
     e.layer ??= this.cur.layer; e.color ??= this.cur.color; e.ltype ??= this.cur.ltype; e.lw ??= this.cur.lw;
+    if (this.cur.pstyle && this.cur.pstyle !== 'BYLAYER' && !('pstyle' in e)) e.pstyle = this.cur.pstyle; // estilo de trazado con nombre actual
     if (e.type === 'text') e.style ??= this.cur.textStyle;
     if (e.type === 'dim') e.style ??= this.cur.dimStyle;
     if (!this.layers.some(l => l.name === e.layer)) e.layer = '0';
@@ -305,8 +310,8 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 9, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
-      textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, cur: this.cur, settings: this.settings, nextId: this.nextId,
+      app: 'TrazoCAD', version: 10, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, cur: this.cur, settings: this.settings, nextId: this.nextId,
     };
   }
   fromJSON(o) {
@@ -326,6 +331,7 @@ export class Doc {
     this.groups = o.groups || [];
     this.layerStates = o.layerStates || [];
     this.patterns = o.patterns || {};
+    this.plotStyles = o.plotStyles || {};
     if (o.mleaderStyles?.length) this.mleaderStyles = o.mleaderStyles;
     if (o.tableStyles?.length) this.tableStyles = o.tableStyles;
     if (o.mlineStyles?.length) this.mlineStyles = o.mlineStyles;

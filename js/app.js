@@ -14,6 +14,7 @@ import './arrays.js'; // registra las matrices asociativas
 import { parseExpr, evalParams } from './constraints.js';
 import { PAT_ENV } from './patterns.js';
 import { expandGroups } from './groups.js';
+import { plotStyler } from './plotstyles.js';
 
 const CANCEL = Symbol('cancel');
 const PICKBOX = 6;
@@ -55,7 +56,7 @@ class App {
     this.renderer.resize();
     this.ui.setPrompt(null);
     this.print('TrazoCAD listo. Escriba un comando (p. ej. L para LÍNEA) o pulse F1 para ver la ayuda.');
-    if (!/[?&]nuevo/.test(location.search) && this.io.restore()) { this.afterLoad(); this.print('Se ha recuperado el dibujo autoguardado.'); }
+    if (!/[?&]nuevo/.test(location.search) && this.io.restore()) { this.afterLoad(); this.print('Se ha recuperado el dibujo autoguardado.'); this.io.restoreXrefs(); }
     this.ui.updateStatus();
     this.ui.refresh();
   }
@@ -81,7 +82,14 @@ class App {
     this.ui.refresh();
   }
   styleFor(e) {
-    const st = this.doc.style(e), paper = this.tab !== 'model';
+    const paper = this.tab !== 'model', lay = paper ? this.layoutShown() : null;
+    let ps = null; // «Mostrar estilos de trazado» de la presentación (función en caché por presentación y versión)
+    if (lay?.showPlot) {
+      const k = this._plotK;
+      if (!k || k.lay !== lay || k.ver !== this.doc.ver || k.name !== lay.plotStyle) this._plotK = { lay, ver: this.doc.ver, name: lay.plotStyle, fn: plotStyler(this.doc, lay) };
+      ps = this._plotK.fn;
+    }
+    const st = ps ? ps(e, this.doc.style(e)) : this.doc.style(e);
     const color = paper && st.color.toLowerCase() === '#ffffff' ? '#000000' : st.color;
     const px = this.T.lwt ? Math.max(1, st.lw * (paper ? this.paperView.scale : 4)) : 1;
     return { color, px, pat: st.pat, ltscale: this.doc.settings.ltscale, paper };

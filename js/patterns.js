@@ -28,9 +28,26 @@ export const PATTERNS = {
     [90, 0.79375, 5.55625, 6.35, 6.35, 6.35, -6.35], [90, 3.175, 5.55625, 6.35, 6.35, 6.35, -6.35], [90, 5.55625, 5.55625, 6.35, 6.35, 6.35, -6.35]] },
 };
 
-// ---------- Degradados (pattern 'GRADIENT', datos en e.grad = {type, c1, c2, centered}; ángulo en e.angle) ----------
+// ---------- Degradados (pattern 'GRADIENT', datos en e.grad = {type, c1, c2, centered, stops}; ángulo en e.angle) ----------
+// stops: paradas [[posición 0..1, color], …] de un degradado de varios colores; si falta, se usan c1 → c2
 export const GRADIENTS = { LINEAR: 'Lineal', CYLINDER: 'Cilíndrico', INVCYLINDER: 'Cilíndrico invertido', SPHERICAL: 'Esférico', INVSPHERICAL: 'Esférico invertido', HEMISPHERICAL: 'Semiesférico', INVHEMISPHERICAL: 'Semiesférico invertido' };
 export const GRAD_DEFAULT = { type: 'LINEAR', c1: '#1e90d6', c2: '#ffffff', centered: true };
+// Paradas de color ordenadas (al menos dos)
+export function gradStops(g) {
+  const s = Array.isArray(g.stops) ? g.stops.filter(x => Array.isArray(x) && Number.isFinite(+x[0]) && typeof x[1] === 'string').map(([t, c]) => [Math.max(0, Math.min(1, +t)), c]) : [];
+  return s.length >= 2 ? s.sort((a, b) => a[0] - b[0]) : [[0, g.c1], [1, g.c2]];
+}
+// Texto editable de las paradas: "0 #ff0000, 0.5 #ffff00, 1 #0000ff" (las posiciones también admiten %)
+export const stopsText = g => gradStops(g).map(([t, c]) => `${+(t * 100).toFixed(2)}% ${c}`).join(', ');
+export function parseStops(s) {
+  const out = [];
+  for (const part of String(s).split(/[,;]/)) {
+    const m = part.trim().match(/^([\d.]+)\s*(%?)\s+(#[0-9a-f]{6})$/i);
+    if (!m) continue;
+    out.push([Math.max(0, Math.min(1, +m[1] / (m[2] ? 100 : (+m[1] > 1 ? 100 : 1)))), m[3].toLowerCase()]);
+  }
+  return out.length >= 2 ? out.sort((a, b) => a[0] - b[0]) : null;
+}
 // Geometría del degradado en coordenadas del dibujo: {kind: 'linear', p0, p1, stops} o {kind: 'radial', c, r, stops}
 export function gradientSpec(e, bb) {
   const g = { ...GRAD_DEFAULT, ...e.grad }, a = G.rad(e.angle || 0), u = G.P(Math.cos(a), Math.sin(a)), n = G.perp(u);
@@ -38,13 +55,18 @@ export function gradientSpec(e, bb) {
   const corners = [G.P(bb.x1, bb.y1), G.P(bb.x2, bb.y1), G.P(bb.x2, bb.y2), G.P(bb.x1, bb.y2)];
   const pu = corners.map(q => G.dot(G.sub(q, C), u)), pn = corners.map(q => G.dot(G.sub(q, C), n));
   const lo = Math.min(...pu), hi = Math.max(...pu), half = Math.max(1e-9, Math.hypot(hi - lo, Math.max(...pn) - Math.min(...pn)) / 2);
-  const inv = g.type.startsWith('INV'), [a1, a2] = inv ? [g.c2, g.c1] : [g.c1, g.c2], t = g.type.replace(/^INV/, '');
-  if (t === 'LINEAR') return { kind: 'linear', p0: G.add(C, G.mul(u, lo)), p1: G.add(C, G.mul(u, hi)), stops: [[0, g.c1], [1, g.c2]] };
-  if (t === 'CYLINDER') return { kind: 'linear', p0: G.add(C, G.mul(u, lo)), p1: G.add(C, G.mul(u, hi)), stops: [[0, a1], [0.5 - shift / 2, a2], [1, a1]] };
-  if (t === 'HEMISPHERICAL') { const c0 = G.add(C, G.mul(n, Math.min(...pn))); return { kind: 'radial', c: c0, r: half * 2, stops: [[0, a2], [1, a1]] }; }
+  // S: paradas del primer color al último; los tipos invertidos las recorren al revés
+  const inv = g.type.startsWith('INV'), t = g.type.replace(/^INV/, ''), base = gradStops(g);
+  const S = inv ? base.map(([k, c]) => [1 - k, c]).reverse() : base, rev = S.map(([k, c]) => [1 - k, c]).reverse();
+  if (t === 'LINEAR') return { kind: 'linear', p0: G.add(C, G.mul(u, lo)), p1: G.add(C, G.mul(u, hi)), stops: base };
+  if (t === 'CYLINDER') { // del primer color en los bordes al último en el centro (desplazado si no está centrado)
+    const m = 0.5 - shift / 2;
+    return { kind: 'linear', p0: G.add(C, G.mul(u, lo)), p1: G.add(C, G.mul(u, hi)), stops: [...S.map(([k, c]) => [k * m, c]), ...rev.slice(1).map(([k, c]) => [m + k * (1 - m), c])] };
+  }
+  if (t === 'HEMISPHERICAL') { const c0 = G.add(C, G.mul(n, Math.min(...pn))); return { kind: 'radial', c: c0, r: half * 2, stops: rev }; }
   // Esférico: luz en el centro (desplazada hacia arriba a la izquierda si no está centrado)
   const c0 = G.add(C, G.mul(G.add(G.mul(u, -1), n), half * shift));
-  return { kind: 'radial', c: c0, r: half * (1 + shift), stops: [[0, a2], [1, a1]] };
+  return { kind: 'radial', c: c0, r: half * (1 + shift), stops: rev };
 }
 
 // Familias de líneas del patrón de un sombreado, ya giradas y escaladas
