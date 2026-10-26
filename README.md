@@ -1,4 +1,4 @@
-# TrazoCAD — v0.8
+# TrazoCAD — v0.9
 
 Software de dibujo técnico 2D inspirado en AutoCAD, hecho desde cero como **PWA** (aplicación web instalable y sin conexión). JavaScript puro con módulos ES: sin dependencias ni compilación.
 
@@ -11,6 +11,19 @@ node serve.mjs          # http://localhost:8080
 ```
 
 Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta tal cual a cualquier hosting estático con HTTPS (GitHub Pages, Netlify, Hostinger…). En Chrome/Edge aparece el botón **Instalar**.
+
+## Novedades de la v0.9
+
+![Plano de taller: imagen raster recortada y semitransparente con sus pinzamientos, cota rota por un eje, matriz de columnas, nube de revisión editada, cobertura con marco y muro de líneas múltiples con un vértice añadido](docs/v09.png)
+
+| Función | Detalle |
+|---|---|
+| **Imágenes raster completas** (`IMAGEATTACH`, `XCLIP`) | **Transparencia** (0–90, como IMAGEADJUST de AutoCAD) que se respeta en pantalla, SVG y PDF. El recorte es **editable con pinzamientos**: los del contorno mueven cada vértice por separado y los de esquina desplazan la imagen y su recorte juntos. En DXF 2007 y 2000 la imagen se escribe como **IMAGE** con su **IMAGEDEF** (fuente incrustada en datos extendidos troceados) y el recorte y la transparencia en XDATA; en PDF se incrusta el mapa de bits, con su transparencia, escalado a la página |
+| **Cortes de cota en DXF** | DIMBREAK escribe sus cortes en la cota (XDATA de DIMENSION) en DXF 2000 y 2007, y al importar se recuperan en su posición y longitud |
+| **Matrices reconstruidas** | Al importar un DXF creado con TrazoCAD, las matrices rectangulares, polares y de recorrido vuelven como matrices asociativas con sus parámetros (columnas, filas, separaciones, ángulo de filas, niveles, elementos de origen), no como bloques sueltos |
+| **Nubes, coberturas y orden de dibujo** | `REVCLOUDEDIT` añade un arco en el tramo designado, quita el arco designado o convierte la nube en una polilínea normal (con al menos cuatro arcos). `WIPEOUTFRAME` elige el marco de las coberturas (0 oculto, 1 visible e impreso, 2 sólo en pantalla). `DRAWORDER` lleva los objetos designados al frente o detrás del resto. Nuevas herramientas en la cinta |
+| **Vértices de líneas múltiples** | Con **Ctrl+clic** en un pinzamiento de vértice se suprime ese vértice; con Ctrl+clic sobre el eje de un tramo se añade uno nuevo, y los cortes de MLEDIT de los tramos afectados se conservan o se ajustan |
+| **Otros** | Archivos `.tcad` versión 9 (los anteriores se siguen abriendo). Las nubes de revisión, las coberturas y las imágenes se dibujan también en SVG y PDF; la ayuda (F1) recoge las novedades |
 
 ## Novedades de la v0.8
 
@@ -150,7 +163,7 @@ js/render.js     Dibujado en canvas
 js/snap.js       Referencias, rastreo, polar, orto, isométrico
 js/ops.js        Recortar, alargar, partir, longitud, desfase, empalme, chaflán, unir, recorrido por longitud (GRADUA, DIVIDE)…
 js/commands.js   Comandos y alias
-js/dxf.js        DXF 2007 (MULTILEADER, ACAD_TABLE, ARC_DIMENSION, degradados) / 2000 (ambos con presentaciones, grupos, MLINE con cortes, XCLIP y estados de capa) / R12
+js/dxf.js        DXF 2007 (MULTILEADER, ACAD_TABLE, ARC_DIMENSION, imágenes, DIMBREAK, matrices y degradados) / 2000 (ambos con presentaciones, grupos, MLINE con cortes, IMAGE, XCLIP y estados de capa) / R12
 js/io.js         Abrir, guardar, exportar SVG/PNG (con imágenes), imprimir
 js/ui.js         Cinta, paletas, barra de estado, diálogos (incluido el de MLEDIT)
 js/app.js        Núcleo: entrada, motor de comandos, presentaciones
@@ -176,12 +189,14 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 
 - MLEDIT escribe los cortes en DXF 2000 y 2007 y los recupera al importar; en R12 las líneas múltiples se exportan descompuestas con los cortes aplicados, no como objetos MLINE.
 - Las regiones se exportan a DXF como polilíneas cerradas (sin datos ACIS) y las entidades REGION de un DXF no se importan. Las elipses y las splines de una región se convierten en polígonos.
-- Las matrices asociativas se exportan a DXF como un bloque anónimo con sus elementos (AutoCAD las abre como bloques, sin asociatividad); los niveles y el ángulo de filas se conservan como geometría, no como parámetros editables, y al importar no se reconstruye la matriz.
+- Las matrices asociativas se exportan a DXF como un bloque anónimo con sus elementos y sus datos extendidos: TrazoCAD las reconstruye al importar, pero AutoCAD las abre como bloques, sin asociatividad. Una ARRAYPATH pierde la asociación con su recorrido al guardar (el identificador del recorrido no se escribe).
 - DIMARC y DIMJOGGED se exportan descompuestas en DXF 2000 y R12; DIMARC no tiene directriz y el símbolo de arco va siempre encima del texto.
-- Las marcas y líneas de centro se exportan a DXF como líneas y arcos sueltos, sin asociatividad; los cortes de DIMBREAK no se escriben en DXF.
+- Las marcas y líneas de centro se exportan a DXF como líneas y arcos sueltos, sin asociatividad; los cortes de DIMBREAK se escriben en DXF 2000 y 2007 como datos extendidos propios, que AutoCAD ignora.
 - XCLIP no tiene planos de recorte delantero y trasero. La delimitación invertida o desactivada se guarda en el DXF como datos extendidos propios; R12 no conserva la delimitación, ni tampoco las referencias a bloques dinámicos en DXF. CONTORNO, como SOMBREADO, busca el contorno entre los objetos visibles en pantalla.
-- Las imágenes raster se incrustan en el `.tcad` y se dibujan en pantalla, PNG y SVG, pero no se escriben en DXF; en PDF se dibuja su marco. WIPEOUT se exporta como HATCH sólido y al importar vuelve como sombreado.
+- Las imágenes raster se incrustan en el `.tcad` y se escriben en DXF 2007 y 2000 como IMAGE + IMAGEDEF, con la fuente y el recorte en datos extendidos propios: TrazoCAD las recupera completas al importar, pero AutoCAD necesita el archivo original en la ruta indicada y las abre sin recorte ni transparencia. R12 no admite imágenes. WIPEOUT se exporta como HATCH sólido y al importar vuelve como sombreado, así que el marco de las coberturas (WIPEOUTFRAME) no viaja en el DXF.
+- Una nube de revisión convertida en polilínea con `REVCLOUDEDIT` vuelve a reconocerse como nube al exportar e importar DXF, porque el formato sólo guarda sus arcos (curvaturas).
 
-## Hoja de ruta (v0.9+)
+## Hoja de ruta (v0.10+)
 
-Imágenes raster completas: recorte editable con pinzamientos, transparencia, exportación a PDF y escritura como IMAGE en DXF; cortes de DIMBREAK en DXF y reconstrucción de matrices asociativas al importar. Edición de nubes de revisión (añadir o quitar arcos, convertir en polilínea) y de coberturas (marco y orden de dibujo), y mejoras de edición de líneas múltiples.
+Escala real de las imágenes (píxeles por unidad y DPI al adjuntar) y recorte poligonal con varios contornos; cotas con tolerancias y estilos aplicados por objeto; sombreados con islas designadas y degradados de varias paradas; referencias externas recordadas entre sesiones y escritas como XREF; impresión con tablas de estilos de trazado (CTB/STB) y escala de tipo de línea por ventana gráfica; y una paleta de Propiedades múltiple para editar varios objetos a la vez.
+

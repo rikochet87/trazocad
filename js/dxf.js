@@ -31,6 +31,8 @@ export function writeDXF(doc, version = '2000') {
   const R12 = version === 'R12', V07 = version === '2007';
   const o = [];
   const g = (code, val) => { o.push(String(code), typeof val === 'string' && !V07 ? asciiDxf(val) : String(val)); };
+  // Cadenas largas en XDATA: 1000 admite 255 caracteres; con acentos el escape \U+XXXX ocupa más
+  const gLong = (s, size) => { const t = String(s), n = size || (/[^\x00-\x7f]/.test(t) ? 60 : 240); for (let i = 0; i < t.length; i += n) g(1000, t.slice(i, i + n)); };
   let hseed = 0x30;
   const H = () => (hseed++).toString(16).toUpperCase();
   let zOff = 0; // elevación de la entidad que se escribe (niveles de las matrices)
@@ -66,6 +68,26 @@ export function writeDXF(doc, version = '2000') {
     for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if ((e.type === 'insert' && isDynamic(doc.blocks[e.name])) || e.type === 'array') dynIns.set(e, [`*U${++nu}`, H()]);
   }
   const anonEnts = e => (e.type === 'array' ? arrayEnts(e) : blockEnts(e));
+  // Imágenes raster: una definición IMAGEDEF compartida por cada fuente; la imagen se guarda en XDATA de la definición
+  const imgDefs = new Map();
+  let imgN = 0;
+  if (!R12) {
+    const addImg = e => {
+      if (!e.src || imgDefs.has(e.src)) {
+        if (e.src && imgDefs.has(e.src) && e.pxw && !imgDefs.get(e.src).pxw) { imgDefs.get(e.src).pxw = e.pxw; imgDefs.get(e.src).pxh = e.pxh; }
+        return;
+      }
+      imgDefs.set(e.src, { key: `IMG${++imgN}`, h: H(), name: e.name || `imagen${imgN}`, src: e.src, pxw: +e.pxw || 0, pxh: +e.pxh || 0 });
+    };
+    const scan = list => {
+      for (const e of list) {
+        if (e.type === 'image') addImg(e);
+        else if (e.type === 'array') for (const x of arrayEnts(e)) if (x.type === 'image') addImg(x);
+      }
+    };
+    for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) scan(list);
+  }
+  const imgDictH = !R12 && imgDefs.size ? H() : null;
   // Tablas (DXF 2007): entidad ACAD_TABLE con su bloque anónimo *T y sus estilos (TABLESTYLE)
   const tblBlocks = new Map(), tsDict = V07 ? H() : null, tsH = V07 ? Object.fromEntries(doc.tableStyles.map(st => [st.name, H()])) : {};
   if (V07) { let nt = 0; for (const list of [doc.model, ...layouts.map(l => l.ents), ...userBlocks.map(b => b.ents)]) for (const e of list) if (e.type === 'table') tblBlocks.set(e, [`*T${++nt}`, H()]); }
@@ -200,6 +222,23 @@ export function writeDXF(doc, version = '2000') {
       g(470, GRADIENTS[grad.type] ? grad.type : 'LINEAR');
     }
   };
+  // IMAGE: inserción, vectores U/V de un píxel, tamaño en píxeles y contorno de recorte en píxeles.
+  // La fuente incrustada y la transparencia van en XDATA de IMAGEDEF (compartida) y de la imagen.
+  const image = (e, ow) => {
+    const def = imgDefs.get(e.src);
+    if (!def || !(e.w > 0) || !(e.h > 0)) return;
+    const pxw = Math.max(1, +e.pxw || +def.pxw || 1), pxh = Math.max(1, +e.pxh || +def.pxh || 1);
+    const c = Math.cos(e.rot || 0), s = Math.sin(e.rot || 0), u = P(c * e.w / pxw, s * e.w / pxw), v = P(-s * e.h / pxh, c * e.h / pxh);
+    const local = q => { const dx = q.x - e.p.x, dy = q.y - e.p.y; return P((dx * c + dy * s) / e.w * pxw, (-dx * s + dy * c) / e.h * pxh); };
+    const cp = e.clip?.pts?.length ? e.clip.pts.map(local) : [P(0, 0), P(pxw, 0), P(pxw, pxh), P(0, pxh)];
+    common('IMAGE', e, ow, 'AcDbRasterImage');
+    xy(0, e.p); xy(1, u); xy(2, v); g(13, num(pxw)); g(23, num(pxh)); g(340, def.h);
+    g(71, e.clip?.off ? 0 : 1); g(91, cp.length);
+    for (const q of cp) { g(14, num(q.x)); g(24, num(q.y)); }
+    g(70, 1 | 2 | 4 | (+e.transparency > 0 ? 8 : 0)); g(280, cp.length > 4 ? 2 : 1);
+    g(1001, 'TRAZOCAD'); g(1000, 'IMAGEN');
+    gLong(JSON.stringify({ transparency: +e.transparency || 0, clip: e.clip ? { pts: cp, invert: !!e.clip.invert, off: !!e.clip.off } : null }));
+  };
   const insert = (e, ow) => {
     if (isDynamic(doc.blocks[e.name])) { // bloque dinámico: geometría ya evaluada
       if (R12 || !dynIns.has(e)) { for (const x of blockEnts(e)) writeEnt(x, ow); return; }
@@ -249,6 +288,12 @@ export function writeDXF(doc, version = '2000') {
     text(b, d.text, ow);
   };
   const DIM_TYPE = { lin: 0, ali: 1, dia: 3, rad: 4, ord: 6 };
+  // Huecos de DIMBREAK en XDATA: punto central (1010/1020/1030) y longitud del corte (1040)
+  const dimBreaks = e => {
+    if (!e.breaks?.length) return;
+    g(1001, 'TRAZOCAD'); g(1000, 'DIMBREAK');
+    for (const b of e.breaks) { g(1010, num(b.p.x)); g(1020, num(b.p.y)); g(1030, 0); g(1040, num(b.len || 0)); }
+  };
   const dimension = (e, ow) => {
     const d = dimParts(e), [bname] = dimBlocks.get(e), box = textBox(d.text), tm = G.mid(box[0], box[2]);
     const ang2 = e.kind === 'ang' && e.l1, type = e.kind === 'ang' ? (ang2 ? 2 : 5) : DIM_TYPE[e.kind];
@@ -272,6 +317,7 @@ export function writeDXF(doc, version = '2000') {
         else { g(100, 'AcDb3PointAngularDimension'); xy(3, e.p1); xy(4, e.p2); xy(5, e.c); }
         break;
     }
+    dimBreaks(e);
   };
   // Cotas de longitud de arco y de radio con recodo (DXF 2007): ARC_DIMENSION y LARGE_RADIAL_DIMENSION
   const arcDimension = (e, ow) => {
@@ -282,6 +328,7 @@ export function writeDXF(doc, version = '2000') {
     g(42, num(d.val)); g(3, nm(doc.dimStyle(e.style).name));
     g(100, 'AcDbArcDimension'); xy(3, e.p1); xy(4, e.p2); xy(5, e.c);
     g(40, num(G.normAng(G.ang(e.c, e.p1)))); g(41, num(G.normAng(G.ang(e.c, e.p2)))); g(70, e.partial ? 1 : 0); g(71, 0); xy(6, e.p1); xy(7, e.p2);
+    dimBreaks(e);
   };
   const jogDimension = (e, ow) => {
     const d = dimParts(e), [bname] = dimBlocks.get(e), u = G.norm(G.sub(e.p3, e.p1));
@@ -289,7 +336,8 @@ export function writeDXF(doc, version = '2000') {
     g(2, bname); xy(0, e.p1); xy(1, e.p3); g(70, 9 | 32 | 128); g(71, 5);
     if (e.text) g(1, fieldText(e.text));
     g(42, num(d.val)); g(3, nm(doc.dimStyle(e.style).name));
-    g(100, 'AcDbRadialDimensionLarge'); xy(3, e.p4); xy(4, e.p5); xy(5, G.add(e.p1, G.mul(u, d.val))); g(40, num(Math.PI / 4));
+    g(100, 'AcDbRadialDimensionLarge'); xy(3, e.p4); xy(4, e.p5); xy(5, G.add(e.p1, G.mul(u, d.val)));     g(40, num(Math.PI / 4));
+    dimBreaks(e);
   };
   // Línea múltiple: vértices con la dirección de su tramo y el vector de inglete; cada elemento, su distancia sobre el inglete,
   // el inicio (0) y los huecos de MLEDIT (pares inicio-fin a lo largo del tramo desde el inicio del elemento)
@@ -393,7 +441,12 @@ export function writeDXF(doc, version = '2000') {
       case 'array':
         if (R12 || !dynIns.has(e)) { for (const x of arrayEnts(e)) writeEnt(x, ow); break; }
         common('INSERT', e, ow, 'AcDbBlockReference'); g(2, dynIns.get(e)[0]); xy(0, P(0, 0)); g(41, 1); g(42, 1); g(43, 1);
+        {
+          const meta = { ...e }; delete meta.id; delete meta._xf; delete meta.pathId; delete meta._h;
+          g(1001, 'TRAZOCAD'); g(1000, 'MATRIZ'); gLong(JSON.stringify(meta));
+        }
         break;
+      case 'image': if (!R12) image(e, ow); break;
       case 'line': line(e, e.p1, e.p2, ow); break;
       case 'center': for (const [a, b] of e.lines || []) line(e, a, b, ow); break;
       case 'circle': common('CIRCLE', e, ow, 'AcDbCircle'); xy(0, e.c); g(40, num(e.r)); break;
@@ -607,6 +660,19 @@ export function writeDXF(doc, version = '2000') {
     if (V07) { g(3, 'ACAD_MLEADERSTYLE'); g(350, mlsDict); g(3, 'ACAD_TABLESTYLE'); g(350, tsDict); }
     if (lsDict) { g(3, 'ACAD_LAYERSTATES'); g(350, lsDict); }
     g(3, 'ACAD_MLINESTYLE'); g(350, mlstDict);
+    if (imgDictH) { g(3, 'ACAD_IMAGE_DICT'); g(350, imgDictH); }
+    // Imágenes raster: diccionario ACAD_IMAGE_DICT con una IMAGEDEF por fuente
+    if (imgDictH) {
+      g(0, 'DICTIONARY'); g(5, imgDictH); g(330, root); g(100, 'AcDbDictionary'); g(281, 1);
+      for (const d of imgDefs.values()) { g(3, d.key); g(350, d.h); }
+      for (const d of imgDefs.values()) {
+        const pxw = d.pxw > 0 ? d.pxw : 1, pxh = d.pxh > 0 ? d.pxh : 1;
+        g(0, 'IMAGEDEF'); g(5, d.h); g(102, '{ACAD_REACTORS'); g(330, imgDictH); g(102, '}'); g(330, imgDictH);
+        g(100, 'AcDbRasterImageDef'); g(90, 0); g(1, nm(d.name || d.key));
+        g(10, num(pxw)); g(20, num(pxh)); g(11, 1); g(21, 1); g(280, 0);
+        g(1001, 'TRAZOCAD'); g(1000, 'IMAGEDEF'); gLong(JSON.stringify({ name: d.name || d.key, src: d.src, pxw, pxh }));
+      }
+    }
     // Estilos de línea múltiple
     g(0, 'DICTIONARY'); g(5, mlstDict); g(330, root); g(100, 'AcDbDictionary'); g(281, 1);
     for (const st of doc.mlineStyles) { g(3, nm(st.name)); g(350, mlstH[st.name]); }
@@ -1133,7 +1199,36 @@ export function readDXF(text) {
           convert(b.items, G.Mx.mul(M, L), depth + 1, layer, out);
           break;
         }
+        case 'IMAGE': {
+          const def = imageDefs.get(val(gr, 340));
+          if (!def?.src) { skipped++; break; }
+          let meta = {};
+          try { const raw = xdataText(gr, 'IMAGEN'); if (raw) meta = JSON.parse(raw); } catch { meta = {}; }
+          const pxw = Math.max(1, +def.pxw || numv(gr, 13, 1)), pxh = Math.max(1, +def.pxh || numv(gr, 23, 1));
+          const u = G.Mx.apV(M, P(numv(gr, 11, 1), numv(gr, 21, 0))), v = G.Mx.apV(M, P(numv(gr, 12, 0), numv(gr, 22, 1)));
+          const p = pt(0), w = G.len(u) * pxw, h = G.len(v) * pxh;
+          if (!(w > 0 && h > 0)) { skipped++; break; }
+          const std = [];
+          for (const [c, val2] of gr.d) { if (c === 14) std.push(P(parseFloat(val2), 0)); else if (c === 24 && std.length) std[std.length - 1].y = parseFloat(val2); }
+          const cp = meta && meta.clip && Array.isArray(meta.clip.pts) && meta.clip.pts.length >= 3 ? meta.clip.pts : std;
+          const e = { type: 'image', p, w, h, rot: Math.atan2(u.y, u.x), src: def.src, name: def.name, pxw, pxh };
+          if (meta && 'clip' in meta && meta.clip === null) { /* sin recorte */ }
+          else if (cp.length >= 3) {
+            const pts = cp.map(q => G.add(p, G.add(G.mul(u, q.x), G.mul(v, q.y))));
+            e.clip = { pts, ...(meta.clip?.invert ? { invert: true } : {}), ...(meta.clip?.off ? { off: true } : {}) };
+          }
+          if (+meta.transparency) e.transparency = Math.min(90, Math.max(0, +meta.transparency));
+          push(e);
+          break;
+        }
         case 'INSERT': {
+          const am = xdataText(gr, 'MATRIZ');
+          if (am) {
+            try {
+              const a = JSON.parse(am);
+              if (a?.type === 'array' && Array.isArray(a.src)) { delete a.pathId; push(a); break; }
+            } catch { /* XDATA ilegible: se expande el bloque */ }
+          }
           const atts = [];
           if (gr.type === 'INSERT') { // ATTRIB … SEQEND tras la referencia
             let j = i + 1;
@@ -1175,7 +1270,18 @@ export function readDXF(text) {
     const pt = k => (val(gr, 10 + k) === undefined ? null : P(numv(gr, 10 + k), numv(gr, 20 + k)));
     const f = parseInt(val(gr, 70, '0'), 10), type = f & 7, raw = val(gr, 1, '');
     const text = raw && raw !== '<>' && raw.trim() !== '' ? mtextPlain(specials(raw)) : '';
-    const base = { type: 'dim', ...(text ? { text } : {}) };
+    const breaks = [];
+    const xd = xdataOf(gr);
+    const bi = xd ? xd.findIndex(x => x[0] === 1000 && x[1] === 'DIMBREAK') : -1;
+    if (bi >= 0) {
+      let cur = null;
+      for (const [c, v] of xd.slice(bi + 1)) {
+        if (c === 1010) cur = { p: P(parseFloat(v), 0), len: 0 };
+        else if (c === 1020 && cur) cur.p.y = parseFloat(v);
+        else if (c === 1040 && cur) { cur.len = parseFloat(v); breaks.push(cur); cur = null; }
+      }
+    }
+    const base = { type: 'dim', ...(text ? { text } : {}), ...(breaks.length ? { breaks } : {}) };
     const p10 = pt(0), p11 = pt(1), p13 = pt(3), p14 = pt(4), p15 = pt(5), p16 = pt(6);
     switch (type) {
       case 0: return p13 && p14 && p10 ? { ...base, kind: 'lin', p1: p13, p2: p14, p3: p10, rot: G.rad(numv(gr, 50, 0)) } : null;
@@ -1238,6 +1344,25 @@ export function readDXF(text) {
     if (asz) e.asz = asz;
     if (gap != null) e.gap = gap;
     return e;
+  }
+  // XDATA propios y definiciones de imagen (se necesitan antes de convertir bloques)
+  const xdataOf = (gr, app = 'TRAZOCAD') => { const i = gr.d.findIndex(x => x[0] === 1001 && x[1] === app); if (i < 0) return null; const out = []; for (let k = i + 1; k < gr.d.length && gr.d[k][0] !== 1001; k++) out.push(gr.d[k]); return out; };
+  const xdataText = (gr, marker, app = 'TRAZOCAD') => {
+    const xd = xdataOf(gr, app);
+    if (!xd) return null;
+    const i = xd.findIndex(x => x[0] === 1000 && x[1] === marker);
+    return i < 0 ? null : xd.slice(i + 1).filter(x => x[0] === 1000).map(x => x[1]).join('');
+  };
+  const imageDefs = new Map();
+  for (const gr of sections.OBJECTS || []) {
+    if (gr.type !== 'IMAGEDEF' || !val(gr, 5)) continue;
+    let meta = null;
+    try { const raw = xdataText(gr, 'IMAGEDEF'); if (raw) meta = JSON.parse(raw); } catch { meta = null; }
+    const path = val(gr, 1, '') || '';
+    imageDefs.set(val(gr, 5), {
+      name: meta?.name || path, src: meta?.src || (path.startsWith('data:') ? path : ''),
+      pxw: +(meta?.pxw || numv(gr, 10, 0)), pxh: +(meta?.pxh || numv(gr, 20, 0)),
+    });
   }
   const defining = new Set();
   function defineBlock(name) {
@@ -1310,7 +1435,6 @@ export function readDXF(text) {
   // Objetos por identificador; estilos de línea múltiple y de tabla
   const objByHandle = new Map((sections.OBJECTS || []).filter(gr => val(gr, 5)).map(gr => [val(gr, 5), gr]));
   const dictEntries = gr => { const out = {}; let key = null; for (const [c, v] of gr?.d || []) { if (c === 3) key = v; else if ((c === 350 || c === 360) && key != null) { out[key] = v; key = null; } } return out; };
-  const xdataOf = (gr, app = 'TRAZOCAD') => { const i = gr.d.findIndex(x => x[0] === 1001 && x[1] === app); if (i < 0) return null; const out = []; for (let k = i + 1; k < gr.d.length && gr.d[k][0] !== 1001; k++) out.push(gr.d[k]); return out; };
   const colorIn = (aci, tc) => (tc != null ? '#' + ((+tc >>> 0) & 0xffffff).toString(16).padStart(6, '0') : aci === 256 ? 'BYLAYER' : aci === 0 ? 'BYBLOCK' : aciToHex(Math.abs(aci) || 7));
   const mlineStyles = [], tableStyleByHandle = new Map(), tableStyles = [];
   for (const gr of sections.OBJECTS || []) {

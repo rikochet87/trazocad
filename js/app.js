@@ -591,8 +591,18 @@ class App {
     const req = this.req, m = this.mouse;
     if (this.win) { this.finishWindow(); return; }
     if (!req) {
+      const mod = e.ctrlKey || e.metaKey;
       const g = this.gripAt(m.sx, m.sy);
-      if (g) { this.run('_GRIP', g); return; }
+      if (g) {
+        // Ctrl+clic sobre los pinzamientos de una línea múltiple: suprimir el vértice interior
+        this.run(mod && g.refs.every(r => this.doc.get(r.id)?.type === 'mline') ? '_GRIPVERTEX' : '_GRIP', g);
+        return;
+      }
+      // Ctrl+clic sobre el eje de una línea múltiple: añadir un vértice en ese punto
+      if (mod) {
+        const id = this.pickId(m.sx, m.sy, x => x.type === 'mline');
+        if (id) { this.run('_GRIPVERTEX', { pt: m.w, refs: [{ id, i: -1 }] }); return; }
+      }
       this.selectClick(e.shiftKey, this.sel);
       return;
     }

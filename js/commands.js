@@ -1,6 +1,6 @@
 // Comandos estilo AutoCAD. Cada comando es una función asíncrona que pide datos con el contexto `c`.
 import * as G from './geom.js';
-import { TYPES, cloneEnt, xformEnt, crosses, bboxOf, bbPts, describe, fmt, dimParts, plArea, plLength, plPieces, plPolygon, hatchArea, blockAttdefs, mlEff, fieldText, FIELD_PROPS, DATE_FORMATS, insertMatrix, LTYPES, primsOf, ellPts } from './entities.js';
+import { TYPES, cloneEnt, xformEnt, crosses, bboxOf, bbPts, describe, fmt, dimParts, plArea, plLength, plPieces, pieceAt, plPolygon, hatchArea, blockAttdefs, mlEff, fieldText, FIELD_PROPS, DATE_FORMATS, insertMatrix, LTYPES, primsOf, ellPts } from './entities.js';
 import { entityLoop, chainLoops, booleanLoops, nestLoops, regionArea, regionPerimeter } from './region.js';
 import { srcCenter, toLocal, itemCount, pathFit, localPath, pathable, ARRAY_KINDS, arrayInv, arrayM, invertM, itemWorld, itemMatrices, rectLevels } from './arrays.js';
 import { rectClip } from './xclip.js';
@@ -400,8 +400,14 @@ function cloudOf(path, len) {
   for (let i = 0; i < n; i++) area += G.cross(path[i], path[(i + 1) % n]);
   const sign = area > 0 ? -1 : 1, pts = [], bulges = [];
   for (let i = 0; i < cnt; i++) { pts.push(at(i * per / cnt)); bulges.push(sign); }
-  return { type: 'pline', pts, bulges, closed: true };
+  return { type: 'pline', pts, bulges, closed: true, cloud: len };
 }
+const isCloud = e => e?.type === 'pline' && e.closed && (e.cloud != null ? e.cloud > 0 : (e.bulges?.length && e.bulges.every(b => Math.abs(Math.abs(b) - 1) < 1e-9)));
+const cloudSeg = (e, p) => {
+  let best = -1, bd = Infinity;
+  plPieces(e).forEach((pc, i) => { const d = G.dist(p, G.nearPrim(p, pc.prim)); if (d < bd) { bd = d; best = i; } });
+  return best;
+};
 def('REVCLOUD', ['NUBE', 'REVISION', 'NUBEREVISION'], 'Crea una nube de revisión rectangular, poligonal o a partir de un contorno cerrado', async c => {
   const S = c.settings;
   const len = await c.getNumber('Longitud de arco de la nube', { def: S.revcloud || 5, min: 0.001 });
@@ -437,6 +443,42 @@ def('REVCLOUD', ['NUBE', 'REVISION', 'NUBEREVISION'], 'Crea una nube de revisió
   if (src) c.doc.remove(src.id);
   c.print(`Nube de revisión creada con ${cloud.pts.length} arcos.`);
 }, { group: 'Dibujo' });
+def('REVCLOUDEDIT', ['EDITNUBE', 'NUBEEDIT', 'EDITARNUBE'], 'Añade o quita arcos de una nube de revisión, o la convierte en polilínea', async c => {
+  const o = await c.getEntity('Designe una nube de revisión', { filter: isCloud });
+  const e = o.e;
+  const op = await c.getKeyword('Indique la operación', ['Añadir', 'Quitar', 'Convertir'], 'Añadir');
+  if (op === 'Convertir') {
+    c.doc.modify(e.id, x => { x.cloud = 0; });
+    return c.print('Nube convertida en polilínea normal.');
+  }
+  const p = await c.getPoint(op === 'Añadir' ? 'Precise el arco donde añadir un vértice' : 'Precise el arco que desea quitar');
+  const j = cloudSeg(e, p);
+  if (j < 0) return c.print('No se ha encontrado un arco de la nube.');
+  if (op === 'Añadir') {
+    const pc = plPieces(e)[j], m = pieceAt(pc, 0.5), b = pc.bulge || 1, b2 = Math.tan(Math.atan(b) / 2);
+    c.doc.modify(e.id, x => {
+      const n = x.pts.length;
+      if (j === n - 1) {
+        x.pts.push(m); x.bulges = [...(x.bulges || []), b2]; x.bulges[n - 1] = b2;
+      } else {
+        x.pts.splice(j + 1, 0, m); x.bulges.splice(j + 1, 0, b2); x.bulges[j] = b2;
+      }
+      x.closed = true;
+    });
+    c.print('Arco añadido a la nube.');
+  } else {
+    if (e.pts.length <= 4) return c.print('La nube debe conservar al menos cuatro arcos.');
+    c.doc.modify(e.id, x => {
+      x.pts.splice(j, 1);
+      if (x.bulges) x.bulges.splice(j, 1);
+    });
+    c.print('Arco quitado de la nube.');
+  }
+}, { group: 'Dibujo' });
+def('WIPEOUTFRAME', ['MARCOCOBERTURA', 'WOF'], 'Marco de las coberturas: 0 oculto, 1 visible e impreso, 2 visible sólo en pantalla', async c => {
+  const v = await c.getNumber('Indique valor nuevo para WIPEOUTFRAME (0 oculto, 1 visible e impreso, 2 sólo en pantalla)', { def: c.settings.wipeoutFrame ?? 2, int: true, min: 0, max: 2 });
+  c.settings.wipeoutFrame = v; c.doc.changed();
+}, { group: 'Dibujo' });
 def('WIPEOUT', ['COBERTURA', 'TAPAR', 'OCULTAR'], 'Crea una cobertura poligonal que oculta lo dibujado debajo de ella', async c => {
   const pts = [await c.getPoint('Precise primer punto del contorno de la cobertura')];
   for (;;) {
@@ -458,7 +500,7 @@ def('IMAGEATTACH', ['IMAGEN', 'ADJUNTARIMAGEN', 'IMATTACH'], 'Adjunta una imagen
   if (!ok) return c.print('No se puede leer la imagen.');
   const p = await c.getPoint('Precise punto de inserción de la imagen');
   const sc = await c.getNumber('Escala de la imagen (1 píxel = 1 unidad)', { def: 1, min: 1e-6 });
-  c.add({ type: 'image', p, w: im.naturalWidth * sc, h: im.naturalHeight * sc, src, name: f.file.name, rot: 0 });
+  c.add({ type: 'image', p, w: im.naturalWidth * sc, h: im.naturalHeight * sc, src, name: f.file.name, rot: 0, pxw: im.naturalWidth, pxh: im.naturalHeight });
   c.print(`Imagen "${f.file.name}" adjuntada (${im.naturalWidth} × ${im.naturalHeight} px).`);
 }, { group: 'Insertar' });
 def('POINT', ['PO', 'PUNTO'], 'Crea objetos punto', async c => {
@@ -1504,6 +1546,20 @@ def('ERASE', ['E', 'BORRA', 'BORRAR'], 'Borra objetos', async c => {
   const ids = await c.getSelection();
   for (const id of ids) c.doc.remove(id);
   if (ids.length) c.print(`${ids.length} objeto(s) borrado(s).`);
+}, { group: 'Modificar', sel: true });
+
+def('DRAWORDER', ['ORDENDIBUJO', 'ORDEN', 'DRAWORDER'], 'Cambia el orden de dibujo: lleva los objetos al frente o al fondo', async c => {
+  const ids = await c.getSelection('Designe objetos para cambiar el orden de dibujo');
+  if (!ids.length) return;
+  const op = await c.getKeyword('Indique la posición', ['Frente', 'Detrás'], 'Frente');
+  const arr = c.doc.ents, set = new Set(ids), sel = arr.filter(e => set.has(e.id));
+  if (!sel.length) return c.print('Los objetos designados no pertenecen al espacio activo.');
+  const rest = arr.filter(e => !set.has(e.id));
+  c.doc.begin();
+  arr.splice(0, arr.length, ...(op === 'Frente' ? [...rest, ...sel] : [...sel, ...rest]));
+  c.doc.changed();
+  c.doc.commit();
+  c.print(`${sel.length} objeto(s) enviado(s) ${op === 'Frente' ? 'al frente' : 'al fondo'}.`);
 }, { group: 'Modificar', sel: true });
 
 def('MOVE', ['M', 'DESPLAZA'], 'Desplaza objetos', async c => {
@@ -2644,5 +2700,19 @@ def('_GRIP', [], 'Edición por pinzamientos', async (c, g) => {
   };
   const pt = await c.getPoint('** ESTIRAR ** Precise punto de estiramiento', { base: g.pt, hot: g.pt, gripCmd: true, preview: prev });
   for (const { id, i } of g.refs) c.doc.modify(id, e => TYPES[e.type].moveGrip(e, i, pt));
+}, { hidden: true, keepSel: true });
+// Ctrl+clic sobre un pinzamiento: suprime el vértice interior; Ctrl+clic sobre el eje (i = -1): añade un vértice
+def('_GRIPVERTEX', [], 'Edición de vértices de la línea múltiple por pinzamiento (Ctrl+clic)', async (c, g) => {
+  let n = 0;
+  for (const { id, i } of g.refs) {
+    const m = c.doc.get(id);
+    if (m?.type !== 'mline') continue;
+    const x = cloneEnt(m), clos = !!x.closed && x.pts.length > 2;
+    const interior = i >= 0 && (clos ? x.pts.length > 3 : i > 0 && i < x.pts.length - 1);
+    if (i < 0 ? !mlAddVertex(x, g.pt) : !(interior && mlDelVertex(x, x.pts[i]))) continue;
+    n++;
+    c.doc.modify(id, e => { e.pts = x.pts; if (x.cuts) e.cuts = x.cuts; else delete e.cuts; });
+  }
+  c.print(n ? `${n} vértice(s) ${g.refs[0]?.i < 0 ? 'añadido(s)' : 'suprimido(s)'}.` : 'No se ha podido editar el vértice.');
 }, { hidden: true, keepSel: true });
 

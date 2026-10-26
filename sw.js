@@ -1,5 +1,5 @@
 // Service worker: precarga la aplicación para uso sin conexión (cache-first con actualización en segundo plano).
-const CACHE = 'trazocad-v8';
+const CACHE = 'trazocad-v9';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './js/app.js', './js/commands.js', './js/document.js', './js/dxf.js', './js/entities.js', './js/geom.js', './js/hatch.js', './js/patterns.js', './js/spatial.js',

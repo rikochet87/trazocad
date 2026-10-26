@@ -60,7 +60,7 @@ class Gradient {
 
 export class PdfContext {
   constructor(H) {
-    this.H = H; this.ops = []; this.fonts = new Set(); this.path = []; this.cur = null;
+    this.H = H; this.ops = []; this.fonts = new Set(); this.images = new Map(); this.alphas = new Set(); this.path = []; this.cur = null;
     this.st = { m: [1, 0, 0, 1, 0, 0], strokeStyle: '#000000', fillStyle: '#000000', lineWidth: 1, lineCap: 'butt', dash: [], globalAlpha: 1, font: '10px sans-serif', textAlign: 'left', textBaseline: 'alphabetic' };
     this.stack = [];
     for (const k of ['strokeStyle', 'fillStyle', 'lineWidth', 'lineCap', 'globalAlpha', 'font', 'textAlign', 'textBaseline']) {
@@ -147,6 +147,19 @@ export class PdfContext {
     [this.path, this.cur, this.st.m] = saved;
     void m;
   }
+  // Imágenes: se registra la fuente aunque el navegador aún no la haya decodificado; buildPdf la incrusta después.
+  drawImageSrc(src, dx, dy, dw, dh) {
+    if (!src || !(dw > 0) || !(dh > 0)) return;
+    let im = this.images.get(src);
+    if (!im) { im = { key: `Im${this.images.size + 1}`, src }; this.images.set(src, im); }
+    const m = this.st.m, dev = (x, y) => { const [X, Y] = ap(m, x, y); return [X, this.H - Y]; };
+    const tl = dev(dx, dy), bl = dev(dx, dy + dh), br = dev(dx + dw, dy + dh);
+    const tm = [br[0] - bl[0], br[1] - bl[1], tl[0] - bl[0], tl[1] - bl[1], bl[0], bl[1]].map(n4).join(' ');
+    const alpha = Math.max(0, Math.min(1, this.st.globalAlpha)), aName = `GA${Math.round(alpha * 1000)}`;
+    if (alpha < 1) this.alphas.add(alpha);
+    this.ops.push('q', ...(alpha < 1 ? [`/${aName} gs`] : []), `${tm} cm`, `/${im.key} Do`, 'Q');
+  }
+  drawImage(img, dx, dy, dw, dh) { this.drawImageSrc(img?.src, dx, dy, dw ?? img?.naturalWidth ?? 1, dh ?? img?.naturalHeight ?? 1); }
   fillText(str, x, y) {
     if (!str) return;
     const font = this.st.font, size = parseFloat((font.match(/([\d.]+)px/) || [, 10])[1]), name = pdfFont(font);
@@ -167,6 +180,31 @@ async function deflate(bytes) {
   return new Uint8Array(await new Response(cs.readable).arrayBuffer());
 }
 
+// Píxeles RGB y máscara de transparencia de una imagen (data URL o URL accesible)
+async function imagePixels(src) {
+  let bmp;
+  try {
+    if (typeof createImageBitmap !== 'function') throw new Error('sin createImageBitmap');
+    const res = await fetch(src);
+    if (!res.ok) throw new Error('no se puede leer la imagen');
+    bmp = await createImageBitmap(await res.blob());
+  } catch {
+    bmp = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('imagen no válida')); im.src = src; });
+  }
+  const w = bmp.width || bmp.naturalWidth, h = bmp.height || bmp.naturalHeight;
+  if (!(w > 0 && h > 0)) throw new Error('imagen sin tamaño');
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(bmp, 0, 0);
+  const d = cx.getImageData(0, 0, w, h).data, rgb = new Uint8Array(w * h * 3), a = new Uint8Array(w * h);
+  let alpha = false;
+  for (let i = 0, j = 0, k = 0; i < d.length; i += 4, j += 3, k++) {
+    rgb[j] = d[i]; rgb[j + 1] = d[i + 1]; rgb[j + 2] = d[i + 2]; a[k] = d[i + 3];
+    if (d[i + 3] < 255) alpha = true;
+  }
+  return { w, h, rgb, a: alpha ? a : null };
+}
+const EMPTY_IMAGE = { w: 1, h: 1, rgb: new Uint8Array([255, 255, 255]), a: new Uint8Array([0]) };
+
 // pages: [{w, h (puntos), ctx: PdfContext}] → Blob del PDF
 export async function buildPdf(pages, title = 'TrazoCAD') {
   const fontNames = [...new Set(pages.flatMap(p => [...p.ctx.fonts]))];
@@ -174,16 +212,49 @@ export async function buildPdf(pages, title = 'TrazoCAD') {
   const add = parts => { objs.push(parts); return objs.length; };
   const catalog = add(null), pagesObj = add(null);
   const fontObj = fontNames.map(n => add(enc.encode(`<< /Type /Font /Subtype /Type1 /BaseFont /${n} /Encoding /WinAnsiEncoding >>`)));
+  // Imágenes XObject: una por fuente, compartida entre páginas
+  const imageObjs = new Map();
+  let imageN = 0;
+  const pageImages = pages.map(p => new Map([...p.ctx.images.values()].map(im => {
+    let g = imageObjs.get(im.src);
+    if (!g) { g = { name: `Im${++imageN}`, src: im.src }; imageObjs.set(im.src, g); }
+    return [im.key, g];
+  })));
+  const addImage = async px => {
+    let smask = null;
+    if (px.a) {
+      const za = await deflate(px.a), ad = za || px.a;
+      const ah = enc.encode(`<< /Type /XObject /Subtype /Image /Width ${px.w} /Height ${px.h} /ColorSpace /DeviceGray /BitsPerComponent 8 /Length ${ad.length}${za ? ' /Filter /FlateDecode' : ''} >>\nstream\n`);
+      smask = add(concat([ah, ad, enc.encode('\nendstream')]));
+    }
+    const zr = await deflate(px.rgb), rd = zr || px.rgb;
+    const head = enc.encode(`<< /Type /XObject /Subtype /Image /Width ${px.w} /Height ${px.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length ${rd.length}${zr ? ' /Filter /FlateDecode' : ''}${smask ? ` /SMask ${smask} 0 R` : ''} >>\nstream\n`);
+    return add(concat([head, rd, enc.encode('\nendstream')]));
+  };
+  for (const g of imageObjs.values()) {
+    let px = EMPTY_IMAGE;
+    try { px = await imagePixels(g.src); } catch { /* fuente ilegible: imagen transparente de 1×1 */ }
+    g.obj = await addImage(px);
+  }
   const kids = [];
   for (const p of pages) {
-    // Los índices de fuente de cada página se renumeran a la lista global
-    const local = [...p.ctx.fonts], remap = s => s.replace(/\/F(\d+) /g, (m, i) => `/G${fontNames.indexOf(local[+i - 1]) + 1} `);
+    // Los índices de fuente e imagen de cada página se renumeran a la lista global
+    const local = [...p.ctx.fonts], li = new Map([...pageImages[pages.indexOf(p)]]);
+    const remap = s => s
+      .replace(/\/F(\d+) /g, (m, i) => `/G${fontNames.indexOf(local[+i - 1]) + 1} `)
+      .replace(/\/Im(\d+) Do/g, (m, n) => `/${li.get(`Im${n}`).name} Do`);
     const raw = enc.encode(p.ctx.ops.map(remap).join('\n'));
     const z = await deflate(raw), data = z || raw;
     const head = enc.encode(`<< /Length ${data.length}${z ? ' /Filter /FlateDecode' : ''} >>\nstream\n`), tail = enc.encode('\nendstream');
     const content = add(concat([head, data, tail]));
-    const fontRes = fontNames.map((n, i) => `/G${i + 1} ${fontObj[i]} 0 R`).join(' ');
-    kids.push(add(enc.encode(`<< /Type /Page /Parent ${pagesObj} 0 R /MediaBox [0 0 ${n4(p.w)} ${n4(p.h)}] /Resources << /Font << ${fontRes} >> >> /Contents ${content} 0 R >>`)));
+    const res = [];
+    if (fontNames.length) res.push(`/Font << ${fontNames.map((n, i) => `/G${i + 1} ${fontObj[i]} 0 R`).join(' ')} >>`);
+    if (li.size) res.push(`/XObject << ${[...li.values()].map(g => `/${g.name} ${g.obj} 0 R`).join(' ')} >>`);
+    if (p.ctx.alphas.size) {
+      const gs = [...p.ctx.alphas].map(a => { const nm = `GA${Math.round(a * 1000)}`; return `/${nm} ${add(enc.encode(`<< /Type /ExtGState /ca ${n4(a)} /CA ${n4(a)} >>`))} 0 R`; });
+      res.push(`/ExtGState << ${gs.join(' ')} >>`);
+    }
+    kids.push(add(enc.encode(`<< /Type /Page /Parent ${pagesObj} 0 R /MediaBox [0 0 ${n4(p.w)} ${n4(p.h)}] /Resources << ${res.join(' ')} >> /Contents ${content} 0 R >>`)));
   }
   objs[catalog - 1] = enc.encode(`<< /Type /Catalog /Pages ${pagesObj} 0 R >>`);
   objs[pagesObj - 1] = enc.encode(`<< /Type /Pages /Kids [${kids.map(k => `${k} 0 R`).join(' ')}] /Count ${kids.length} >>`);

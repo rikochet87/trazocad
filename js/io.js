@@ -1,6 +1,6 @@
 // Archivos: nuevo, abrir, guardar (.tcad), exportar DXF/SVG/PNG, imprimir y autoguardado.
 import * as G from './geom.js';
-import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, bboxOf, mtextGeom, mleaderGeom, tableGeom, fieldText, ENV, insertClip, mlGeom, LTYPES } from './entities.js';
+import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, bboxOf, mtextGeom, mleaderGeom, tableGeom, fieldText, ENV, insertClip, mlGeom, LTYPES, imageAlpha } from './entities.js';
 import { arrayEnts } from './arrays.js';
 import { splinePts } from './spline.js';
 import { writeDXF, readDXF } from './dxf.js';
@@ -236,9 +236,15 @@ export class IO {
         case 'circle': out.push(`<circle cx="${n5(e.c.x)}" cy="${n5(e.c.y)}" r="${n5(e.r)}" ${s}/>`); break;
         case 'arc': { const a = G.polar(e.c, e.a1, e.r), b = G.polar(e.c, e.a2, e.r); out.push(`<path d="M${n5(a.x)} ${n5(a.y)} A${n5(e.r)} ${n5(e.r)} 0 ${G.sweep(e.a1, e.a2) > Math.PI ? 1 : 0} 1 ${n5(b.x)} ${n5(b.y)}" ${s}/>`); break; }
         case 'pline': out.push(`<path d="${plD(e)}" ${s}/>`); break;
-        case 'wipeout': out.push(`<path d="${e.pts.map(p => `${n5(p.x)} ${n5(p.y)}`).join('L').replace(/^/, 'M')}Z" fill="#ffffff"/>`); break;
+        case 'wipeout': {
+          const d = `${e.pts.map(p => `${n5(p.x)} ${n5(p.y)}`).join('L').replace(/^/, 'M')}Z`;
+          out.push(`<path d="${d}" fill="#ffffff"/>`);
+          if (doc.settings.wipeoutFrame === 1) out.push(`<path d="${d}" ${s}/>`); // WIPEOUTFRAME = 1: el marco también se imprime
+          break;
+        }
         case 'image': {
-          const im = `<image x="0" y="${n5(-e.h)}" width="${n5(e.w)}" height="${n5(e.h)}" preserveAspectRatio="none" href="${esc(e.src)}"/>`;
+          const op = imageAlpha(e), opa = op < 1 ? ` opacity="${n5(op)}"` : '';
+          const im = `<image x="0" y="${n5(-e.h)}" width="${n5(e.w)}" height="${n5(e.h)}" preserveAspectRatio="none"${opa} href="${esc(e.src)}"/>`;
           const tr = `<g transform="translate(${n5(e.p.x)} ${n5(e.p.y)}) rotate(${n5(-G.deg(e.rot || 0))})">${im}</g>`;
           if (e.clip?.pts?.length && !e.clip.off) {
             const id = `ic${++this.gradN}`;

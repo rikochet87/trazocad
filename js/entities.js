@@ -1112,10 +1112,17 @@ TYPES.wipeout = {
   moveGrip(e, i, p) { e.pts[i] = p; },
   xform(e, m) { e.pts = e.pts.map(p => Mx.ap(m, p)); },
   draw(c, e, R, st) {
-    c.beginPath(); TYPES.pline.path(c, { pts: e.pts, closed: true });
+    const path = () => { c.beginPath(); TYPES.pline.path(c, { pts: e.pts, closed: true }); };
+    path();
     c.save();
-    c.fillStyle = wipeoutBg(); c.fill();
-    if (st.hl) { c.strokeStyle = st.color; c.lineWidth = st.px / R.scale; c.setLineDash([6 / R.scale, 4 / R.scale]); c.stroke(); }
+    if (!st.hl) { c.fillStyle = wipeoutBg(); c.fill(); }
+    const fr = ENV.doc?.settings?.wipeoutFrame ?? 2; // 0: oculto, 1: visible e impreso, 2: sólo en pantalla
+    if (fr === 1 || (fr === 2 && ENV.onScreen) || st.hl) {
+      path();
+      c.strokeStyle = st.color; c.lineWidth = st.px / R.scale;
+      if (st.hl) c.setLineDash([6 / R.scale, 4 / R.scale]);
+      c.stroke();
+    }
     c.restore();
   },
   props: [ro('Área', e => Math.abs(G.polyArea(e.pts))), ro('Vértices', e => e.pts.length, 'int')],
@@ -1137,16 +1144,25 @@ export const imageCorners = e => {
   const c = Math.cos(e.rot || 0), s = Math.sin(e.rot || 0);
   return [[0, 0], [e.w, 0], [e.w, e.h], [0, e.h]].map(([x, y]) => P(e.p.x + x * c - y * s, e.p.y + x * s + y * c));
 };
+// Transparencia de imagen (0 = opaca, 90 = casi transparente, como IMAGEADJUST de AutoCAD)
+export const imageAlpha = e => 1 - Math.max(0, Math.min(90, +e.transparency || 0)) / 100;
+const imageClipPts = e => (e.clip?.pts?.length ? e.clip.pts : []);
 TYPES.image = {
   name: 'Imagen',
-  prims: e => closedSegs(e.clip?.pts?.length ? e.clip.pts : imageCorners(e)),
-  bbox: e => bbPts(e.clip?.pts?.length ? e.clip.pts : imageCorners(e)),
+  prims: e => closedSegs(imageClipPts(e).length ? imageClipPts(e) : imageCorners(e)),
+  bbox: e => bbPts(imageClipPts(e).length ? imageClipPts(e) : imageCorners(e)),
   snaps: e => ({ end: imageCorners(e), mid: imageCorners(e).map((p, i, q) => G.mid(p, q[(i + 1) % 4])), ins: [e.p] }),
-  grips: e => [e.p, ...imageCorners(e)],
+  grips: e => [e.p, ...imageCorners(e), ...imageClipPts(e)],
+  gripKinds: e => ['', '', '', '', '', ...imageClipPts(e).map(() => 'clip')],
   moveGrip(e, i, p) {
-    if (i === 0) { e.p = p; return; }
-    const d = G.sub(p, imageCorners(e)[i - 1]);
-    e.p = G.add(e.p, d);
+    if (i <= 4) {
+      const d = i === 0 ? G.sub(p, e.p) : G.sub(p, imageCorners(e)[i - 1]);
+      e.p = G.add(e.p, d);
+      if (e.clip?.pts) e.clip = { ...e.clip, pts: e.clip.pts.map(q => G.add(q, d)) };
+      return;
+    }
+    const j = i - 5;
+    if (e.clip?.pts?.[j]) e.clip = { ...e.clip, pts: e.clip.pts.map((q, k) => (k === j ? p : q)) };
   },
   xform(e, m) {
     e.p = Mx.ap(m, e.p); e.w *= Mx.scaleOf(m); e.h *= Mx.scaleOf(m); e.rot = (e.rot || 0) + Math.atan2(m[1], m[0]);
@@ -1154,15 +1170,21 @@ TYPES.image = {
   },
   draw(c, e, R, st) {
     const clip = e.clip?.pts?.length && !e.clip.off ? e.clip : null;
+    // Resaltado: sólo el contorno (volver a pintar el ráster sobre la escena ocultaría lo que tiene detrás)
+    if (st.hl) {
+      c.beginPath(); TYPES.pline.path(c, { pts: clip ? clip.pts : imageCorners(e), closed: true }); c.stroke();
+      return;
+    }
     if (clip) {
       c.save(); c.beginPath();
       if (e.clip.invert) { const b = bbPts(imageCorners(e)), m = Math.max(b.x2 - b.x1, b.y2 - b.y1) + 1; c.rect(b.x1 - m, b.y1 - m, b.x2 - b.x1 + 2 * m, b.y2 - b.y1 + 2 * m); }
       clip.pts.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y)));
       c.closePath(); c.clip('evenodd');
     }
-    const im = imageOf(e.src);
-    c.save(); c.translate(e.p.x, e.p.y); c.rotate(e.rot || 0); c.scale(1, -1);
-    if (im.complete && im.naturalWidth && typeof c.drawImage === 'function') c.drawImage(im, 0, -e.h, e.w, e.h);
+    const im = imageOf(e.src), alpha = imageAlpha(e);
+    c.save(); c.globalAlpha *= alpha; c.translate(e.p.x, e.p.y); c.rotate(e.rot || 0); c.scale(1, -1);
+    if (typeof c.drawImageSrc === 'function') c.drawImageSrc(e.src, 0, -e.h, e.w, e.h);
+    else if (im.complete && im.naturalWidth && typeof c.drawImage === 'function') c.drawImage(im, 0, -e.h, e.w, e.h);
     else { c.strokeStyle = st.color; c.lineWidth = st.px / R.scale; c.strokeRect(0, -e.h, e.w, e.h); }
     c.restore();
     if (clip) {
@@ -1171,9 +1193,12 @@ TYPES.image = {
       if (fr === 1 || (fr === 2 && ENV.onScreen) || st.hl) { c.beginPath(); TYPES.pline.path(c, { pts: clip.pts, closed: true }); c.stroke(); }
     }
   },
-  props: [ro('Archivo', e => e.name || 'Imagen'), num('Anchura', e => e.w, (e, v) => { if (v > 0) e.w = v; }),
+  props: [ro('Archivo', e => e.name || 'Imagen', 'text'), num('Anchura', e => e.w, (e, v) => { if (v > 0) e.w = v; }),
     num('Altura', e => e.h, (e, v) => { if (v > 0) e.h = v; }),
-    angp('Rotación', e => e.rot || 0, (e, v) => { e.rot = v; }), ro('Delimitada', e => (e.clip ? 'Sí' : 'No'))],
+    angp('Rotación', e => e.rot || 0, (e, v) => { e.rot = v; }),
+    num('Transparencia', e => e.transparency || 0, (e, v) => { e.transparency = Math.max(0, Math.min(90, +v || 0)); }),
+    ro('Píxeles', e => (e.pxw && e.pxh ? `${e.pxw} × ${e.pxh} px` : '—'), 'text'),
+    ro('Delimitada', e => (e.clip ? 'Sí' : 'No'), 'text')],
 };
 
 // ---------- Sombreado ----------
@@ -1345,6 +1370,8 @@ TYPES.mline = {
     return { end, mid };
   },
   grips: e => e.pts,
+  // Los vértices intermedios se pueden añadir o suprimir con Ctrl+clic (véase _GRIPVERTEX)
+  gripKinds: e => e.pts.map((_, i) => (e.closed && e.pts.length > 2) || (i > 0 && i < e.pts.length - 1) ? 'vertex' : ''),
   moveGrip(e, i, p) { e.pts = e.pts.map((q, j) => (j === i ? p : q)); },
   // Simetría: se invierte el sentido para que los elementos sigan al mismo lado (y los cortes de MLEDIT, con él)
   xform(e, m) {
