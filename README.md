@@ -200,3 +200,38 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 
 Escala real de las imágenes (píxeles por unidad y DPI al adjuntar) y recorte poligonal con varios contornos; cotas con tolerancias y estilos aplicados por objeto; sombreados con islas designadas y degradados de varias paradas; referencias externas recordadas entre sesiones y escritas como XREF; impresión con tablas de estilos de trazado (CTB/STB) y escala de tipo de línea por ventana gráfica; y una paleta de Propiedades múltiple para editar varios objetos a la vez.
 
+## Hacia la v1.0: CAD + SIG para ingeniería vial
+
+El objetivo final es un programa con las capacidades de AutoCAD, orientado a la **ingeniería de caminos** y con capacidades de **SIG**: obras georreferenciadas, visualización de las obras viales sobre un mapa del mundo y geoprocesos. La referencia para la parte vial es el flujo de trabajo de Autodesk Civil 3D (superficies, ejes, perfiles, peraltes, corredores, secciones, cubicación, diagrama de masas y producción de láminas), y la lámina de referencia es la planialtimetría de un proyecto ejecutivo real.
+
+### Principios
+
+- **Válido en cualquier país.** Nada depende de una norma, un sistema de coordenadas ni una convención local: todo se configura por proyecto y se guarda en el `.tcad`.
+- **Sistemas de coordenadas de todo el mundo.** Motor de proyecciones propio (transversa de Mercator y UTM, cónica conforme de Lambert, Albers, Mercator y Web Mercator, estereográficas oblicua y polar, Cassini, cilíndricas) con definiciones WKT, `.prj` y PROJ, un catálogo EPSG incorporado y transformaciones de datum (Helmert de 3 y 7 parámetros, rejillas NTv2 cargadas por el usuario). El orden de los ejes es configurable: en algunos países X es el norte.
+- **Normas de diseño como datos.** Velocidades, radios mínimos, longitudes de transición, peraltes máximos y su desarrollo, parámetros K de curvas verticales, distancias de visibilidad, anchos y taludes se leen de **archivos de criterios de diseño** que el usuario elige o edita, como en Civil 3D. Se incluyen ejemplos basados en normas públicas, nunca fijos en el código.
+- **Unidades y convenciones locales.** Sistema métrico o imperial, formato de progresivas (`0+000.00` o `10+00.00`), tráfico por la derecha o por la izquierda (afecta a peraltes, intersecciones y señalización), ángulos en grados sexagesimales, centesimales o rumbos.
+- **Sin dependencias.** Proyecciones, formatos SIG, triangulación y cálculo se programan en el propio TrazoCAD.
+
+### Versiones previstas
+
+| Versión | Bloque | Contenido |
+|---|---|---|
+| **v0.10** | CAD | Lo indicado arriba |
+| **v0.11** | CAD | SCP (UCS) y vistas guardadas, ventanas en el espacio modelo, QSELECT, FILTER, FIND, OVERKILL, AUDIT, herramientas de capas (aislar, recorrer, fusionar, filtros) |
+| **v0.12** | CAD | Escalas anotativas, guiones `.scr` y una API en JavaScript para automatizar, paletas de herramientas y **bibliotecas de bloques** (señalización, planos tipo de alcantarillas, defensas, cordones) |
+| **v0.13** | Base | Cota Z en los objetos, polilíneas y caras 3D, **coordenadas grandes** sin pérdida de precisión (origen local de dibujo) y rendimiento con más de 100 000 objetos (índice espacial, dibujo por teselas) |
+| **v0.14** | SIG 1 | Motor de proyecciones y datums, georreferenciación del dibujo (sistema de coordenadas, punto de referencia, norte), coordenadas geográficas en la barra de estado, **mapa base** sobre el dibujo (teselas XYZ, WMS y WMTS configurables, con OpenStreetMap por defecto y caché sin conexión) y posición GPS del dispositivo |
+| **v0.15** | SIG 2 | Importar y exportar GeoJSON, Shapefile (`.shp` + `.dbf` + `.prj`), KML/KMZ y GeoTIFF con reproyección al vuelo; **tabla de atributos** por objeto, simbología temática y etiquetas por atributo; datos catastrales (parcelas, titulares, nomenclatura) |
+| **v0.16** | SIG 3 | Geoprocesos vectoriales: área de influencia, intersección, recorte, unión, diferencia, disolución, unión espacial, consultas por atributo y por ubicación; sobre modelos digitales de terreno, pendientes, orientaciones y sombreado |
+| **v0.17** | Topografía | **Puntos** (importación de libretas CSV/TXT con formatos PNEZD configurables, grupos de puntos y claves de descripción que asignan capa, símbolo y etiqueta), poligonales con compensación, **superficie TIN** con líneas de quiebre, contornos y zonas excluidas, curvas de nivel con intervalos mayor y menor, análisis de cotas y pendientes, superficie desde un MDT |
+| **v0.18** | Eje | **Alineaciones horizontales** por elementos (rectas, curvas circulares, clotoides y curvas compuestas) controladas por el archivo de criterios con avisos de incumplimiento, progresivas y ecuaciones de progresiva, puntos singulares (TE, EC, CE, ET o sus equivalentes), planilla de curvas y de vértices, replanteo, intercambio **LandXML** |
+| **v0.19** | Perfil | **Perfil longitudinal** del terreno muestreado sobre la superficie, rasante con curvas verticales (parabólicas, parámetro K, comprobación de visibilidad), vistas de perfil con escala vertical exagerada y **guitarra configurable** (cotas de terreno y rasante, cortes y rellenos, pendientes, fondo de cuneta, progresivas, peraltes) |
+| **v0.20** | Sección tipo | **Ensamblajes** de subensamblajes paramétricos (carriles, banquinas o arcenes, cunetas, taludes de desmonte y terraplén con alcance hasta el terreno, mediana, cordones, paquete estructural por capas) y **peraltes** calculados según los criterios con el método de desarrollo y el diagrama de peraltes editable |
+| **v0.21** | Corredor | **Corredor** que barre el ensamblaje a lo largo del eje y la rasante con frecuencia y regiones configurables, superficies del corredor (rasante y subrasante), líneas de borde, ensanches y carriles adicionales siguiendo alineaciones auxiliares |
+| **v0.22** | Cubicación | **Líneas de muestreo** y **perfiles transversales**, volúmenes de desmonte y terraplén por áreas medias y por comparación de superficies TIN, coeficientes de esponjamiento y compactación, volúmenes de materiales por capa estructural, **diagrama de masas** con distancia de transporte libre, sobreacarreo, préstamos y vertederos, informes de **cómputo métrico** |
+| **v0.23** | Producción | **Láminas automáticas**: marcos de vista a lo largo del eje, planialtimetrías (planta + perfil + guitarra) con líneas de continuidad, láminas de perfiles transversales, carátulas con campos, índice de planos y publicación en PDF por lotes |
+| **v0.24** | Obras complementarias | Intersecciones y rotondas paramétricas, explanaciones con líneas características (plataformas, accesos), drenaje: cuencas, alcantarillas y redes de tuberías con sus perfiles, señalización vertical y horizontal sobre el eje |
+| **v1.0** | Cierre | Estabilización, rendimiento con proyectos de decenas de kilómetros, documentación y ejemplos completos |
+
+Cada versión sigue apareciendo con su propia hoja de ruta detallada al cerrarse la anterior; esta tabla marca el rumbo general y se ajustará a medida que avance el proyecto.
+
