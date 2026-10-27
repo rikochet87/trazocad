@@ -4,6 +4,7 @@ import { TYPES, gripsOf, blockEnts, ENV, textBox, dimParts, bboxOf, bbUnion, ins
 const arrayEntsOf = e => ENV.arrayEnts?.(e) || [];
 import { linsOf, rotsOf } from './dynblock.js';
 import { evalParams, refGeom, consDim, refIds, DIM_TYPES } from './constraints.js';
+import { ucsOf, isWorld } from './ucs.js';
 
 export const BG = '#212830';
 const LAYOUT_BG = '#3a4049';
@@ -13,13 +14,13 @@ const SNAP_COLOR = '#d4e157';
 const TRACK_COLOR = '#58d68d';
 export const ISO_AXES = { top: [30, 150], left: [90, 150], right: [30, 90] };
 
-export function makeRV(cx, cy, scale, w, h, dpr) {
-  return { scale, dpr, w, h, cx, cy, toScreen: p => ({ x: (p.x - cx) * scale + w / 2, y: h / 2 - (p.y - cy) * scale }) };
+export function makeRV(cx, cy, scale, w, h, dpr, ox = 0, oy = 0) {
+  return { scale, dpr, w, h, cx, cy, ox, oy, toScreen: p => ({ x: (p.x - cx) * scale + ox + w / 2, y: oy + h / 2 - (p.y - cy) * scale }) };
 }
-export const makeR = (view, dpr) => makeRV(view.cx, view.cy, view.scale, view.w, view.h, dpr);
+export const makeR = (view, dpr) => makeRV(view.cx, view.cy, view.scale, view.w, view.h, dpr, view.ox || 0, view.oy || 0);
 export function setWorld(c, R) {
   const s = R.scale, d = R.dpr;
-  c.setTransform(d * s, 0, 0, -d * s, d * (R.w / 2 - R.cx * s), d * (R.h / 2 + R.cy * s));
+  c.setTransform(d * s, 0, 0, -d * s, d * ((R.ox || 0) + R.w / 2 - R.cx * s), d * ((R.oy || 0) + R.h / 2 + R.cy * s));
 }
 // Vista del modelo dentro de una ventana gráfica, a partir de la vista del papel
 export function vpR(R, vp) {
@@ -157,6 +158,23 @@ export class Renderer {
       this.drawUCS(c);
       return;
     }
+    const tiles = app.modelTiles(), d = this.dpr;
+    if (tiles) { // ventanas en mosaico: cada una con su vista, recortada a su rectángulo; la activa, con el marco resaltado
+      for (const t of tiles) {
+        const v = t.view, Rt = makeR(v, d);
+        c.save();
+        c.setTransform(1, 0, 0, 1, 0, 0); c.beginPath(); c.rect(v.ox * d, v.oy * d, v.w * d, v.h * d); c.clip();
+        if (app.T.grid) this.drawGrid(c, Rt, v);
+        this.drawModel(c, Rt, v.rect(), sty);
+        if (v === app.view) this.drawConstraints(c, Rt);
+        this.drawUCS(c, v);
+        c.restore();
+      }
+      c.setTransform(d, 0, 0, d, 0, 0); c.setLineDash([]);
+      for (const t of tiles) { const v = t.view; c.strokeStyle = '#4a5462'; c.lineWidth = 1; c.strokeRect(v.ox + 0.5, v.oy + 0.5, v.w - 1, v.h - 1); }
+      const v = app.view; c.strokeStyle = '#1e90d6'; c.lineWidth = 2; c.strokeRect(v.ox + 1, v.oy + 1, v.w - 2, v.h - 2);
+      return;
+    }
     if (app.T.grid) this.drawGrid(c, R);
     this.drawModel(c, R, app.view.rect(), sty);
     this.drawConstraints(c, R);
@@ -255,8 +273,8 @@ export class Renderer {
     c.font = '11px sans-serif'; c.fillText('Punto base', s.x + 10, s.y - 10);
   }
 
-  drawGrid(c, R) {
-    const v = this.app.view, S = this.app.doc.settings;
+  drawGrid(c, R, v = this.app.view) {
+    const S = this.app.doc.settings, u = ucsOf(this.app.doc);
     let step = S.gridX;
     if (!(step > 0)) return;
     while (step * v.scale < 9) step *= 5;
@@ -265,41 +283,60 @@ export class Renderer {
     const minor = new Path2D(), major = new Path2D();
     const r = v.rect();
     // Familias de líneas: ángulo y separación perpendicular
+    const ua = S.iso ? 0 : G.deg(u.ang), o = S.iso ? G.P(0, 0) : u.o; // en el SCP: familias giradas que pasan por su origen
     const fams = S.iso
       ? [[30, step * Math.cos(Math.PI / 6)], [150, step * Math.cos(Math.PI / 6)], [90, step * Math.cos(Math.PI / 6)]]
-      : [[0, step], [90, step]];
+      : [[ua, step], [ua + 90, step]];
     const cs = [G.P(r.x1, r.y1), G.P(r.x2, r.y1), G.P(r.x2, r.y2), G.P(r.x1, r.y2)];
     const far = Math.hypot(v.w, v.h) * 2;
     for (const [deg, sp] of fams) {
-      const a = G.rad(deg), u = G.P(Math.cos(a), Math.sin(a)), n = G.perp(u);
-      const ns = cs.map(p => G.dot(p, n) / sp), k0 = Math.ceil(Math.min(...ns)), k1 = Math.floor(Math.max(...ns));
+      const a = G.rad(deg), u = G.P(Math.cos(a), Math.sin(a)), n = G.perp(u), off = G.dot(o, n);
+      const ns = cs.map(p => (G.dot(p, n) - off) / sp), k0 = Math.ceil(Math.min(...ns)), k1 = Math.floor(Math.max(...ns));
       if (k1 - k0 > 600) return;
       for (let k = k0; k <= k1; k++) {
-        const s = v.toScreen(G.mul(n, k * sp)), path = k % 5 === 0 ? major : minor;
+        const s = v.toScreen(G.mul(n, k * sp + off)), path = k % 5 === 0 ? major : minor;
         let x = s.x, y = s.y;
-        if (deg === 0) y = Math.round(y) + 0.5; else if (deg === 90) x = Math.round(x) + 0.5;
+        if (Math.abs(u.y) < 1e-9) y = Math.round(y) + 0.5; else if (Math.abs(u.x) < 1e-9) x = Math.round(x) + 0.5;
         path.moveTo(x - u.x * far, y + u.y * far); path.lineTo(x + u.x * far, y - u.y * far);
       }
     }
     c.strokeStyle = 'rgba(255,255,255,0.045)'; c.stroke(minor);
     c.strokeStyle = 'rgba(255,255,255,0.10)'; c.stroke(major);
-    const o = v.toScreen({ x: 0, y: 0 });
-    c.strokeStyle = 'rgba(220,80,80,0.45)'; c.beginPath(); c.moveTo(0, Math.round(o.y) + 0.5); c.lineTo(v.w, Math.round(o.y) + 0.5); c.stroke();
-    c.strokeStyle = 'rgba(80,200,90,0.45)'; c.beginPath(); c.moveTo(Math.round(o.x) + 0.5, 0); c.lineTo(Math.round(o.x) + 0.5, v.h); c.stroke();
+    // ejes X e Y del SCP (o del universal)
+    const so = v.toScreen(o), ax = S.iso ? 0 : u.ang;
+    for (const [aa, col] of [[ax, 'rgba(220,80,80,0.45)'], [ax + Math.PI / 2, 'rgba(80,200,90,0.45)']]) {
+      const dx = Math.cos(aa) * far, dy = -Math.sin(aa) * far;
+      let x = so.x, y = so.y;
+      if (Math.abs(dy) < 1e-6) y = Math.round(y) + 0.5; else if (Math.abs(dx) < 1e-6) x = Math.round(x) + 0.5;
+      c.strokeStyle = col; c.beginPath(); c.moveTo(x - dx, y - dy); c.lineTo(x + dx, y + dy); c.stroke();
+    }
   }
 
-  drawUCS(c) {
-    const d = this.dpr, h = this.app.view.h, x = 28, y = h - 28;
+  // Icono del SCP: en la esquina inferior izquierda o, con UCSICON › Origen, en el origen si cabe en la vista.
+  // Gira con el SCP; el cuadrado del origen indica el SCP universal y la cruz, que el icono está en el origen.
+  drawUCS(c, v = this.app.view) {
+    const d = this.dpr, doc = this.app.doc, S = doc.settings;
+    if (S.ucsIcon === false) return;
+    const u = ucsOf(doc);
+    let x = v.ox + 28, y = v.oy + v.h - 28, atOrigin = false;
+    if (S.ucsIconOrigin !== false && !isWorld(u)) {
+      const s = v.toScreen(u.o);
+      if (s.x >= v.ox + 50 && s.x <= v.ox + v.w - 50 && s.y >= v.oy + 50 && s.y <= v.oy + v.h - 50) { x = s.x; y = s.y; atOrigin = true; }
+    }
+    // a: distancia sobre el eje X del SCP; b: sobre el eje Y (en píxeles)
+    const cs = Math.cos(u.ang), sn = Math.sin(u.ang), P = (a, b) => [x + a * cs - b * sn, y - a * sn - b * cs];
     c.setTransform(d, 0, 0, d, 0, 0); c.setLineDash([]); c.lineWidth = 2; c.font = '11px sans-serif';
-    c.strokeStyle = c.fillStyle = '#e05656';
-    c.beginPath(); c.moveTo(x, y); c.lineTo(x + 38, y); c.stroke();
-    c.beginPath(); c.moveTo(x + 44, y); c.lineTo(x + 36, y - 4); c.lineTo(x + 36, y + 4); c.fill();
-    c.fillText('X', x + 47, y + 4);
-    c.strokeStyle = c.fillStyle = '#5ccf6a';
-    c.beginPath(); c.moveTo(x, y); c.lineTo(x, y - 38); c.stroke();
-    c.beginPath(); c.moveTo(x, y - 44); c.lineTo(x - 4, y - 36); c.lineTo(x + 4, y - 36); c.fill();
-    c.fillText('Y', x - 3, y - 48);
-    c.fillStyle = '#9aa4b1'; c.fillRect(x - 3, y - 3, 6, 6);
+    const arrow = (dir, col, lab) => {
+      const [ax, ay] = dir, pt = k => P(ax * k, ay * k), side = (k, w) => P(ax * k - ay * w, ay * k + ax * w);
+      c.strokeStyle = c.fillStyle = col;
+      c.beginPath(); c.moveTo(x, y); c.lineTo(...pt(38)); c.stroke();
+      c.beginPath(); c.moveTo(...pt(44)); c.lineTo(...side(36, 4)); c.lineTo(...side(36, -4)); c.fill();
+      const [lx, ly] = pt(53); c.fillText(lab, lx - 3, ly + 4);
+    };
+    arrow([1, 0], '#e05656', 'X');
+    arrow([0, 1], '#5ccf6a', 'Y');
+    if (isWorld(u)) { c.fillStyle = '#9aa4b1'; c.fillRect(x - 3, y - 3, 6, 6); }
+    else if (atOrigin) { c.strokeStyle = '#9aa4b1'; c.lineWidth = 1; c.beginPath(); c.moveTo(...P(-5, 0)); c.lineTo(...P(5, 0)); c.moveTo(...P(0, -5)); c.lineTo(...P(0, 5)); c.stroke(); }
   }
 
   highlight(c, e, R, strong) {
@@ -311,10 +348,23 @@ export class Renderer {
     const c = this.co, app = this.app, doc = app.doc, R = this.R(), m = app.mouse, req = app.req, d = this.dpr;
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, this.over.width, this.over.height);
-    setWorld(c, R);
 
     const hl = new Set(app.sel);
     if (req?.set) for (const id of req.set) hl.add(id);
+    const tiles = app.modelTiles();
+    if (tiles) { // las demás ventanas en mosaico sólo muestran la designación; todo lo demás va recortado a la activa
+      for (const t of tiles) {
+        if (t.view === app.view) continue;
+        const v = t.view, Rt = makeR(v, d);
+        c.save(); c.beginPath(); c.rect(v.ox * d, v.oy * d, v.w * d, v.h * d); c.clip();
+        setWorld(c, Rt);
+        for (const id of hl) { const e = doc.get(id); if (e && doc.visible(e)) this.highlight(c, e, Rt, true); }
+        c.restore();
+      }
+      const v = app.view;
+      c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.beginPath(); c.rect(v.ox * d, v.oy * d, v.w * d, v.h * d); c.clip();
+    }
+    setWorld(c, R);
     for (const id of hl) { const e = doc.get(id); if (e && doc.visible(e)) this.highlight(c, e, R, true); }
     // Grupos designados enteros: recuadro discontinuo alrededor del grupo
     if (doc.groups.length && hl.size > 1) {
@@ -393,7 +443,8 @@ export class Renderer {
 
     if (m.snap) this.drawMarker(c, app.view.toScreen(m.snap.pt), m.snap.mode);
 
-    if (m.inside && !app.touchMode) this.drawCursor(c, req);
+    if (m.inside && !app.touchMode && (!tiles || app.view.contains({ x: m.sx, y: m.sy }))) this.drawCursor(c, req);
+    if (tiles) c.restore();
   }
 
   drawGrips(c, req) {
@@ -442,7 +493,7 @@ export class Renderer {
     c.beginPath();
     if (!pickOnly) {
       const S = app.doc.settings;
-      const axes = S.iso && app.tab === 'model' ? ISO_AXES[S.isoPlane] : [0, 90];
+      const ua = G.deg(ucsOf(app.doc).ang), axes = S.iso && app.tab === 'model' ? ISO_AXES[S.isoPlane] : [ua, ua + 90];
       for (const deg of axes) { const a = G.rad(deg), dx = Math.cos(a) * arm, dy = Math.sin(a) * arm; c.moveTo(x - dx, y + dy); c.lineTo(x + dx, y - dy); }
     }
     c.stroke();

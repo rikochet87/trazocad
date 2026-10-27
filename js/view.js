@@ -1,10 +1,12 @@
-// Vista: transformación mundo <-> pantalla, zoom y encuadre.
+// Vista: transformación mundo <-> pantalla, zoom y encuadre. ox, oy: esquina de la vista en la zona de dibujo
+// (las ventanas en mosaico del modelo la dividen en varias vistas).
 export class View {
-  constructor() { this.cx = 210; this.cy = 148.5; this.scale = 2; this.w = 800; this.h = 600; this.stack = []; }
+  constructor() { this.cx = 210; this.cy = 148.5; this.scale = 2; this.w = 800; this.h = 600; this.ox = 0; this.oy = 0; this.stack = []; }
 
-  toScreen(p) { return { x: (p.x - this.cx) * this.scale + this.w / 2, y: this.h / 2 - (p.y - this.cy) * this.scale }; }
-  toWorld(s) { return { x: (s.x - this.w / 2) / this.scale + this.cx, y: (this.h / 2 - s.y) / this.scale + this.cy }; }
-  rect() { const a = this.toWorld({ x: 0, y: this.h }), b = this.toWorld({ x: this.w, y: 0 }); return { x1: a.x, y1: a.y, x2: b.x, y2: b.y }; }
+  toScreen(p) { return { x: (p.x - this.cx) * this.scale + this.ox + this.w / 2, y: this.oy + this.h / 2 - (p.y - this.cy) * this.scale }; }
+  toWorld(s) { return { x: (s.x - this.ox - this.w / 2) / this.scale + this.cx, y: (this.oy + this.h / 2 - s.y) / this.scale + this.cy }; }
+  rect() { const a = this.toWorld({ x: this.ox, y: this.oy + this.h }), b = this.toWorld({ x: this.ox + this.w, y: this.oy }); return { x1: a.x, y1: a.y, x2: b.x, y2: b.y }; }
+  contains(s) { return s.x >= this.ox && s.x < this.ox + this.w && s.y >= this.oy && s.y < this.oy + this.h; }
 
   push() { this.stack.push({ cx: this.cx, cy: this.cy, scale: this.scale }); if (this.stack.length > 50) this.stack.shift(); }
   prev() { const s = this.stack.pop(); if (s) Object.assign(this, s); return !!s; }
@@ -12,8 +14,8 @@ export class View {
   zoomAt(f, s) {
     const w = this.toWorld(s);
     this.scale = Math.min(1e8, Math.max(1e-6, this.scale * f));
-    this.cx = w.x - (s.x - this.w / 2) / this.scale;
-    this.cy = w.y - (this.h / 2 - s.y) / this.scale;
+    this.cx = w.x - (s.x - this.ox - this.w / 2) / this.scale;
+    this.cy = w.y - (this.oy + this.h / 2 - s.y) / this.scale;
   }
   panBy(dx, dy) { this.cx -= dx / this.scale; this.cy += dy / this.scale; }
 
@@ -33,6 +35,9 @@ export class VpView {
   constructor(paper, vp) { this.paper = paper; this.vp = vp; this.stack = []; }
   get w() { return this.paper.w; }
   get h() { return this.paper.h; }
+  get ox() { return 0; }
+  get oy() { return 0; }
+  contains() { return true; }
   get scale() { return this.paper.scale * this.vp.s; }
   get vc() { return { x: (this.vp.p1.x + this.vp.p2.x) / 2, y: (this.vp.p1.y + this.vp.p2.y) / 2 }; }
   get cx() { return this.vp.cx - (this.vc.x - this.paper.cx) / this.vp.s; }

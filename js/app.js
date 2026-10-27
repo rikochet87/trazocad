@@ -15,8 +15,10 @@ import { parseExpr, evalParams } from './constraints.js';
 import { PAT_ENV } from './patterns.js';
 import { expandGroups } from './groups.js';
 import { plotStyler } from './plotstyles.js';
+import { ucsOf, fromUcs, vecFromUcs, WORLD } from './ucs.js';
 
 const CANCEL = Symbol('cancel');
+const FULL = { x1: 0, y1: 0, x2: 1, y2: 1 };
 const PICKBOX = 6;
 const PREFS_KEY = 'trazocad.prefs';
 const strip = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
@@ -28,6 +30,8 @@ class App {
     ENV.doc = this.doc;
     PAT_ENV.doc = this.doc;
     this.view = this.modelView = new View();
+    this.vw = 800; this.vh = 600; // tamaño de la zona de dibujo
+    this.tiles = [{ r: FULL, view: this.modelView }]; // ventanas en mosaico del espacio modelo (VPORTS); r en fracciones
     this.layoutViews = new WeakMap();
     this.spatial = new SpatialIndex();
     this.tab = 'model'; this.vpActive = null;
@@ -52,6 +56,7 @@ class App {
     this.io = new IO(this);
     this.ui.build();
     this.doc.on(kind => this.onDocChange(kind));
+    this.doc.viewState = () => this.tilesState(); // las ventanas en mosaico se guardan con el dibujo
     this.bindEvents();
     this.renderer.resize();
     this.ui.setPrompt(null);
@@ -75,7 +80,7 @@ class App {
 
   // ---------- Estado ----------
   onDocChange(kind) {
-    if (kind === 'reset') { this.sel.clear(); this.beditView = null; if (this.tab !== 'model' || this.vpActive || this.view !== this.modelView) { this.tab = 'model'; this.vpActive = null; this.doc.activeVp = null; this.view = this.modelView; } }
+    if (kind === 'reset') { this.sel.clear(); this.beditView = null; this.tiles = [{ r: FULL, view: this.modelView }]; this.layoutTiles(); if (this.tab !== 'model' || this.vpActive || this.view !== this.modelView) { this.tab = 'model'; this.vpActive = null; this.doc.activeVp = null; this.view = this.modelView; } }
     if (kind === 'constraint-fail') this.print('Aviso: las restricciones no se pueden cumplir con esta modificación (están en conflicto o la geometría no lo permite).', 'err');
     for (const id of this.sel) if (!this.doc.get(id)) this.sel.delete(id);
     this.renderer.invalidate();
@@ -101,16 +106,53 @@ class App {
     if (!lay) return this.modelView;
     let v = this.layoutViews.get(lay);
     if (!v) {
-      v = new View(); v.w = this.modelView.w; v.h = this.modelView.h;
+      v = new View(); v.w = this.vw; v.h = this.vh;
       v.fit({ x1: -5, y1: -5, x2: lay.w + 5, y2: lay.h + 5 }, 0.03);
       this.layoutViews.set(lay, v);
     }
     return v;
   }
   setViewSize(w, h) {
-    this.modelView.w = w; this.modelView.h = h;
+    this.vw = w; this.vh = h;
+    this.layoutTiles();
     if (this.beditView) { this.beditView.w = w; this.beditView.h = h; }
     if (this.layoutShown()) { const v = this.paperView; v.w = w; v.h = h; }
+  }
+
+  // ---------- Ventanas en mosaico del espacio modelo ----------
+  layoutTiles() {
+    const W = this.vw, H = this.vh;
+    for (const { r, view: v } of this.tiles) {
+      const x1 = Math.round(r.x1 * W), y1 = Math.round(r.y1 * H);
+      v.ox = x1; v.oy = y1; v.w = Math.max(1, Math.round(r.x2 * W) - x1); v.h = Math.max(1, Math.round(r.y2 * H) - y1);
+    }
+  }
+  modelTiles() { return this.tab === 'model' && !this.doc.bedit && this.tiles.length > 1 ? this.tiles : null; }
+  tileAt(s) { return this.tiles.find(t => t.view.contains(s)) || null; }
+  activeTile() { return this.tiles.find(t => t.view === this.modelView) || this.tiles[0]; }
+  setActiveTile(t) {
+    if (!t || t.view === this.modelView) return;
+    this.modelView = t.view;
+    if (this.tab === 'model' && !this.doc.bedit) this.view = t.view;
+    this.acquired = []; this.hover = null;
+    this.renderer.invalidate(); this.updateMouse(); this.ui.updateTips();
+  }
+  // list: [{r, cx, cy, scale | vh}] (vh: altura visible en unidades del dibujo); active: índice de la ventana activa
+  setTiles(list, active = 0) {
+    this.tiles = list.map(t => { const v = new View(); v.cx = t.cx; v.cy = t.cy; v.scale = t.scale || 1; return { r: { ...t.r }, view: v, vh: t.vh }; });
+    this.layoutTiles();
+    for (const t of this.tiles) { if (t.vh > 0) t.view.scale = t.view.h / t.vh; delete t.vh; }
+    this.modelView = this.tiles[Math.max(0, Math.min(active, this.tiles.length - 1))].view;
+    if (this.tab === 'model' && !this.doc.bedit) this.view = this.modelView;
+    this.acquired = []; this.hover = null;
+    this.renderer.invalidate(); this.ui.refresh();
+  }
+  tilesState() {
+    if (this.tiles.length < 2) return undefined;
+    return { active: this.tiles.indexOf(this.activeTile()), tiles: this.tiles.map(({ r, view: v }) => ({ r, cx: v.cx, cy: v.cy, vh: v.h / v.scale })) };
+  }
+  restoreTiles(st) {
+    if (st?.tiles?.length > 1) this.setTiles(st.tiles, st.active || 0);
   }
 
   // ---------- Presentaciones y ventanas gráficas ----------
@@ -127,7 +169,7 @@ class App {
   syncBedit() {
     const doc = this.doc;
     if (doc.bedit && this.view !== this.beditView) {
-      this.beditView = new View(); this.beditView.w = this.modelView.w; this.beditView.h = this.modelView.h;
+      this.beditView = new View(); this.beditView.w = this.vw; this.beditView.h = this.vh;
       Object.assign(this.beditView, { cx: this.modelView.cx, cy: this.modelView.cy, scale: this.modelView.scale });
       this.view = this.beditView; this.tab = 'model'; this.vpActive = null; doc.activeVp = null;
     } else if (!doc.bedit && this.beditView) {
@@ -145,7 +187,7 @@ class App {
     this.tab = t; this.vpActive = null; this.doc.activeVp = null;
     this.doc.space = t === 'model' ? 'model' : t;
     this.view = t === 'model' ? this.modelView : this.paperView;
-    this.setViewSize(this.modelView.w, this.modelView.h);
+    this.setViewSize(this.vw, this.vh);
     this.sel.clear(); this.acquired = []; this.hover = null;
     this.renderer.invalidate();
     this.ui.refresh(); this.ui.updateStatus();
@@ -286,6 +328,7 @@ class App {
     this.switchTab('model');
     this.sel.clear();
     this.zoomExtents();
+    if (this.doc.tiles) { this.restoreTiles(this.doc.tiles); this.doc.tiles = null; }
     this.ui.refresh();
     this.ui.updateTitle();
   }
@@ -349,10 +392,15 @@ class App {
       const now = performance.now();
       if (e.button === 1 && now - this.lastMid < 350) this.zoomExtents();
       this.lastMid = now;
-      this.panning = { x: e.clientX, y: e.clientY };
+      this.panning = { x: e.clientX, y: e.clientY, view: this.modelTiles() ? this.tileAt(this.screenOf(e))?.view : null }; // con la rueda, la ventana bajo el cursor
       return;
     }
     if (e.button !== 0) return;
+    if (this.modelTiles()) { // clic en otra ventana en mosaico: pasa a ser la activa (el clic no designa nada)
+      const t = this.tileAt(this.screenOf(e));
+      if (t && this.req?.opts.pickTile) { this.req.resolve(t, ''); return; } // VPORTS › Unir: designar una ventana
+      if (t && t.view !== this.view) { this.setActiveTile(t); return; }
+    }
     this.mouse.inside = true;
     if (this.touchMode) { this.tap = { x: e.clientX, y: e.clientY }; return; }
     this.updateMouse(e);
@@ -371,10 +419,11 @@ class App {
     }
     if (this.tap && Math.hypot(e.clientX - this.tap.x, e.clientY - this.tap.y) > 8) { this.panning = { ...this.tap }; this.tap = null; }
     if (this.panning) {
-      this.view.panBy(e.clientX - this.panning.x, e.clientY - this.panning.y);
-      this.panning = { x: e.clientX, y: e.clientY };
+      (this.panning.view || this.view).panBy(e.clientX - this.panning.x, e.clientY - this.panning.y);
+      this.panning = { x: e.clientX, y: e.clientY, view: this.panning.view };
       this.renderer.invalidate();
     }
+    if (this.modelTiles()) this.over.style.cursor = this.view.contains(this.screenOf(e)) ? '' : 'default';
     this.mouse.inside = true;
     this.updateMouse(e);
     if (this.win && !this.win.dragged && (e.buttons & 1) && Math.hypot(this.mouse.sx - this.win.s.x, this.mouse.sy - this.win.s.y) > 5) this.win.dragged = true;
@@ -395,8 +444,8 @@ class App {
 
   onWheel(e) {
     e.preventDefault();
-    const f = Math.exp(-Math.max(-300, Math.min(300, e.deltaY * (e.deltaMode ? 33 : 1))) * 0.0018);
-    this.view.zoomAt(f, this.screenOf(e));
+    const f = Math.exp(-Math.max(-300, Math.min(300, e.deltaY * (e.deltaMode ? 33 : 1))) * 0.0018), s = this.screenOf(e);
+    ((this.modelTiles() && this.tileAt(s)?.view) || this.view).zoomAt(f, s); // la rueda amplía la ventana en mosaico bajo el cursor
     this.updateMouse(e);
     this.renderer.invalidate();
     this.ui.updateTips();
@@ -735,22 +784,25 @@ class App {
     return null;
   }
 
+  // Coordenadas en el SCP actual; con * delante (*x,y o @*dx,dy), en el universal
   parsePoint(text, base) {
     let t = text.replace(/\s+/g, ''), rel = false;
     if (t.startsWith('@')) { rel = true; t = t.slice(1); } else if (t.startsWith('#')) t = t.slice(1);
+    const wcs = t.startsWith('*'), u = wcs ? WORLD : ucsOf(this.doc);
+    if (wcs) t = t.slice(1);
     const from = base || this.lastPt;
     if (rel && t === '') return { ...from };
     let m = t.match(/^([^<,]+)<([^<,]+)$/);
     if (m) {
       const d = this.parseNum(m[1]), a = this.parseNum(m[2]);
       if (d === null || a === null) return null;
-      return G.polar(rel ? from : G.P(0, 0), G.rad(a), d);
+      return rel ? G.polar(from, G.rad(a) + u.ang, d) : fromUcs(u, G.polar(G.P(0, 0), G.rad(a), d));
     }
     m = t.match(/^([^,]+),([^,]+)(,[^,]+)?$/);
     if (m) {
       const x = this.parseNum(m[1]), y = this.parseNum(m[2]);
       if (x === null || y === null) return null;
-      return rel ? G.P(from.x + x, from.y + y) : G.P(x, y);
+      return rel ? G.add(from, vecFromUcs(u, G.P(x, y))) : fromUcs(u, G.P(x, y));
     }
     const d = this.parseNum(t);
     if (d !== null && base) {

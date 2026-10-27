@@ -1,4 +1,4 @@
-# TrazoCAD — v0.10
+# TrazoCAD — v0.11
 
 Software de dibujo técnico 2D inspirado en AutoCAD, hecho desde cero como **PWA** (aplicación web instalable y sin conexión). JavaScript puro con módulos ES: sin dependencias ni compilación.
 
@@ -11,6 +11,24 @@ node serve.mjs          # http://localhost:8080
 ```
 
 Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta tal cual a cualquier hosting estático con HTTPS (GitHub Pages, Netlify, Hostinger…). En Chrome/Edge aparece el botón **Instalar**.
+
+## Novedades de la v0.11
+
+![Planta de un tramo de ruta en tres ventanas en mosaico: la general arriba y dos detalles abajo, con el SCP alineado con la última recta (rejilla, cursor e icono girados), las alcantarillas designadas con QSELECT en las tres ventanas y la paleta de capas con un filtro de propiedades](docs/v11.png)
+
+| Función | Detalle |
+|---|---|
+| **Sistemas de coordenadas personales** (`UCS`, `SCP`) | Origen y punto del eje X, **3 puntos**, alineado con un **objeto** (línea, arco, círculo, polilínea, texto, bloque…), giro **Z**, **Previo** (hasta 10) y **Universal**; SCP **con nombre** (Guardar, Restituir, Suprimir, ?). Las coordenadas escritas (`x,y`, `@dx,dy`, `d<a`) se miden en el SCP y, con `*` delante (`*x,y`, `@*dx,dy`), en el universal. La barra de estado, ID, la entrada dinámica, ORTO, POLAR, la **rejilla** y FORZC siguen los ejes del SCP, y el cursor gira con él. El SCP se deshace con DESHACER y se guarda en el `.tcad` y en DXF (tabla UCS y `$UCSORG`/`$UCSXDIR`) |
+| **Administrador e icono del SCP** (`UCSMAN`, `UCSICON`) | Lista el universal, el previo y los SCP con nombre para establecerlos, guardar el actual, renombrar o suprimir. El icono gira con el SCP, se muestra en su **origen** si cabe en la vista (cruz) o en la esquina, y el cuadrado indica el universal; se puede ocultar |
+| **Vistas con nombre** (`VIEW`, `-VIEW`) | Guardan la vista actual o una **ventana** del modelo o de una presentación, con el **SCP** y, si se pide, el estado de las **capas** (activadas y bloqueadas). Restituir cambia al espacio donde se guardó; Actualizar, Renombrar, Suprimir. En DXF se escriben en la tabla VIEW (las de presentación, con su nombre en datos extendidos) y se vuelven a leer |
+| **Ventanas en mosaico** (`VPORTS`) | El espacio modelo se divide en **2** (horizontal o vertical), **3** (seis disposiciones) o **4** ventanas, cada una con su vista, zoom y encuadre; la activa tiene el marco azul y se cambia con un clic. La rueda amplía la ventana que está bajo el cursor y la designación se resalta en todas. **Unir** dos ventanas (clic o lado), **Única**, y configuraciones con nombre (Guardar, Restituir, Suprimir). La disposición se guarda con el dibujo. En una presentación, VPORTS crea de una vez 1 a 4 ventanas gráficas en un rectángulo |
+| **Selección rápida** (`QSELECT`) | Por **tipo de objeto** y **propiedad** (generales o las de la paleta Propiedades: radio, longitud, área, contenido, altura…) con los operadores =, ≠, >, <, ≥, ≤, **comodín** y *seleccionar todo*; en todo el espacio o dentro de la designación, **incluir o excluir** y **añadir** a la designación actual. Sugiere los valores presentes en el dibujo; los colores se escriben como PorCapa, nombre, número ACI o #rrggbb |
+| **Filtros de selección** (`FILTER`, `FI`) | Listas de condiciones (tipo, propiedad, operador, valor y **NO**) combinadas con **Y** u **O**, que se **guardan con nombre** en el dibujo. «Aplicar» pide los objetos (Intro = todo el espacio) y designa los que pasan el filtro |
+| **Buscar y reemplazar** (`FIND`, `BUSCAR`) | En **textos**, **textos de líneas múltiples**, **valores y definiciones de atributo**, **textos de cota**, **directrices** y **celdas de tabla**; en el espacio actual, en **todo el dibujo** (modelo y presentaciones) o en la designación; mayúsculas, **palabras completas** y **comodines**. La lista de resultados amplía cada objeto; se reemplazan los marcados o todos (una sola operación de deshacer) y se pueden designar |
+| **Objetos duplicados** (`OVERKILL`) | Suprime los objetos iguales dentro de una **tolerancia** (las líneas y polilíneas aunque estén invertidas o empiecen en otro vértice), **ignorando** si se quiere color, capa, tipo y grosor de línea o estilo de trazado; **combina** líneas colineales que se solapan (y, opcionalmente, las que se tocan extremo con extremo) y arcos del mismo círculo (un círculo absorbe los arcos que tiene encima); **optimiza** polilíneas quitando vértices repetidos o alineados |
+| **Revisar el dibujo** (`AUDIT`, `REVISAR`) | Comprueba capas, identificadores repetidos, coordenadas no válidas, referencias a bloques, capas y estilos inexistentes, referencias circulares, polilíneas y sombreados vacíos, grupos y restricciones huérfanos y el contador de identificadores; informa y, si se pide, **corrige** |
+| **Herramientas de capas** | **LAYISO** aísla las capas de los objetos designados (desactivando o bloqueando las demás) y **LAYUNISO** las deja como estaban; **LAYWALK** recorre las capas mostrando sólo las elegidas (clic, Ctrl+clic o comodines) y las restaura al salir; **LAYMRG** fusiona capas en otra (también dentro de los bloques, ventanas gráficas, estados de capa y filtros). La paleta de capas tiene **filtros por propiedades** (nombre con comodines, color, activada, bloqueada, tipo y grosor de línea, en uso) y **por grupos**, con *Capas en uso* e **Invertir** (`LAYFILTER`) |
+| **Otros** | Pestaña Vista con los grupos *Coordenadas* y *Vistas y ventanas*; *Herramientas de capa* y las utilidades nuevas en Inicio. Archivos `.tcad` versión 11 (los anteriores se siguen abriendo); la ayuda (F1) recoge las novedades |
 
 ## Novedades de la v0.10
 
@@ -169,6 +187,12 @@ js/assoc.js      Cotas asociativas y marcas/líneas de centro: referencias a la 
 js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, grupos, estados de capa, patrones, deshacer, asociatividad (también matriz–recorrido)
 js/xref.js       Referencias externas: lectura, prefijos, recarga, desenlace, unión y archivos recordados (IndexedDB)
 js/plotstyles.js Tablas de estilos de trazado .ctb/.stb: predefinidas, aplicación al imprimir y lectura/escritura de archivos de AutoCAD
+js/ucs.js        Sistemas de coordenadas personales: conversión, SCP con nombre y previos, tres puntos y alineación con objetos
+js/views.js      Vistas con nombre y ventanas en mosaico del modelo (división, unión, configuraciones)
+js/select.js     Selección por propiedades: condiciones de QSELECT y filtros de selección con nombre (FILTER)
+js/find.js       Buscar y reemplazar texto en textos, atributos, cotas, directrices y tablas
+js/cleanup.js    Objetos duplicados y solapados (OVERKILL) y revisión y reparación del dibujo (AUDIT)
+js/layertools.js Aislar, recorrer y fusionar capas; filtros de capa por propiedades y por grupos
 js/constraints.js Restricciones paramétricas, expresiones, solucionador y restricciones automáticas
 js/dynblock.js   Bloques dinámicos: parámetros lineales, de rotación, simetría, visibilidad y tabla de consulta
 js/groups.js     Grupos: creación, selección conjunta, copias y limpieza
@@ -177,9 +201,9 @@ js/pdf.js        Exportación a PDF vectorial (con los estilos de trazado de la 
 js/patterns.js   Patrones de sombreado (predefinidos, personalizados .pat y de usuario), degradados y recorte de líneas de patrón
 js/hatch.js      Detección de contornos (grafo plano, caras e islas, con las primitivas de origen) y recálculo asociativo
 js/spatial.js    Índice espacial
-js/view.js       Vista del modelo/papel y vista a través de ventana gráfica
+js/view.js       Vista del modelo/papel (con su rectángulo dentro de la zona de dibujo, para las ventanas en mosaico) y vista a través de ventana gráfica
 js/render.js     Dibujado en canvas
-js/snap.js       Referencias, rastreo, polar, orto, isométrico
+js/snap.js       Referencias, rastreo, polar, orto (en el SCP), isométrico
 js/ops.js        Recortar, alargar, partir, longitud, desfase, empalme, chaflán, unir, recorrido por longitud (GRADUA, DIVIDE)…
 js/commands.js   Comandos y alias
 js/dxf.js        DXF 2007 (MULTILEADER, ACAD_TABLE, ARC_DIMENSION, imágenes, DIMBREAK, matrices y degradados de varios colores) / 2000 (ambos con presentaciones y su tabla de estilos de trazado, grupos, MLINE con cortes, IMAGE, XCLIP, XREF, tolerancias y modificaciones de cota, y estados de capa) / R12
@@ -219,10 +243,17 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 - Las tablas de estilos de trazado aplican color, escala de grises, intensidad, grosor y tipo de línea; no el relleno, los finales ni las uniones de línea, ni la separación de pluma. Los estilos con nombre de capas y objetos y la escala de tipo de línea de cada ventana gráfica no se escriben en el DXF (sí la tabla de cada presentación y `PSLTSCALE`).
 - En la paleta Propiedades con varios objetos no se editan a la vez los textos de líneas múltiples ni las celdas de las tablas.
 
-## Hoja de ruta (v0.11+)
+- El SCP es plano (origen y giro del eje X). Todavía no hay PLAN ni vistas giradas (la pantalla mantiene el eje X universal en horizontal; llegan en la v0.12), y hay un único SCP para todo el espacio modelo (no uno por ventana, como con UCSVP); el papel y el editor de bloques usan siempre el universal. Sólo las coordenadas siguen el SCP: los ángulos que se escriben como valor (rotación de un texto o de un bloque) se miden desde el eje X universal, y el rastreo de referencias a objetos sigue las direcciones horizontal y vertical de la pantalla.
+- Las ventanas en mosaico sólo existen en el espacio modelo (en las presentaciones están las ventanas gráficas) y se guardan en el `.tcad`, no en el DXF, que sigue escribiendo una sola ventana `*ACTIVE`. Las vistas con nombre no tienen giro ni perspectiva.
+- FILTER combina las condiciones con Y o con O (y NO en cada una), sin los grupos anidados de AutoCAD; los filtros de selección, los filtros de capa y el estado anterior a LAYISO se guardan en el `.tcad` pero no en el DXF. LAYISO no atenúa las capas bloqueadas.
+- FIND busca en el texto de MTEXT tal como se guarda, con sus códigos de formato: si lo buscado coincide con parte de un código (por ejemplo, una letra de `\C1;`), también lo encuentra y lo reemplaza. No entra en los objetos de las definiciones de bloque (sí en los atributos de las referencias).
+- OVERKILL combina líneas y arcos sueltos, no tramos de polilíneas con otros objetos ni elipses o splines solapadas; la tolerancia de los duplicados se aplica redondeando las coordenadas. AUDIT comprueba la estructura de datos de TrazoCAD (también lo importado de un DXF), no el archivo DXF en sí.
 
-Sistemas de coordenadas personales (SCP) con su icono, guardados por nombre y alineados con objetos o tres puntos, y vistas con nombre; ventanas en mosaico en el espacio modelo; selección rápida por propiedades (QSELECT) y filtros de selección guardados (FILTER); buscar y reemplazar texto en textos, atributos, cotas y tablas (FIND); limpieza de objetos duplicados o solapados (OVERKILL) y comprobación y reparación del dibujo (AUDIT); y herramientas de capas: aislar y desaislar, recorrer (LAYWALK), fusionar capas y filtros de capa por propiedades y por grupos.
+## Hoja de ruta (v0.12+)
 
+**Vistas giradas** (lo primero de la v0.12): `PLAN` y «alinear la vista con el SCP» en el espacio modelo, para trabajar con una recta o una curva del eje en horizontal, y **ventanas gráficas giradas** en las presentaciones (propiedad *Giro*, VPROTATEASSOC), como en las láminas de planta de una ruta, donde cada tramo se orienta según su dirección. Selección por ventana, rejilla, pinzamientos, rastreo, impresión, PDF, SVG y DXF (giro de las ventanas y de las vistas) funcionando con la vista girada, y un SCP por ventana (UCSVP). Es la base de los marcos de vista a lo largo del eje de las láminas automáticas (v0.23).
+
+**Escalas anotativas**: lista de escalas del dibujo (SCALELISTEDIT), propiedad *Anotativo* en estilos de texto, cota, directriz y sombreado y en los objetos, con una representación por escala; escala de anotación actual en la barra de estado y por ventana gráfica, con los objetos que no la tienen ocultos o atenuados (ANNOALLVISIBLE), y añadir o quitar escalas a los objetos (OBJECTSCALE). **Automatización**: guiones `.scr` con las mismas órdenes y respuestas de la línea de comandos (SCRIPT), grabación de acciones a guion, y una **API en JavaScript** para el usuario (consola de órdenes y archivos `.js` cargados con APPLOAD) que crea y modifica objetos, consulta la designación y define órdenes nuevas. **Paletas de herramientas** (TOOLPALETTES) con bloques, sombreados y órdenes arrastrables, con sus propiedades predefinidas (capa, escala, rotación). **Bibliotecas de bloques** incluidas para obras viales: señalización vertical (reglamentarias, preventivas e informativas, parametrizadas con atributos), planos tipo de alcantarillas, defensas metálicas, cordones y cunetas, con bloques dinámicos donde haga falta, y un DesignCenter (ADCENTER) para insertar bloques, capas y estilos desde otros dibujos.
 ## Hacia la v1.0: CAD + SIG para ingeniería vial
 
 El objetivo final es un programa con las capacidades de AutoCAD, orientado a la **ingeniería de caminos** y con capacidades de **SIG**: obras georreferenciadas, visualización de las obras viales sobre un mapa del mundo y geoprocesos. La referencia para la parte vial es el flujo de trabajo de Autodesk Civil 3D (superficies, ejes, perfiles, peraltes, corredores, secciones, cubicación, diagrama de masas y producción de láminas), y la lámina de referencia es la planialtimetría de un proyecto ejecutivo real.
@@ -240,8 +271,8 @@ El objetivo final es un programa con las capacidades de AutoCAD, orientado a la 
 | Versión | Bloque | Contenido |
 |---|---|---|
 | **v0.10** | CAD | Terminada: imágenes a escala real y con varios contornos, tolerancias y DIMOVERRIDE, islas y degradados de varios colores, XREF recordadas y en DXF, tablas CTB/STB, LTSCALE por ventana y Propiedades de varios objetos |
-| **v0.11** | CAD | Lo indicado arriba: SCP (UCS) y vistas guardadas, ventanas en el espacio modelo, QSELECT, FILTER, FIND, OVERKILL, AUDIT, herramientas de capas (aislar, recorrer, fusionar, filtros) |
-| **v0.12** | CAD | Escalas anotativas, guiones `.scr` y una API en JavaScript para automatizar, paletas de herramientas y **bibliotecas de bloques** (señalización, planos tipo de alcantarillas, defensas, cordones) |
+| **v0.11** | CAD | Terminada: SCP (UCS) con nombre, por objeto y por tres puntos, vistas con nombre, ventanas en mosaico del modelo, QSELECT, FILTER, FIND, OVERKILL, AUDIT y herramientas de capas (aislar, recorrer, fusionar, filtros) |
+| **v0.12** | CAD | Lo indicado arriba: **vistas y ventanas gráficas giradas** (PLAN), escalas anotativas, guiones `.scr` y una API en JavaScript para automatizar, paletas de herramientas y **bibliotecas de bloques** (señalización, planos tipo de alcantarillas, defensas, cordones) |
 | **v0.13** | Base | Cota Z en los objetos, polilíneas y caras 3D, **coordenadas grandes** sin pérdida de precisión (origen local de dibujo) y rendimiento con más de 100 000 objetos (índice espacial, dibujo por teselas) |
 | **v0.14** | SIG 1 | Motor de proyecciones y datums, georreferenciación del dibujo (sistema de coordenadas, punto de referencia, norte), coordenadas geográficas en la barra de estado, **mapa base** sobre el dibujo (teselas XYZ, WMS y WMTS configurables, con OpenStreetMap por defecto y caché sin conexión) y posición GPS del dispositivo |
 | **v0.15** | SIG 2 | Importar y exportar GeoJSON, Shapefile (`.shp` + `.dbf` + `.prj`), KML/KMZ y GeoTIFF con reproyección al vuelo; **tabla de atributos** por objeto, simbología temática y etiquetas por atributo; datos catastrales (parcelas, titulares, nomenclatura) |

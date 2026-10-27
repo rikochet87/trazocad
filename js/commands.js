@@ -17,6 +17,12 @@ import { solve, evalParams, parseExpr, nearestPointRef, lineRefAt, refGeom, cons
 import { makeGroup, removeGroup, findGroup, groupsOf, copyGroups, validGroupName, isAnonGroup, groupsWithin, nextAnonGroup } from './groups.js';
 import { saveLayerState, restoreLayerState, findLayerState, validStateName, renameLayerState, deleteLayerState, LS_ALL } from './layerstates.js';
 import { linsOf, rotsOf, lookupCols } from './dynblock.js';
+import { WORLD, ucsOf, toUcs, setUcs, prevUcs, findUcs, saveUcs, deleteUcs, renameUcs, validUcsName, ucs3P, ucsFromObject } from './ucs.js';
+import { findView, validViewName, captureView, saveView, deleteView, restoreView, splitTile, joinTiles, splitPaper, TILE_DIRS, findVportConfig } from './views.js';
+import { candidates, qselect, findFilter, applyFilter, condText } from './select.js';
+import { findText, replaceText } from './find.js';
+import { overkill, audit, OK_DEFAULTS } from './cleanup.js';
+import { layIso, layUniso, layMerge } from './layertools.js';
 const { P, Mx } = G;
 
 export const CMDS = {};
@@ -2320,8 +2326,8 @@ def('AREA', ['AA'], 'Calcula área y perímetro', async c => {
 }, { group: 'Utilidades' });
 
 def('ID', ['IDPUNTO'], 'Muestra las coordenadas de un punto', async c => {
-  const p = await c.getPoint('Precise punto');
-  c.print(`X = ${fmt(p.x, 4)}     Y = ${fmt(p.y, 4)}     Z = 0.0000`);
+  const p = await c.getPoint('Precise punto'), u = ucsOf(c.doc), q = toUcs(u, p);
+  c.print(`X = ${fmt(q.x, 4)}     Y = ${fmt(q.y, 4)}     Z = 0.0000${u === WORLD ? '' : `   (universal: ${fmt(p.x, 4)}, ${fmt(p.y, 4)})`}`);
 }, { group: 'Utilidades' });
 
 def('LIST', ['LI', 'LS', 'LISTA'], 'Muestra la información de los objetos', async c => {
@@ -2367,7 +2373,7 @@ def('ZOOM', ['Z'], 'Amplía o reduce la vista', async (c, arg) => {
   if (r === null) return;
   if (r === 'Extensión' || r === 'Todo') return c.app.zoomExtents();
   if (r === 'Previo') { if (!v.prev()) c.print('No hay vista previa.'); c.app.renderer.invalidate(); return; }
-  if (typeof r === 'number') { v.push(); v.zoomAt(r, { x: v.w / 2, y: v.h / 2 }); c.app.renderer.invalidate(); return; }
+  if (typeof r === 'number') { v.push(); v.zoomAt(r, { x: (v.ox || 0) + v.w / 2, y: (v.oy || 0) + v.h / 2 }); c.app.renderer.invalidate(); return; }
   const a = r === 'Ventana' ? await c.getPoint('Precise primera esquina', { noSnap: true }) : r;
   const b = await c.getPoint('Precise esquina opuesta', { noSnap: true, base: a, rubber: false, preview: p => [{ type: 'pline', pts: rectPts(a, p), closed: true }] });
   v.push(); v.fit(G.normRect(a, b), 0); c.app.renderer.invalidate();
@@ -2381,6 +2387,292 @@ def('PAN', ['P', 'ENCUADRE'], 'Desplaza la vista arrastrando', async c => {
 def('REGEN', ['RE', 'REGENERAR'], 'Regenera el dibujo', async c => { c.app.renderer.invalidate(); }, { group: 'Vista', noTx: true });
 
 def('ISODRAFT', ['ISO', 'ISOMETRICO'], 'Activa o desactiva el dibujo isométrico (F5 cambia de plano)', async c => { c.app.toggleIso(); }, { group: 'Vista', noTx: true });
+
+// ================= SCP, VISTAS Y VENTANAS EN MOSAICO =================
+const ucsDesc = u => (!u ? 'Universal' : `${u.name ? `"${u.name}" ` : ''}origen ${fmt(u.o.x, 4)},${fmt(u.o.y, 4)}, eje X a ${deg(u.ang)}`);
+async function ucsNamed(c, arg) {
+  const doc = c.doc;
+  const k = arg?.op || await c.getKeyword('Indique una opción', ['Restituir', 'Guardar', 'Suprimir', '?'], 'Restituir');
+  if (k === '?') { c.print(`SCP actual: ${ucsDesc(doc.ucs)}`); if (!doc.ucsList.length) c.print('No hay SCP con nombre.'); for (const u of doc.ucsList) c.print(`  ${u.name}: origen ${fmt(u.o.x, 4)},${fmt(u.o.y, 4)}, eje X a ${deg(u.ang)}`); return; }
+  const name = (arg?.name ?? await c.getString(k === 'Guardar' ? 'Indique nombre para guardar el SCP actual' : `Indique nombre del SCP que desea ${k === 'Suprimir' ? 'suprimir' : 'restituir'}`, { spaces: true })).trim();
+  const u = findUcs(doc, name);
+  if (k === 'Guardar') {
+    if (!validUcsName(name)) return c.print('Nombre de SCP no válido.');
+    saveUcs(doc, name); return c.print(`SCP "${name}" guardado: ${ucsDesc(doc.ucs)}.`);
+  }
+  if (!u) return c.print(`No existe el SCP "${name}".`);
+  if (k === 'Suprimir') { deleteUcs(doc, u.name); return c.print(`SCP "${u.name}" suprimido.`); }
+  setUcs(doc, u, u.name); c.print(`SCP "${u.name}" restituido.`);
+}
+def('UCS', ['SCP'], 'Sistema de coordenadas personal: origen y eje X, tres puntos, objeto, giro, con nombre, previo o universal', async (c, arg) => {
+  const doc = c.doc;
+  if (doc.space !== 'model') return c.print('El SCP sólo se usa en el espacio modelo (en una presentación, active una ventana gráfica).');
+  if (arg && typeof arg === 'object' && arg.o) { setUcs(doc, arg, arg.name); return; }
+  const cur = ucsOf(doc);
+  const r = arg || await c.getPoint('Precise origen del SCP', { options: ['Nombre', 'OBjeto', 'Previo', 'Universal', 'Z', '3puntos'], def: 'Universal' });
+  if (r === 'Universal') { setUcs(doc, WORLD); return c.print('SCP universal.'); }
+  if (r === 'Previo') { if (!prevUcs(doc)) c.print('No hay SCP previo.'); else c.print(`SCP previo: ${ucsDesc(doc.ucs)}.`); return; }
+  if (r === 'Nombre') return ucsNamed(c);
+  if (r === 'Z') {
+    const a = await c.getNumber('Precise ángulo de rotación alrededor del eje Z', { def: 90 });
+    setUcs(doc, { o: cur.o, ang: cur.ang + G.rad(a) }); return c.print(`SCP girado ${fmt(a, 2)}°.`);
+  }
+  if (r === 'OBjeto') {
+    const o = await c.getEntity('Designe objeto para alinear el SCP');
+    const u = ucsFromObject(o.e, o.pt);
+    if (!u) return c.print('No se puede alinear el SCP con ese objeto.');
+    setUcs(doc, u); return c.print(`SCP alineado con ${TYPES[o.e.type].name.toLowerCase()}: ${ucsDesc(doc.ucs)}.`);
+  }
+  const o = r === '3puntos' ? await c.getPoint('Precise nuevo punto de origen', { def: cur.o }) : r;
+  const px = await c.getPoint('Precise punto en el eje X positivo o <aceptar>', { base: o, allowEnter: true });
+  if (r === '3puntos' && px) await c.getPoint('Precise punto en la parte positiva Y del plano XY o <aceptar>', { base: o, allowEnter: true });
+  setUcs(doc, px ? ucs3P(o, px) : { o, ang: cur.ang });
+  c.print(`SCP: ${ucsDesc(doc.ucs)}.`);
+}, { group: 'Vista', keepSel: true });
+
+def('UCSMAN', ['ADMINSCP', 'SCPMAN', 'UC'], 'Administrador de SCP: restituir, guardar, renombrar y suprimir SCP con nombre y opciones del icono', async c => {
+  const doc = c.doc, ui = c.app.ui;
+  for (;;) {
+    const r = await ui.ucsManager();
+    if (!r) return;
+    if (r.action === 'set') {
+      if (r.name === '*universal*') setUcs(doc, WORLD);
+      else if (r.name === '*previo*') { if (!prevUcs(doc)) c.print('No hay SCP previo.'); }
+      else { const u = findUcs(doc, r.name); if (u) setUcs(doc, u, u.name); }
+      c.app.renderer.invalidate();
+      return c.print(`SCP actual: ${ucsDesc(doc.ucs)}.`);
+    }
+    if (r.action === 'save') {
+      if (doc.space !== 'model') { c.print('El SCP sólo se usa en el espacio modelo.'); continue; }
+      let n = 1;
+      while (findUcs(doc, `SCP${n}`)) n++;
+      const v = await ui.prompt('Guardar SCP actual', 'Nombre', doc.ucs?.name || `SCP${n}`);
+      if (v && validUcsName(v)) saveUcs(doc, v); else if (v !== null) c.print('Nombre de SCP no válido.');
+      continue;
+    }
+    const u = findUcs(doc, r.name);
+    if (!u) continue;
+    if (r.action === 'rename') {
+      const v = await ui.prompt('Renombrar SCP', 'Nuevo nombre', u.name);
+      if (v && validUcsName(v) && !(findUcs(doc, v) && findUcs(doc, v) !== u)) renameUcs(doc, u, v); else if (v !== null) c.print('Nombre no válido o repetido.');
+    } else if (r.action === 'delete') { deleteUcs(doc, u.name); c.print(`SCP "${u.name}" suprimido.`); }
+  }
+}, { group: 'Vista', keepSel: true });
+
+def('UCSICON', ['ICONOSCP', 'ICONSCP'], 'Muestra u oculta el icono del SCP y lo coloca en el origen', async (c, arg) => {
+  const S = c.settings;
+  const k = arg || await c.getKeyword('Indique una opción', ['ACtivar', 'DEsactivar', 'Origen', 'No origen'], S.ucsIcon === false ? 'ACtivar' : 'DEsactivar');
+  if (k === 'ACtivar') S.ucsIcon = true; else if (k === 'DEsactivar') S.ucsIcon = false; else if (k === 'Origen') S.ucsIconOrigin = true; else S.ucsIconOrigin = false;
+  c.app.renderer.invalidate();
+  c.print(`Icono del SCP ${S.ucsIcon === false ? 'oculto' : 'visible'}${S.ucsIcon !== false ? (S.ucsIconOrigin === false ? ', en la esquina' : ', en el origen') : ''}.`);
+}, { group: 'Vista', noTx: true });
+
+const viewDesc = v => `${v.name}: ${v.space === 'model' ? 'Modelo' : `presentación "${v.space}"`}, centro ${fmt(v.cx, 2)},${fmt(v.cy, 2)}, ${fmt(v.w, 2)} × ${fmt(v.h, 2)}${v.ucs ? ', con SCP' : ''}${v.layers ? ', con capas' : ''}`;
+async function newView(c, name, o = {}) {
+  let rect = null;
+  if (o.window) {
+    const a = await c.getPoint('Precise primera esquina', { noSnap: true });
+    const b = await c.getPoint('Precise esquina opuesta', { noSnap: true, base: a, rubber: false, preview: p => [{ type: 'pline', pts: rectPts(a, p), closed: true }] });
+    rect = G.normRect(a, b);
+  }
+  const v = saveView(c.doc, captureView(c.app, name, { rect, ucs: o.ucs !== false, layers: !!o.layers }));
+  c.print(`Vista "${v.name}" guardada (${viewDesc(v)}).`);
+}
+function goView(c, v) {
+  if (!restoreView(c.app, v)) return c.print(`La presentación "${v.space}" de la vista "${v.name}" ya no existe.`);
+  c.print(`Vista "${v.name}" restituida.`);
+}
+def('VIEW', ['V', 'VISTA', 'VISTAS'], 'Administrador de vistas con nombre: guardar la vista actual o una ventana (con su SCP y las capas) y restituirla', async (c, arg) => {
+  const doc = c.doc, ui = c.app.ui;
+  if (arg?.save) return newView(c, arg.save, arg);
+  if (arg?.restore) { const v = findView(doc, arg.restore); return v ? goView(c, v) : c.print(`No existe la vista "${arg.restore}".`); }
+  for (;;) {
+    const r = await ui.viewManager();
+    if (!r) return;
+    const v = r.name ? findView(doc, r.name) : null;
+    if (r.action === 'new') {
+      let n = 1;
+      while (findView(doc, `Vista${n}`)) n++;
+      const name = await ui.prompt('Nueva vista', 'Nombre de la vista', `Vista${n}`);
+      if (!name) continue;
+      if (!validViewName(name)) { c.print('Nombre de vista no válido.'); continue; }
+      if (findView(doc, name) && !(await ui.confirm(`La vista "${name}" ya existe. ¿Desea sustituirla?`, 'Sustituir'))) continue;
+      await newView(c, name, r.opts);
+      continue;
+    }
+    if (!v) continue;
+    if (r.action === 'restore') return goView(c, v);
+    if (r.action === 'update') { saveView(doc, captureView(c.app, v.name, { ucs: !!v.ucs, layers: !!v.layers })); c.print(`Vista "${v.name}" actualizada con la vista actual.`); }
+    else if (r.action === 'rename') {
+      const n = await ui.prompt('Renombrar vista', 'Nuevo nombre', v.name);
+      if (n && validViewName(n) && !(findView(doc, n) && findView(doc, n) !== v)) { v.name = n; doc.changed(); } else if (n !== null) c.print('Nombre no válido o repetido.');
+    } else if (r.action === 'delete') { deleteView(doc, v.name); c.print(`Vista "${v.name}" suprimida.`); }
+  }
+}, { group: 'Vista', keepSel: true });
+def('-VIEW', ['-V', '-VISTA'], 'Vistas con nombre por la línea de comandos: guardar, ventana, restituir, borrar o listar', async c => {
+  const doc = c.doc;
+  const k = await c.getKeyword('Indique una opción', ['?', 'Borrar', 'Restituir', 'Guardar', 'Ventana'], 'Restituir');
+  if (k === '?') { if (!doc.views.length) c.print('No hay vistas con nombre.'); for (const v of doc.views) c.print(`  ${viewDesc(v)}`); return; }
+  const name = (await c.getString(k === 'Guardar' || k === 'Ventana' ? 'Indique nombre de la vista' : `Indique nombre de la vista que desea ${k === 'Borrar' ? 'borrar' : 'restituir'}`, { spaces: true })).trim();
+  if (k === 'Guardar' || k === 'Ventana') { if (!validViewName(name)) return c.print('Nombre de vista no válido.'); return newView(c, name, { window: k === 'Ventana' }); }
+  const v = findView(doc, name);
+  if (!v) return c.print(`No existe la vista "${name}".`);
+  if (k === 'Borrar') { deleteView(doc, v.name); c.print(`Vista "${v.name}" borrada.`); } else goView(c, v);
+}, { group: 'Vista', keepSel: true });
+
+// Ventana vecina de la activa por un lado (para unir)
+function tileBeside(app, side) {
+  const a = app.activeTile(), eq = (u, v) => Math.abs(u - v) < 1e-9;
+  return app.tiles.find(t => t !== a && joinTiles(a.r, t.r) && (side === 'Izquierda' ? eq(t.r.x2, a.r.x1) : side === 'deRecha' ? eq(t.r.x1, a.r.x2) : side === 'ENcima' ? eq(t.r.y2, a.r.y1) : eq(t.r.y1, a.r.y2))) || null;
+}
+const tileItem = t => ({ r: t.r, cx: t.view.cx, cy: t.view.cy, scale: t.view.scale });
+def('VPORTS', ['VENTANASMODELO', 'VMOSAICO', 'MOSAICO'], 'Divide el espacio modelo en ventanas en mosaico (o crea varias ventanas gráficas en una presentación); unir, guardar y restituir configuraciones', async (c, arg) => {
+  const app = c.app, doc = c.doc;
+  if (doc.bedit) return c.print('Cierre primero el editor de bloques.');
+  const askDir = async n => (n === 2 ? c.getKeyword('Indique una disposición', TILE_DIRS[2], 'Vertical') : n === 3 ? c.getKeyword('Indique una disposición', TILE_DIRS[3], 'deRecha') : null);
+  if (app.tab !== 'model') { // presentación: n ventanas gráficas en un rectángulo
+    if (app.vpActive) app.pspace();
+    const n = +(arg?.n || await c.getKeyword('Indique número de ventanas gráficas', ['1', '2', '3', '4'], '1'));
+    const dir = arg?.dir || await askDir(n);
+    const lay = doc.layout();
+    const r = arg?.rect ? 'x' : await c.getPoint('Precise primera esquina', { options: ['Ajustar'], def: 'Ajustar' });
+    let rc;
+    if (arg?.rect) rc = arg.rect;
+    else if (r === 'Ajustar') rc = { x1: 10, y1: 10, x2: lay.w - 10, y2: lay.h - 10 };
+    else { const b = await c.getPoint('Precise esquina opuesta', { base: r, rubber: false, preview: p => [{ type: 'pline', pts: rectPts(r, p), closed: true }] }); rc = G.normRect(r, b); }
+    if (rc.x2 - rc.x1 < 2 || rc.y2 - rc.y1 < 2) return c.print('Zona demasiado pequeña.');
+    const made = splitPaper(rc, n, dir).map(t => app.addViewport(t));
+    return c.print(`${made.length} ventana(s) gráfica(s) creada(s) a escala ${made.map(v => v.label).join(', ')}.`);
+  }
+  const k = arg?.op || await c.getKeyword('Indique una opción', ['Guardar', 'Restituir', 'Suprimir', 'Unir', 'ÚNica', '?', '2', '3', '4'], '3');
+  if (k === 'ÚNica') { const a = app.activeTile(); app.setTiles([{ ...tileItem(a), r: { x1: 0, y1: 0, x2: 1, y2: 1 } }]); return c.print('Una sola ventana.'); }
+  if (k === '?') {
+    c.print(`Configuración actual: ${app.tiles.length} ventana(s).`);
+    for (const v of doc.vportConfigs) c.print(`  ${v.name}: ${v.tiles.length} ventana(s)`);
+    if (!doc.vportConfigs.length) c.print('No hay configuraciones de ventanas guardadas.');
+    return;
+  }
+  if (k === 'Guardar' || k === 'Restituir' || k === 'Suprimir') {
+    const name = (arg?.name ?? await c.getString(`Indique nombre de la configuración de ventanas`, { spaces: true, def: k === 'Guardar' ? '' : doc.vportConfigs[0]?.name || '' })).trim();
+    const old = findVportConfig(doc, name);
+    if (k === 'Guardar') {
+      if (!validViewName(name)) return c.print('Nombre no válido.');
+      const st = app.tilesState() || { active: 0, tiles: app.tiles.map(({ r, view: v }) => ({ r, cx: v.cx, cy: v.cy, vh: v.h / v.scale })) };
+      const rec = { name: old?.name || name, ...JSON.parse(JSON.stringify(st)) };
+      if (old) Object.assign(old, rec); else doc.vportConfigs.push(rec);
+      doc.changed();
+      return c.print(`Configuración "${rec.name}" guardada (${rec.tiles.length} ventana(s)).`);
+    }
+    if (!old) return c.print(`No existe la configuración "${name}".`);
+    if (k === 'Suprimir') { doc.vportConfigs = doc.vportConfigs.filter(v => v !== old); doc.changed(); return c.print(`Configuración "${old.name}" suprimida.`); }
+    app.setTiles(old.tiles, old.active || 0);
+    return c.print(`Configuración "${old.name}" restituida.`);
+  }
+  if (k === 'Unir') {
+    if (app.tiles.length < 2) return c.print('Sólo hay una ventana.');
+    const pick = arg?.side || await c.app.ask('point', 'Designe la ventana que desea unir a la actual (o indique el lado)', { options: ['Izquierda', 'deRecha', 'ENcima', 'DEbajo'], pickTile: true, noSnap: true });
+    const other = typeof pick === 'string' ? tileBeside(app, pick) : pick?.view ? pick : null;
+    const a = app.activeTile(), r = other && other !== a ? joinTiles(a.r, other.r) : null;
+    if (!r) return c.print('Las ventanas que se unen tienen que formar un rectángulo (compartir un lado entero).');
+    app.setTiles(app.tiles.filter(t => t !== other).map(t => (t === a ? { ...tileItem(t), r } : tileItem(t))), app.tiles.filter(t => t !== other).indexOf(a));
+    return c.print('Ventanas unidas.');
+  }
+  const n = +k, dir = arg?.dir || await askDir(n), a = app.activeTile();
+  const parts = splitTile(a.r, n, dir);
+  if ((a.r.x2 - a.r.x1) * app.vw / (n === 3 && /^(Vertical)$/.test(dir) ? 3 : 2) < 60 || (a.r.y2 - a.r.y1) * app.vh / (n === 3 && dir === 'Horizontal' ? 3 : 2) < 40) return c.print('La ventana actual es demasiado pequeña para dividirla.');
+  const list = [], idx = app.tiles.indexOf(a);
+  app.tiles.forEach((t, i) => { if (i === idx) for (const r of parts) list.push({ ...tileItem(t), r }); else list.push(tileItem(t)); });
+  app.setTiles(list, idx);
+  c.print(`Ventana dividida en ${n}${dir ? ` (${dir.toLowerCase()})` : ''}: ${app.tiles.length} ventanas en el modelo. Haga clic en una ventana para activarla.`);
+}, { group: 'Vista', keepSel: true });
+
+// ================= SELECCIÓN Y BÚSQUEDA =================
+function setSelection(c, ids, append) {
+  const app = c.app;
+  if (!append) app.sel.clear();
+  for (const id of ids) app.sel.add(id);
+  app.selChanged();
+  return app.sel.size;
+}
+def('QSELECT', ['SELECR', 'SELECCIONRAPIDA', 'SELRAPIDA'], 'Selección rápida: designa los objetos que cumplen una condición sobre sus propiedades', async (c, arg) => {
+  const app = c.app, doc = c.doc;
+  const q = arg || await app.ui.qselectDialog();
+  if (!q) return;
+  const pool = candidates(doc, q.scope === 'sel' ? [...app.sel] : null);
+  const ids = qselect(pool, q);
+  const n = setSelection(c, ids, q.append);
+  c.print(`${ids.length} objeto(s) ${q.exclude ? 'excluidos de la condición' : 'cumplen la condición'} (${condText(q)}); ${n} designado(s).`);
+}, { group: 'Utilidades', noTx: true });
+
+def('FILTER', ['FI', 'FILTRO', 'FILTROS'], 'Filtros de selección: condiciones sobre las propiedades combinadas con Y / O, guardadas con nombre', async (c, arg) => {
+  const app = c.app, doc = c.doc;
+  let r = arg;
+  if (!r) {
+    for (;;) {
+      r = await app.ui.filterDialog();
+      if (!r) return;
+      if (r.action === 'save') {
+        const name = await app.ui.prompt('Guardar filtro', 'Nombre del filtro', r.filter.name || `Filtro${doc.selFilters.length + 1}`);
+        if (name) { const old = findFilter(doc, name), f = { ...JSON.parse(JSON.stringify(r.filter)), name: old?.name || name }; if (old) Object.assign(old, f); else doc.selFilters.push(f); doc.changed(); app.ui.filterDraft = f; c.print(`Filtro "${f.name}" guardado (${f.conds.length} condición(es)).`); }
+        continue;
+      }
+      if (r.action === 'delete') { const f = findFilter(doc, r.filter.name); if (f) { doc.selFilters = doc.selFilters.filter(x => x !== f); doc.changed(); c.print(`Filtro "${f.name}" eliminado.`); } continue; }
+      break;
+    }
+  }
+  const f = r.name ? findFilter(doc, r.name) : r.filter;
+  if (!f) return c.print(`No existe el filtro "${r.name}".`);
+  let ids = r.all ? null : await c.app.ask('select', 'Designe objetos a los que aplicar el filtro (Intro = todo el espacio actual)', { allowEnter: true });
+  if (ids && !ids.length) ids = null;
+  const out = applyFilter(candidates(doc, ids), f);
+  setSelection(c, out, false);
+  c.print(`Filtro${f.name ? ` "${f.name}"` : ''}: ${out.length} objeto(s) designado(s) (${f.conds.map(condText).join(f.join === 'or' ? ' O ' : ' Y ') || 'sin condiciones'}).`);
+}, { group: 'Utilidades', keepSel: true });
+
+// Objetos en que se busca: el espacio actual, todo el dibujo (modelo y presentaciones) o la designación actual
+function findPool(c, where) {
+  const doc = c.doc;
+  if (where === 'sel') return [...c.app.sel].map(id => doc.get(id)).filter(Boolean);
+  if (where === 'all') return [...doc.model, ...doc.layouts.flatMap(l => l.ents)];
+  return doc.ents;
+}
+function spaceOf(doc, e) {
+  if (doc.model.includes(e)) return 'model';
+  const i = doc.layouts.findIndex(l => l.ents.includes(e));
+  return i >= 0 ? i : null;
+}
+def('FIND', ['BUSCAR', 'REEMPLAZAR', 'BUSCARREEMPLAZAR'], 'Busca y reemplaza texto en textos, atributos, cotas, directrices y tablas', async (c, arg) => {
+  const app = c.app, doc = c.doc;
+  if (arg) { // por guion: {find, replace, where, opts, kinds}
+    const res = findText(findPool(c, arg.where), arg.find, { ...arg.opts, kinds: arg.kinds });
+    if (arg.replace == null) { setSelection(c, res.filter(r => doc.ents.includes(r.e)).map(r => r.e.id)); return c.print(`${res.length} coincidencia(s) de "${arg.find}".`); }
+    const n = replaceText(doc, res, arg.find, arg.replace, arg.opts);
+    return c.print(`${n} reemplazo(s) en ${res.length} texto(s).`);
+  }
+  const r = await app.ui.findDialog(findPool, spaceOf);
+  if (r?.select?.length) { setSelection(c, r.select); c.print(`${r.select.length} objeto(s) designado(s).`); }
+}, { group: 'Utilidades', keepSel: true });
+
+// ================= LIMPIEZA Y COMPROBACIÓN =================
+def('OVERKILL', ['SUPRDUPLICADOS', 'DUPLICADOS', 'SOLAPADOS'], 'Suprime objetos duplicados y combina líneas y arcos que se solapan; optimiza polilíneas', async (c, arg) => {
+  const ids = await c.getSelection('Designe objetos (Intro = todo el espacio actual)', { allowEnter: true });
+  const list = ids.length ? ids : c.doc.ents.filter(e => c.doc.visible(e) && !c.doc.locked(e)).map(e => e.id);
+  const o = arg || await c.app.ui.overkillDialog({ ...OK_DEFAULTS, ...c.settings.overkill });
+  if (!o) return;
+  if (!arg) c.settings.overkill = o;
+  const r = overkill(c.doc, list, o);
+  c.print(`${r.dup} duplicado(s) suprimido(s), ${r.merged} objeto(s) solapado(s) o contiguo(s) combinado(s), ${r.verts} vértice(s) de polilínea eliminado(s).`);
+}, { group: 'Utilidades', sel: true });
+
+def('AUDIT', ['REVISAR', 'AUDITAR', 'COMPROBAR'], 'Comprueba la integridad del dibujo y corrige los errores', async (c, arg) => {
+  const fix = (arg || await c.getKeyword('¿Corregir los errores detectados?', ['Sí', 'No'], 'No')) === 'Sí';
+  const r = audit(c.doc, fix);
+  for (const m of r.errors.slice(0, 60)) c.print(`  ${m}`);
+  if (r.errors.length > 60) c.print(`  … y ${r.errors.length - 60} más.`);
+  c.print(r.errors.length ? `${r.errors.length} error(es) encontrado(s), ${r.fixed} corregido(s).` : 'No se han encontrado errores.');
+  if (r.errors.length) c.app.ui.showHistory(true);
+  if (fix && r.fixed) c.app.afterUndo();
+}, { group: 'Utilidades' });
 
 // ================= PRESENTACIONES =================
 def('LAYOUT', ['LO', 'PRESENTACION'], 'Crea, renombra, elimina o activa presentaciones', async (c, arg) => {
@@ -2859,6 +3151,68 @@ def('-LAYERSTATE', ['-LAS', '-ESTADOCAPAS'], 'Estados de capa por la línea de c
       if (!validStateName(n) || (findLayerState(doc, n) && findLayerState(doc, n) !== s)) c.print('Nombre no válido o repetido.'); else renameLayerState(doc, s, n);
     } else { s.desc = (await c.getString('Indique la descripción', { spaces: true, def: s.desc || '' })).trim(); doc.changed(); }
   }
+}, { group: 'Propiedades' });
+// ---- Herramientas de capas ----
+def('LAYISO', ['AISLARCAPA', 'AISLARCAPAS', 'CAPAISO'], 'Aísla las capas de los objetos designados: desactiva o bloquea las demás', async (c, arg) => {
+  const doc = c.doc, S = c.settings;
+  let ids = arg?.ids || (c.app.pickfirst ? await c.getSelection() : null);
+  while (!ids) {
+    const r = await c.app.ask('select', `Designe objetos en las capas que desea aislar (las demás se ${S.layIsoMode === 'lock' ? 'bloquean' : 'desactivan'})`, { options: ['Parámetros'] });
+    if (r === 'Parámetros') { S.layIsoMode = (await c.getKeyword('Indique el modo para las demás capas', ['Desactivar', 'Bloquear'], S.layIsoMode === 'lock' ? 'Bloquear' : 'Desactivar')) === 'Bloquear' ? 'lock' : 'off'; continue; }
+    ids = r;
+  }
+  const names = [...new Set(ids.map(id => doc.get(id)?.layer).filter(Boolean))];
+  if (!names.length) return c.print('Ningún objeto designado.');
+  const mode = arg?.mode || S.layIsoMode || 'off';
+  layIso(doc, names, mode);
+  c.print(`${names.length === 1 ? `La capa "${names[0]}" está aislada` : `Las capas ${names.map(n => `"${n}"`).join(', ')} están aisladas`}; las demás se han ${mode === 'lock' ? 'bloqueado' : 'desactivado'}. LAYUNISO las restaura.`);
+}, { group: 'Propiedades', sel: true });
+def('LAYUNISO', ['DESAISLARCAPA', 'DESAISLARCAPAS', 'CAPADESISO'], 'Restaura las capas como estaban antes del último LAYISO', async c => {
+  const n = layUniso(c.doc);
+  c.print(n < 0 ? 'No hay capas aisladas con LAYISO.' : `${n} capa(s) restaurada(s).`);
+}, { group: 'Propiedades' });
+def('LAYWALK', ['RECORRERCAPAS', 'RECORRECAPAS', 'PASEOCAPAS'], 'Recorre las capas: muestra sólo las elegidas en la lista y las restaura al salir', async (c, arg) => {
+  const doc = c.doc, snap = doc.layers.map(l => [l, l.on]);
+  const show = names => { const s = new Set(names); for (const l of doc.layers) l.on = s.has(l.name); doc.changed(); };
+  let keep;
+  if (arg) { show(arg.layers); keep = !!arg.keep; }
+  else { const r = await c.app.ui.layWalk(show); keep = !!r?.keep; }
+  if (!keep) { for (const [l, on] of snap) l.on = on; doc.changed(); c.print('Capas restauradas.'); }
+  else c.print(`Estado de las capas conservado: ${doc.layers.filter(l => l.on).length} capa(s) activada(s).`);
+}, { group: 'Propiedades', keepSel: true });
+async function pickLayer(c, msg, allowEnter) {
+  for (;;) {
+    const r = await c.getEntity(msg, { options: ['Nombre'], allowEnter });
+    if (r === null) return null;
+    if (r === 'Nombre') {
+      const n = (await c.getString('Indique nombre de capa', { spaces: true })).trim();
+      const l = c.doc.layers.find(x => x.name.toLowerCase() === n.toLowerCase());
+      if (l) return l.name;
+      c.print(`La capa "${n}" no existe.`);
+      continue;
+    }
+    return r.e.layer;
+  }
+}
+def('LAYMRG', ['FUSIONARCAPAS', 'FUSIONCAPAS', 'UNIRCAPAS'], 'Fusiona capas: pasa sus objetos a una capa de destino y las elimina', async c => {
+  const doc = c.doc, from = [];
+  for (;;) {
+    const l = await pickLayer(c, `Designe objeto en la capa que desea fusionar${from.length ? ' o Intro para terminar' : ''}`, from.length > 0);
+    if (!l) break;
+    if (l === '0') { c.print('La capa "0" no se puede fusionar con otra.'); continue; }
+    if (!from.includes(l)) from.push(l);
+    c.print(`Capas que se fusionan: ${from.join(', ')}`);
+  }
+  if (!from.length) return;
+  const to = await pickLayer(c, 'Designe objeto en la capa de destino', false);
+  const src = from.filter(n => n !== to);
+  if (!src.length) return c.print('La capa de destino es la única designada.');
+  if ((await c.getKeyword(`Se van a fusionar ${src.length} capa(s) en "${to}". ¿Desea continuar?`, ['Sí', 'No'], 'No')) !== 'Sí') return;
+  const n = layMerge(doc, src, to);
+  c.print(`${src.length} capa(s) fusionada(s) en "${to}" (${n} objeto(s) movidos).`);
+}, { group: 'Propiedades' });
+def('LAYFILTER', ['FILTROCAPAS', 'FILTROSCAPA'], 'Filtros de capa por propiedades y por grupos para la paleta de capas', async c => {
+  await c.app.ui.layerFilterManager();
 }, { group: 'Propiedades' });
 def('PROPERTIES', ['PR', 'CH', 'PROPIEDADES'], 'Paleta de propiedades', async c => { c.app.ui.showPalette('props'); }, { noTx: true, group: 'Propiedades' });
 def('DSETTINGS', ['DS', 'OS', 'OSNAP', 'REFENT', 'PARAMSDIB'], 'Parámetros de dibujo (referencias, rejilla, polar, isométrico)', async c => { c.app.ui.openSettings(); }, { noTx: true, group: 'Utilidades' });

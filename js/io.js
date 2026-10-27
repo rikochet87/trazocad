@@ -124,6 +124,9 @@ export class IO {
         if (r.modelPlotStyle) doc.settings.modelPlotStyle = r.modelPlotStyle;
         doc.patterns = r.patterns || {};
         if (r.layerStates?.length) doc.layerStates = r.layerStates;
+        if (r.ucsList?.length) doc.ucsList = r.ucsList;
+        if (r.views?.length) doc.views = r.views;
+        if (r.ucs) doc.ucs = r.ucs;
         if (r.mleaderStyles?.length) { doc.mleaderStyles = r.mleaderStyles; doc.cur.mleaderStyle = r.mleaderStyles[0].name; }
         if (r.tableStyles?.length) { doc.tableStyles = r.tableStyles; doc.cur.tableStyle = r.tableStyles[0].name; }
         for (const s of r.mlineStyles || []) { const i = doc.mlineStyles.findIndex(x => x.name.toUpperCase() === s.name.toUpperCase()); if (i >= 0) doc.mlineStyles[i] = s; else doc.mlineStyles.push(s); }

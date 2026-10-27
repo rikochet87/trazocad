@@ -3,6 +3,7 @@ import * as G from './geom.js';
 import { snapsOf, primsOf } from './entities.js';
 import { ISO_AXES } from './render.js';
 import { NO_ASSOC } from './assoc.js';
+import { ucsOf, toUcs, fromUcs } from './ucs.js';
 
 export const OSNAP_MODES = {
   end: 'Punto final', mid: 'Punto medio', cen: 'Centro', qua: 'Cuadrante', int: 'Intersección',
@@ -89,13 +90,13 @@ export class Snapper {
     app.considerAcquire(null);
     if (T.otrack && app.acquired.length && !noSnap) track = this.track(m);
     if (track) return { pt: track.pt, snap, track, polar };
-    const iso = S.iso && app.tab === 'model';
+    const iso = S.iso && app.tab === 'model', u = ucsOf(app.doc);
     if (T.snap && S.snapX > 0) {
       if (iso) { // retícula isométrica: p = i·a + j·b con a a 30° y b a 150°
         const s = S.snapX, a = G.P(Math.cos(Math.PI / 6) * s, 0.5 * s), b = G.P(-Math.cos(Math.PI / 6) * s, 0.5 * s);
         const det = a.x * b.y - a.y * b.x, i = Math.round((pt.x * b.y - pt.y * b.x) / det), j = Math.round((a.x * pt.y - a.y * pt.x) / det);
         pt = G.add(G.mul(a, i), G.mul(b, j));
-      } else pt = G.P(Math.round(pt.x / S.snapX) * S.snapX, Math.round(pt.y / S.snapX) * S.snapX);
+      } else { const q = toUcs(u, pt); pt = fromUcs(u, G.P(Math.round(q.x / S.snapX) * S.snapX, Math.round(q.y / S.snapX) * S.snapX)); } // retícula del SCP
     }
     if (base) {
       if (T.ortho && iso) { // orto isométrico: los dos ejes del plano actual
@@ -106,11 +107,12 @@ export class Snapper {
           if (Math.abs(d) > bd) { bd = Math.abs(d); bestP = G.add(base, G.mul(u, d)); }
         }
         pt = bestP;
-      } else if (T.ortho) {
-        pt = Math.abs(pt.x - base.x) >= Math.abs(pt.y - base.y) ? G.P(pt.x, base.y) : G.P(base.x, pt.y);
-      } else if (T.polar) {
-        const inc = G.rad(S.polarInc || 90), a = G.ang(base, m.w);
-        const k = Math.round(a / inc) * inc, dir = G.P(Math.cos(k), Math.sin(k));
+      } else if (T.ortho) { // ejes del SCP
+        const ux = G.P(Math.cos(u.ang), Math.sin(u.ang)), uy = G.perp(ux), v = G.sub(pt, base), dx = G.dot(v, ux), dy = G.dot(v, uy);
+        pt = Math.abs(dx) >= Math.abs(dy) ? G.add(base, G.mul(ux, dx)) : G.add(base, G.mul(uy, dy));
+      } else if (T.polar) { // ángulos polares medidos desde el eje X del SCP
+        const inc = G.rad(S.polarInc || 90), a = G.ang(base, m.w) - u.ang;
+        const k = Math.round(a / inc) * inc + u.ang, dir = G.P(Math.cos(k), Math.sin(k));
         const d = G.dot(G.sub(m.w, base), dir);
         const off = Math.abs(G.cross(dir, G.sub(m.w, base))) * app.view.scale;
         if (d > 0 && off < POLAR_TOL && d * app.view.scale > 8) {

@@ -17,7 +17,7 @@ export const DEFAULT_SETTINGS = {
   hatchPat: 'ANSI31', hatchScale: 1, hatchAng: 0, hatchAssoc: true, iso: false, isoPlane: 'top', splineMethod: 'fit',
   dimAssoc: true, mleaderContent: 'mtext', balloonNum: 0, insBase: { x: 0, y: 0 },
   mlScale: 20, mlJust: 'top', arrayAssoc: true, xclipFrame: 2, wipeoutFrame: 2, boundaryType: 'pline', boundaryIslands: true, revcloud: 5,
-  unitsPerInch: 25.4, hatchIslands: 'normal', psltscale: 0,
+  unitsPerInch: 25.4, hatchIslands: 'normal', psltscale: 0, ucsIcon: true, ucsIconOrigin: true,
 };
 const newMlStyle = () => JSON.parse(JSON.stringify(DEFAULT_MLINESTYLE));
 export const PAPERS = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841], Carta: [279.4, 215.9], Oficio: [355.6, 215.9] };
@@ -42,6 +42,15 @@ export class Doc {
     this.layerStates = []; // estados de capa (layerstates.js)
     this.patterns = {};    // patrones de sombreado personalizados {NOMBRE: {desc, fam}} (patterns.js)
     this.plotStyles = {};  // tablas de estilos de trazado propias {nombre.ctb|nombre.stb: tabla} (plotstyles.js)
+    this.ucs = null;       // SCP actual del espacio modelo {o, ang, name?} (ucs.js); null = universal
+    this.ucsList = [];     // SCP con nombre
+    this.ucsPrev = [];     // SCP anteriores (UCS › Previo); no se guardan
+    this.views = [];       // vistas con nombre (views.js)
+    this.vportConfigs = []; // configuraciones de ventanas en mosaico del modelo con nombre
+    this.selFilters = [];  // filtros de selección con nombre (FILTER, select.js)
+    this.layerFilters = []; // filtros de capa por propiedades y por grupos (layertools.js)
+    this.layIso = null;    // estado de las capas antes de LAYISO
+    this.tiles = null;     // ventanas en mosaico leídas del archivo (la aplicación las restituye)
     this.space = 'model';
     this.textStyles = [{ name: 'Standard', font: 'Arial', width: 1, oblique: 0 }];
     this.dimStyles = [{ ...DEFAULT_DIMSTYLE }];
@@ -71,11 +80,11 @@ export class Doc {
 
   // ----- Deshacer / rehacer por instantáneas -----
   state() {
-    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles });
+    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso });
   }
   loadState(s) {
     const o = JSON.parse(s);
-    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {}, plotStyles: o.plotStyles || {} });
+    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {}, plotStyles: o.plotStyles || {}, ucs: o.ucs || null, ucsList: o.ucsList || [], views: o.views || [], vportConfigs: o.vportConfigs || [], selFilters: o.selFilters || [], layerFilters: o.layerFilters || [], layIso: o.layIso || null });
     if (this.bedit) this.space = 'bedit';
     else if (this.space === 'bedit') this.space = 'model';
     else if (this.space !== 'model' && this.space !== 'bedit' && !this.layouts[this.space]) this.space = 'model';
@@ -310,8 +319,10 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 10, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      app: 'TrazoCAD', version: 11, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
       textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, cur: this.cur, settings: this.settings, nextId: this.nextId,
+      ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso,
+      ...(this.viewState ? { tiles: this.viewState() } : {}),
     };
   }
   fromJSON(o) {
@@ -332,6 +343,14 @@ export class Doc {
     this.layerStates = o.layerStates || [];
     this.patterns = o.patterns || {};
     this.plotStyles = o.plotStyles || {};
+    this.ucs = o.ucs || null;
+    this.ucsList = o.ucsList || [];
+    this.views = o.views || [];
+    this.vportConfigs = o.vportConfigs || [];
+    this.selFilters = o.selFilters || [];
+    this.layerFilters = o.layerFilters || [];
+    this.layIso = o.layIso || null;
+    this.tiles = o.tiles || null;
     if (o.mleaderStyles?.length) this.mleaderStyles = o.mleaderStyles;
     if (o.tableStyles?.length) this.tableStyles = o.tableStyles;
     if (o.mlineStyles?.length) this.mlineStyles = o.mlineStyles;

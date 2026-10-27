@@ -15,6 +15,11 @@ import { parseRich, buildRich, baseFmt } from './richtext.js';
 import { xrefNames, xrefRefs, recallXref } from './xref.js';
 import { plotTables, BUILTIN_PLOT, OBJECT, stbNames, readPlotFile, writePlotFile, aciSample, activeStb } from './plotstyles.js';
 import { evalParams } from './constraints.js';
+import { ucsOf, toUcs } from './ucs.js';
+import { OPS, propNames, propValue, candidates, findFilter } from './select.js';
+import { FIND_KINDS, findText, replaceText } from './find.js';
+import { OK_PROPS } from './cleanup.js';
+import { usedLayers, LF_RULES, findLayerFilter, layerMatches, filteredLayers } from './layertools.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
@@ -39,8 +44,9 @@ const RIBBON = [
     { name: 'Bloque', items: [['BLOCK', 'Crear', 'block'], ['INSERT', 'Insertar', 'insert'], ['BEDIT', 'Editar', 'bedit'], ['ATTDEF', 'Atributo', 'attdef']] },
     { name: 'Grupos', items: [['GROUP', 'Agrupar', 'group'], ['UNGROUP', 'Desagrupar', 'ungroup'], ['GROUPEDIT', 'Editar grupo', 'groupedit'], ['CLASSICGROUP', 'Grupos', 'groups']] },
     { name: 'Capas', custom: 'layers' },
+    { name: 'Herramientas de capa', items: [['LAYISO', 'Aislar', 'layiso'], ['LAYUNISO', 'Desaislar', 'layuniso'], ['LAYWALK', 'Recorrer', 'laywalk'], ['LAYMRG', 'Fusionar', 'laymrg'], ['LAYFILTER', 'Filtros', 'layfilter']] },
     { name: 'Propiedades', custom: 'props' },
-    { name: 'Utilidades', items: [['DIST', 'Distancia', 'dist'], ['AREA', 'Área', 'area'], ['LIST', 'Lista', 'list']] },
+    { name: 'Utilidades', items: [['DIST', 'Distancia', 'dist'], ['AREA', 'Área', 'area'], ['LIST', 'Lista', 'list'], ['QSELECT', 'Sel. rápida', 'qselect'], ['FILTER', 'Filtro', 'filter'], ['FIND', 'Buscar', 'find'], ['OVERKILL', 'Duplicados', 'overkill'], ['AUDIT', 'Revisar', 'audit']] },
   ] },
   { tab: 'Insertar', groups: [
     { name: 'Bloque', items: [['BLOCK', 'Crear bloque', 'block'], ['INSERT', 'Insertar', 'insert'], ['BEDIT', 'Editor de bloques', 'bedit'], ['EXPLODE', 'Descomponer', 'explode'], ['PURGE', 'Limpiar', 'trash']] },
@@ -64,6 +70,8 @@ const RIBBON = [
   ] },
   { tab: 'Vista', groups: [
     { name: 'Navegar', items: [['!zoomext', 'Extensión', 'zoomext'], ['!zoomwin', 'Ventana', 'zoomwin'], ['!zoomprev', 'Previo', 'zoomprev'], ['PAN', 'Encuadre', 'pan'], ['REGEN', 'Regenerar', 'regen']] },
+    { name: 'Coordenadas', items: [['UCS', 'SCP', 'ucs'], ['!ucsworld', 'Universal', 'ucsworld'], ['!ucsprev', 'Previo', 'ucsprev'], ['!ucsobj', 'Objeto', 'ucsobj'], ['!ucs3p', '3 puntos', 'ucs3p'], ['UCSMAN', 'Admin. SCP', 'ucsman'], ['UCSICON', 'Icono', 'ucsicon']] },
+    { name: 'Vistas y ventanas', items: [['VIEW', 'Vistas', 'view'], ['VPORTS', 'Ventanas', 'vports'], ['!vpjoin', 'Unir', 'vpjoin'], ['!vpsingle', 'Única', 'vpsingle']] },
     { name: 'Dibujo', items: [['ISODRAFT', 'Isométrico', 'iso'], ['DSETTINGS', 'Parámetros', 'settings']] },
     { name: 'Paletas', items: [['PROPERTIES', 'Propiedades', 'props'], ['LAYER', 'Capas', 'layers'], ['!palette', 'Mostrar/ocultar', 'sidebar'], ['!fullscreen', 'Pantalla completa', 'fullscreen'], ['HELP', 'Ayuda', 'help']] },
   ] },
@@ -147,6 +155,12 @@ export class UI {
       case '!dxf2007': app.run('DXFOUT', '2007'); break;
       case '!dxf2000': app.run('DXFOUT', '2000'); break;
       case '!dxf12': app.run('DXFOUT', 'R12'); break;
+      case '!ucsworld': app.run('UCS', 'Universal'); break;
+      case '!ucsprev': app.run('UCS', 'Previo'); break;
+      case '!ucsobj': app.run('UCS', 'OBjeto'); break;
+      case '!ucs3p': app.run('UCS', '3puntos'); break;
+      case '!vpjoin': app.run('VPORTS', { op: 'Unir' }); break;
+      case '!vpsingle': app.run('VPORTS', { op: 'ÚNica' }); break;
       default: app.run(cmd);
     }
   }
@@ -289,7 +303,8 @@ export class UI {
     items.push(h('button', { class: 'lt add', title: 'Nueva presentación', onclick: () => app.run('LAYOUT', 'Nueva') }, '+'));
     this.tabsEl.replaceChildren(...items);
   }
-  updateCoords(p) { const d = this.app.doc.settings.coordDec; this.coordsEl.textContent = `${fmt(p.x, d)}, ${fmt(p.y, d)}, 0.0000`; }
+  // Coordenadas del cursor en el SCP actual
+  updateCoords(p) { const d = this.app.doc.settings.coordDec, q = toUcs(ucsOf(this.app.doc), p); this.coordsEl.textContent = `${fmt(q.x, d)}, ${fmt(q.y, d)}, 0.0000`; }
 
   // ---------- Paleta lateral ----------
   buildPalette() {
@@ -470,11 +485,21 @@ export class UI {
       h('button', { class: 'btn', onclick: () => { if (this.selLayer) { doc.cur.layer = this.selLayer; this.refresh(); } } }, h('span', { html: icon('check', 16) }), 'Actual'),
       h('button', { class: 'btn', title: 'Estados de capa (LAYERSTATE)', onclick: () => app.run('LAYERSTATE') }, h('span', { html: icon('laystate', 16) }), `Estados${doc.layerStates.length ? ` (${doc.layerStates.length})` : ''}…`));
     body.append(bar);
+    if (this.layFilter && this.layFilter !== '*usadas*' && !findLayerFilter(doc, this.layFilter)) this.layFilter = '';
+    const fsel = h('select', { title: 'Filtro de capas', onchange: e => { this.layFilter = e.target.value; this.refresh(); } },
+      h('option', { value: '' }, 'Todas las capas'), h('option', { value: '*usadas*' }, 'Capas en uso'), ...doc.layerFilters.map(f => h('option', { value: f.name }, `${f.kind === 'group' ? '▣' : '⚲'} ${f.name}`)));
+    fsel.value = this.layFilter || '';
+    const inv = h('input', { type: 'checkbox', checked: !!this.layFilterInv, onchange: e => { this.layFilterInv = e.target.checked; this.refresh(); } });
+    body.append(h('div', { class: 'lay-bar lay-filter' }, h('span', { html: icon('layfilter', 16) }), fsel, h('label', { class: 'chk', title: 'Mostrar las capas que no pasan el filtro' }, inv, 'Invertir'),
+      h('button', { class: 'btn', title: 'Filtros de capa por propiedades y por grupos (LAYFILTER)', onclick: () => app.run('LAYFILTER') }, 'Filtros…')));
+    body.append(h('div', { class: 'lay-bar' }, ...[['LAYISO', 'layiso', 'Aislar', 'Aísla las capas de los objetos designados (LAYISO)'], ['LAYUNISO', 'layuniso', 'Desaislar', 'Restaura las capas aisladas (LAYUNISO)'], ['LAYWALK', 'laywalk', 'Recorrer', 'Recorre las capas mostrando sólo las elegidas (LAYWALK)'], ['LAYMRG', 'laymrg', 'Fusionar', 'Fusiona capas en otra (LAYMRG)']]
+      .map(([cmd, ic, label, tip]) => h('button', { class: 'btn', title: tip, onclick: () => app.run(cmd) }, h('span', { html: icon(ic, 16) }), label))));
     const vp = app.vpActive ? doc.get(app.vpActive) : null;
     const list = h('div', { class: 'lay-list' + (vp ? ' vp' : '') });
     list.append(h('div', { class: 'lay-row head' }, h('span', {}, ''), h('span', {}, 'Nombre'), h('span', { title: 'Activada' }, 'Act.'), h('span', { title: 'Bloqueada' }, 'Bloq.'),
       vp ? h('span', { title: 'Inutilizada en la ventana gráfica actual' }, 'Vent.') : null, h('span', { title: 'Color' }, 'Col.'), h('span', {}, 'Tipo / Grosor')));
-    for (const l of doc.layers) {
+    const shownLayers = filteredLayers(doc, this.layFilter, this.layFilterInv);
+    for (const l of shownLayers) {
       let count = 0;
       for (const e of doc.allEnts()) if (e.layer === l.name) count++;
       const lt = h('select', { onchange: e => tx(() => { l.ltype = e.target.value; }) }, ...this.ltypeOptions(false)); lt.value = l.ltype;
@@ -505,6 +530,7 @@ export class UI {
         h('span', { class: 'lay-lt' }, lt, lw));
       list.append(row);
     }
+    if (shownLayers.length < doc.layers.length) list.append(h('div', { class: 'lay-row hint' }, h('span', {}, ''), h('span', {}, `${shownLayers.length} de ${doc.layers.length} capas (filtro)`)));
     body.append(list, h('p', { class: 'hint' }, 'Doble clic en un nombre: capa actual. Clic derecho: renombrar. Los objetos nuevos se dibujan en la capa actual.' +
       (vp ? ' La columna «Vent.» oculta la capa sólo en la ventana gráfica activa.' : app.tab !== 'model' ? ' Active una ventana gráfica (doble clic dentro) para inutilizar capas sólo en ella.' : '')));
   }
@@ -576,7 +602,7 @@ export class UI {
     } else if ((m.polar || m.track) && m.inside) {
       const s = app.view.toScreen(m.pt);
       const base = req?.opts.base || req?.tmpBase;
-      tip.textContent = m.polar ? `Polar: ${fmt(m.polar.d, 4)} < ${fmt(G.deg(G.normAng(m.polar.ang)), 0)}°` : base ? `Rastreo: ${fmt(G.dist(base, m.pt), 4)}` : 'Rastreo';
+      tip.textContent = m.polar ? `Polar: ${fmt(m.polar.d, 4)} < ${fmt(G.deg(G.normAng(m.polar.ang - ucsOf(app.doc).ang)), 0)}°` : base ? `Rastreo: ${fmt(G.dist(base, m.pt), 4)}` : 'Rastreo';
       tip.style.transform = `translate(${s.x + 12}px, ${s.y + 12}px)`;
       tip.hidden = false;
     } else tip.hidden = true;
@@ -585,8 +611,9 @@ export class UI {
       const base = req.opts.base || req.tmpBase;
       let html = `<div class="dp">${esc(req.prompt.replace(/:\s*$/, ''))}</div>`;
       const typed = $('#cmd-input').value;
-      if (base && req.pointLike) html += `<div class="dv"><span>${fmt(G.dist(base, m.pt), 4)}</span><span>${fmt(G.deg(G.normAng(G.ang(base, m.pt))), 1)}°</span></div>`;
-      else if (req.pointLike) html += `<div class="dv"><span>${fmt(m.pt.x, 4)}</span><span>${fmt(m.pt.y, 4)}</span></div>`;
+      const u = ucsOf(app.doc), q = toUcs(u, m.pt); // distancias, ángulos y coordenadas en el SCP
+      if (base && req.pointLike) html += `<div class="dv"><span>${fmt(G.dist(base, m.pt), 4)}</span><span>${fmt(G.deg(G.normAng(G.ang(base, m.pt) - u.ang)), 1)}°</span></div>`;
+      else if (req.pointLike) html += `<div class="dv"><span>${fmt(q.x, 4)}</span><span>${fmt(q.y, 4)}</span></div>`;
       if (typed) html += `<div class="dt">${esc(typed)}</div>`;
       dyn.innerHTML = html;
       dyn.style.transform = `translate(${m.sx + 22}px, ${m.sy + 22}px)`;
@@ -1456,6 +1483,284 @@ export class UI {
     await this.modal('Tablas de estilos de trazado', box, [{ label: 'Cerrar', value: null, primary: true }]);
   }
 
+  // ---------- SCP y vistas ----------
+  // Administrador de SCP. Devuelve {action: 'set'|'save'|'rename'|'delete', name} o null.
+  ucsManager() {
+    const app = this.app, doc = app.doc, S = doc.settings;
+    const desc = u => (u ? `${fmt(u.o.x, 4)}, ${fmt(u.o.y, 4)}` : '0, 0');
+    const rows = [['*universal*', 'Universal', null], ...(doc.ucsPrev?.length ? [['*previo*', 'Previo', doc.ucsPrev.at(-1)]] : []), ...doc.ucsList.map(u => [u.name, u.name, u])];
+    let sel = doc.ucs ? doc.ucs.name || null : '*universal*';
+    const tbody = h('tbody');
+    for (const [key, label, u] of rows) {
+      const cur = key === '*universal*' ? !doc.ucs : key !== '*previo*' && doc.ucs?.name === key;
+      const tr = h('tr', { class: key === sel ? 'sel' : '', onclick: () => { sel = key; tbody.querySelectorAll('tr').forEach(x => x.classList.toggle('sel', x === tr)); } },
+        h('td', {}, h('b', {}, label), cur ? h('span', { class: 'tag' }, ' actual') : null), h('td', { class: 'num' }, desc(u)), h('td', { class: 'num' }, `${fmt(G.deg(G.normAng(u?.ang || 0)), 2)}°`));
+      tbody.append(tr);
+    }
+    const on = h('input', { type: 'checkbox', checked: S.ucsIcon !== false, onchange: e => { S.ucsIcon = e.target.checked; app.renderer.invalidate(); } });
+    const org = h('input', { type: 'checkbox', checked: S.ucsIconOrigin !== false, onchange: e => { S.ucsIconOrigin = e.target.checked; app.renderer.invalidate(); } });
+    const box = h('div', {},
+      h('p', { class: 'hint' }, `SCP actual: ${!doc.ucs ? 'Universal' : `${doc.ucs.name || 'sin nombre'} (origen ${desc(doc.ucs)}, eje X a ${fmt(G.deg(doc.ucs.ang), 2)}°)`}`),
+      h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...['Nombre', 'Origen', 'Eje X'].map(t => h('th', {}, t)))), tbody),
+      h('fieldset', {}, h('legend', {}, 'Icono del SCP'), h('div', { class: 'grid2' }, h('label', { class: 'chk' }, on, 'Mostrar el icono'), h('label', { class: 'chk' }, org, 'Mostrar en el origen del SCP'))),
+      h('p', { class: 'hint' }, 'Las coordenadas que se escriben (x,y · @dx,dy · d<a) se miden en el SCP actual; con * delante (*x,y) se miden en el universal. ORTO, POLAR, la rejilla y FORZC siguen los ejes del SCP.'));
+    const act = a => () => (a === 'save' || (sel && (a === 'set' || !sel.startsWith('*'))) ? { action: a, name: sel } : null);
+    return this.modal('Administrador de SCP', box, [{ label: 'Cerrar', value: null }, { label: 'Guardar actual…', value: act('save') }, { label: 'Renombrar…', value: act('rename') }, { label: 'Suprimir', value: act('delete') }, { label: 'Establecer actual', value: act('set'), primary: true }]);
+  }
+  // Administrador de vistas con nombre. Devuelve {action: 'restore'|'new'|'update'|'rename'|'delete', name, opts} o null.
+  viewManager() {
+    const doc = this.app.doc;
+    let sel = doc.views[0]?.name;
+    const tbody = h('tbody');
+    for (const v of doc.views) {
+      const tr = h('tr', { class: v.name === sel ? 'sel' : '', onclick: () => { sel = v.name; tbody.querySelectorAll('tr').forEach(x => x.classList.toggle('sel', x === tr)); }, ondblclick: () => { sel = v.name; restore.click(); } },
+        h('td', {}, h('b', {}, v.name)), h('td', {}, v.space === 'model' ? 'Modelo' : v.space), h('td', { class: 'num' }, `${fmt(v.cx, 2)}, ${fmt(v.cy, 2)}`), h('td', { class: 'num' }, `${fmt(v.w, 2)} × ${fmt(v.h, 2)}`),
+        h('td', {}, v.ucs ? v.ucs.name || 'Sí' : '—'), h('td', {}, v.layers ? 'Sí' : '—'));
+      tbody.append(tr);
+    }
+    const ucs = h('input', { type: 'checkbox', checked: this.viewOpts?.ucs !== false }), lay = h('input', { type: 'checkbox', checked: !!this.viewOpts?.layers }), win = h('input', { type: 'checkbox', checked: !!this.viewOpts?.window });
+    const box = h('div', {},
+      doc.views.length ? h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...['Nombre', 'Espacio', 'Centro', 'Tamaño', 'SCP', 'Capas'].map(t => h('th', {}, t)))), tbody)
+        : h('p', { class: 'hint' }, 'No hay vistas con nombre. «Nueva…» guarda la vista actual (o una ventana) del modelo o de la presentación.'),
+      h('fieldset', {}, h('legend', {}, 'Vista nueva'), h('div', { class: 'grid2' }, h('label', { class: 'chk' }, ucs, 'Guardar el SCP actual con la vista'), h('label', { class: 'chk' }, lay, 'Guardar el estado de las capas (activadas y bloqueadas)'), h('label', { class: 'chk' }, win, 'Definir con una ventana'))));
+    const opts = () => (this.viewOpts = { ucs: ucs.checked, layers: lay.checked, window: win.checked });
+    const act = a => () => (a === 'new' || sel ? { action: a, name: sel, opts: opts() } : null);
+    let restore;
+    const p = this.modal('Vistas con nombre', box, [{ label: 'Cerrar', value: null }, { label: 'Nueva…', value: act('new') }, ...(doc.views.length ? [{ label: 'Actualizar', value: act('update') }, { label: 'Renombrar…', value: act('rename') }, { label: 'Suprimir', value: act('delete') }, { label: 'Establecer actual', value: act('restore'), primary: true }] : [])]);
+    restore = [...document.querySelectorAll('#modal-root .modal-foot .btn')].find(b => b.textContent === 'Establecer actual') || { click() {} };
+    return p;
+  }
+
+  // ---------- Selección rápida y filtros ----------
+  // Editor de una condición {type, prop, op, value}: devuelve los controles y una función que lee el valor
+  condEditor(k, pool, onChange = () => {}) {
+    const types = [...new Set(pool.map(e => e.type))].sort((a, b) => TYPES[a].name.localeCompare(TYPES[b].name));
+    const tSel = h('select', {}, h('option', { value: '*' }, `Varios (todos los tipos)`), ...types.map(t => h('option', { value: t }, `${TYPES[t].name} (${pool.filter(e => e.type === t).length})`)));
+    const pSel = h('select', {}), oSel = h('select', {}, ...Object.entries(OPS).map(([v, l]) => h('option', { value: v }, l)));
+    const list = h('datalist', { id: `dl${Math.random().toString(36).slice(2)}` }), val = h('input', { type: 'text', list: list.id, value: k.value ?? '' });
+    tSel.value = types.includes(k.type) ? k.type : '*'; oSel.value = k.op || '=';
+    const fillProps = () => {
+      const names = propNames(pool, tSel.value);
+      pSel.replaceChildren(...names.map(n => h('option', { value: n }, n)));
+      pSel.value = names.includes(k.prop) ? k.prop : names.includes(pSel.dataset.last) ? pSel.dataset.last : names[0];
+      fillVals();
+    };
+    const fillVals = () => {
+      pSel.dataset.last = pSel.value;
+      const vs = new Set();
+      for (const e of pool) { if (tSel.value !== '*' && e.type !== tSel.value) continue; const v = propValue(e, pSel.value); if (v !== undefined && vs.size < 60) vs.add(typeof v === 'number' ? fmt(v, 4) : String(v)); }
+      list.replaceChildren(...[...vs].sort().map(v => h('option', { value: v })));
+      val.disabled = oSel.value === 'all';
+    };
+    tSel.onchange = () => { fillProps(); onChange(); }; pSel.onchange = () => { fillVals(); onChange(); }; oSel.onchange = () => { fillVals(); onChange(); };
+    fillProps();
+    return { tSel, pSel, oSel, val, list, read: () => ({ type: tSel.value, prop: pSel.value, op: oSel.value, value: val.value.trim() }) };
+  }
+  qselectDialog() {
+    const app = this.app, doc = app.doc, last = this.qsLast || {};
+    const scope = h('select', {}, h('option', { value: 'all' }, 'Todo el espacio actual'), app.sel.size ? h('option', { value: 'sel' }, `Designación actual (${app.sel.size})`) : null);
+    scope.value = app.sel.size && last.scope === 'sel' ? 'sel' : 'all';
+    const how = h('select', {}, h('option', { value: 'in' }, 'Incluir en el nuevo conjunto'), h('option', { value: 'out' }, 'Excluir del nuevo conjunto'));
+    how.value = last.exclude ? 'out' : 'in';
+    const append = h('input', { type: 'checkbox', checked: !!last.append });
+    const wrap = h('div', {});
+    let ed;
+    const build = () => {
+      const pool = candidates(doc, scope.value === 'sel' ? [...app.sel] : null);
+      ed = this.condEditor(ed ? ed.read() : last, pool);
+      wrap.replaceChildren(h('div', { class: 'grid2' }, h('label', { class: 'fld' }, 'Tipo de objeto', ed.tSel), h('label', { class: 'fld' }, 'Propiedad', ed.pSel), h('label', { class: 'fld' }, 'Operador', ed.oSel), h('label', { class: 'fld' }, 'Valor', ed.val, ed.list)));
+    };
+    scope.onchange = build;
+    build();
+    const box = h('div', {}, h('div', { class: 'grid2' }, h('label', { class: 'fld' }, 'Aplicar a', scope)), wrap,
+      h('div', { class: 'grid2' }, h('label', { class: 'fld' }, 'Cómo aplicar', how), h('label', { class: 'chk' }, append, 'Añadir a la designación actual')),
+      h('p', { class: 'hint' }, 'Colores: PorCapa, un nombre (rojo, azul…), un número ACI o #rrggbb. Los ángulos se comparan en grados. El comodín admite * y ?. Sólo se designan objetos visibles en capas desbloqueadas.'));
+    return this.modal('Selección rápida', box, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', primary: true, value: () => (this.qsLast = { ...ed.read(), scope: scope.value, exclude: how.value === 'out', append: append.checked }) }]);
+  }
+  // Filtros de selección. Devuelve {action: 'apply'|'save'|'delete', filter} o null.
+  filterDialog() {
+    const doc = this.app.doc, pool = candidates(doc, null);
+    const draft = this.filterDraft ? JSON.parse(JSON.stringify(this.filterDraft)) : { name: '', join: 'and', conds: [] };
+    const saved = h('select', {}, h('option', { value: '' }, '— Filtro sin guardar —'), ...doc.selFilters.map(f => h('option', { value: f.name }, f.name)));
+    saved.value = findFilter(doc, draft.name) ? findFilter(doc, draft.name).name : '';
+    const join = h('select', {}, h('option', { value: 'and' }, 'Todas las condiciones (Y)'), h('option', { value: 'or' }, 'Alguna condición (O)'));
+    const tbody = h('tbody'), eds = [];
+    const render = () => {
+      join.value = draft.join || 'and';
+      eds.length = 0;
+      tbody.replaceChildren(...draft.conds.map((k, i) => {
+        const ed = this.condEditor(k, pool), not = h('input', { type: 'checkbox', checked: !!k.not, title: 'Negar la condición (NO)' });
+        eds.push({ ed, not });
+        return h('tr', {}, h('td', {}, not), h('td', {}, ed.tSel), h('td', {}, ed.pSel), h('td', {}, ed.oSel), h('td', {}, ed.val, ed.list),
+          h('td', {}, h('button', { class: 'ib', title: 'Quitar condición', html: icon('trash', 14), onclick: () => { read(); draft.conds.splice(i, 1); render(); } })));
+      }));
+      if (!draft.conds.length) tbody.append(h('tr', {}, h('td', { colspan: 6 }, h('span', { class: 'hint' }, 'Sin condiciones: el filtro designa todos los objetos. Añada condiciones con el botón de abajo.'))));
+    };
+    const read = () => { draft.join = join.value; draft.conds = eds.map(({ ed, not }) => ({ ...ed.read(), not: not.checked })); return draft; };
+    saved.onchange = () => { const f = findFilter(doc, saved.value); Object.assign(draft, f ? JSON.parse(JSON.stringify(f)) : { name: '', join: 'and', conds: [] }); render(); };
+    render();
+    const add = h('button', { class: 'btn', onclick: () => { read(); draft.conds.push({ type: '*', prop: 'Capa', op: '=', value: '' }); render(); } }, h('span', { html: icon('plus', 16) }), 'Añadir condición');
+    const box = h('div', { class: 'filter-dlg' },
+      h('div', { class: 'grid2' }, h('label', { class: 'fld' }, 'Filtro guardado', saved), h('label', { class: 'fld' }, 'Combinar', join)),
+      h('table', { class: 'xref-list params' }, h('thead', {}, h('tr', {}, ...['NO', 'Tipo', 'Propiedad', 'Operador', 'Valor', ''].map(t => h('th', {}, t)))), tbody),
+      h('div', { class: 'lay-bar' }, add),
+      h('p', { class: 'hint' }, '«Aplicar» pide los objetos (Intro = todo el espacio actual) y designa los que pasan el filtro. Los filtros guardados se conservan en el dibujo.'));
+    const out = a => () => { read(); this.filterDraft = JSON.parse(JSON.stringify(draft)); return { action: a, filter: this.filterDraft }; };
+    return this.modal('Filtros de selección', box, [{ label: 'Cancelar', value: null }, { label: 'Guardar como…', value: out('save') }, ...(doc.selFilters.length ? [{ label: 'Eliminar filtro', value: () => (saved.value ? { action: 'delete', filter: { name: saved.value } } : null) }] : []), { label: 'Aplicar', value: out('apply'), primary: true }]);
+  }
+
+  // ---------- Buscar y reemplazar ----------
+  // Busca y reemplaza dentro del diálogo; devuelve {select: ids} con «Designar» o null.
+  findDialog(findPool, spaceOf) {
+    const app = this.app, doc = app.doc, o = this.findOpts || { matchCase: false, whole: false, wild: false, where: 'space', kinds: Object.keys(FIND_KINDS) };
+    const q = h('input', { type: 'text', value: o.q || '' }), rep = h('input', { type: 'text', value: o.rep || '' });
+    const where = h('select', {}, h('option', { value: 'space' }, 'Espacio actual'), h('option', { value: 'all' }, 'Todo el dibujo (modelo y presentaciones)'), app.sel.size ? h('option', { value: 'sel' }, `Designación actual (${app.sel.size})`) : null);
+    where.value = o.where === 'sel' && !app.sel.size ? 'space' : o.where;
+    const ck = (k, label) => { const i = h('input', { type: 'checkbox', checked: !!o[k] }); i.dataset.k = k; return h('label', { class: 'chk' }, i, label); };
+    const opts = h('div', { class: 'grid2' }, ck('matchCase', 'Mayúsculas y minúsculas'), ck('whole', 'Sólo palabras completas'), ck('wild', 'Usar comodines (* ?)'));
+    const kinds = h('div', { class: 'grid2' }, ...Object.entries(FIND_KINDS).map(([k, l]) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', 'data-kind': k, checked: o.kinds.includes(k) }), l)));
+    const tbody = h('tbody'), status = h('p', { class: 'hint' }, 'Escriba el texto y pulse «Buscar».');
+    let results = [];
+    const read = () => {
+      const r = { q: q.value, rep: rep.value, where: where.value, kinds: [...kinds.querySelectorAll('[data-kind]')].filter(x => x.checked).map(x => x.dataset.kind) };
+      for (const i of opts.querySelectorAll('[data-k]')) r[i.dataset.k] = i.checked;
+      return (this.findOpts = r);
+    };
+    const spaceName = e => { const s = spaceOf(doc, e); return s === 'model' ? 'Modelo' : s === null ? '—' : doc.layouts[s].name; };
+    const ctx = (text, n) => { const t = text.replace(/\s+/g, ' '); return t.length > 70 ? t.slice(0, 67) + '…' : t; };
+    const search = () => {
+      const r = read();
+      results = findText(findPool({ app, doc }, r.where), r.q, { ...r, kinds: r.kinds });
+      tbody.replaceChildren(...results.map(x => {
+        const chk = h('input', { type: 'checkbox', checked: true, onclick: ev => ev.stopPropagation() });
+        x.chk = chk;
+        return h('tr', { title: 'Clic: ampliar el objeto', onclick: () => {
+          if (!doc.ents.includes(x.e)) { status.textContent = `El objeto está en «${spaceName(x.e)}»: cambie a ese espacio para verlo.`; return; }
+          const b = bboxOf(x.e);
+          if (b) { const m = Math.max(b.x2 - b.x1, b.y2 - b.y1, 1) * 1.5; app.view.push(); app.view.fit({ x1: b.x1 - m, y1: b.y1 - m, x2: b.x2 + m, y2: b.y2 + m }, 0.05); }
+          app.sel = new Set([x.e.id]); app.selChanged(); app.renderer.invalidate();
+        } }, h('td', {}, chk), h('td', {}, TYPES[x.e.type].name), h('td', {}, x.slot.label), h('td', {}, spaceName(x.e)), h('td', {}, ctx(x.text)), h('td', { class: 'num' }, String(x.n)));
+      }));
+      status.textContent = r.q ? `${results.length} texto(s) con ${results.reduce((s, x) => s + x.n, 0)} coincidencia(s) de «${r.q}».` : 'Escriba el texto que desea buscar.';
+    };
+    const replace = all => {
+      const r = read(), list = all ? results : results.filter(x => x.chk?.checked);
+      if (!r.q || !list.length) return;
+      const n = replaceText(doc, list, r.q, r.rep, r);
+      app.renderer.invalidate();
+      search();
+      status.textContent = `${n} reemplazo(s) hecho(s). ${status.textContent}`;
+    };
+    q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); search(); } });
+    const box = h('div', { class: 'find-dlg' },
+      h('div', { class: 'grid2' }, h('label', { class: 'fld' }, 'Buscar', q), h('label', { class: 'fld' }, 'Reemplazar por', rep), h('label', { class: 'fld' }, 'Dónde', where)),
+      h('fieldset', {}, h('legend', {}, 'Opciones'), opts), h('fieldset', {}, h('legend', {}, 'Buscar en'), kinds),
+      h('div', { class: 'lay-bar' }, h('button', { class: 'btn primary', onclick: search }, h('span', { html: icon('find', 16) }), 'Buscar'),
+        h('button', { class: 'btn', onclick: () => replace(false) }, 'Reemplazar marcados'), h('button', { class: 'btn', onclick: () => replace(true) }, 'Reemplazar todo')),
+      h('div', { class: 'find-res' }, h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...['', 'Objeto', 'Texto', 'Espacio', 'Contenido', 'Veces'].map(t => h('th', {}, t)))), tbody)), status);
+    return this.modal('Buscar y reemplazar', box, [{ label: 'Cerrar', value: null }, { label: 'Designar resultados', value: () => ({ select: results.filter(x => x.chk?.checked && doc.ents.includes(x.e) && doc.visible(x.e) && !doc.locked(x.e)).map(x => x.e.id) }) }]);
+  }
+
+  // ---------- OVERKILL ----------
+  overkillDialog(o) {
+    const tol = h('input', { type: 'text', value: String(o.tol) });
+    const ign = Object.entries(OK_PROPS).map(([k, l]) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', 'data-p': k, checked: o.ignore.includes(k) }), l));
+    const ck = (v, label) => { const i = h('input', { type: 'checkbox', checked: !!v }); return [i, h('label', { class: 'chk' }, i, label)]; };
+    const [pl, plL] = ck(o.plines, 'Optimizar segmentos de polilíneas (vértices repetidos o alineados)'), [ov, ovL] = ck(o.overlap, 'Combinar objetos colineales que se solapan parcialmente'), [ee, eeL] = ck(o.endToEnd, 'Combinar objetos colineales alineados extremo con extremo');
+    const box = h('div', {}, h('div', { class: 'grid2' }, h('label', { class: 'fld' }, 'Tolerancia', tol)),
+      h('fieldset', {}, h('legend', {}, 'Ignorar las propiedades'), h('div', { class: 'grid2' }, ...ign)),
+      h('fieldset', {}, h('legend', {}, 'Opciones'), plL, ovL, eeL),
+      h('p', { class: 'hint' }, 'Se suprimen los objetos iguales a otro dentro de la tolerancia (las líneas y polilíneas aunque tengan el sentido contrario). Las líneas y los arcos colineales se combinan en uno solo; un círculo absorbe los arcos que tiene encima.'));
+    return this.modal('Suprimir objetos duplicados', box, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', primary: true, value: () => {
+      const t = parseFloat(tol.value.replace(',', '.'));
+      return { tol: t > 0 ? t : 1e-6, ignore: [...box.querySelectorAll('[data-p]')].filter(x => x.checked).map(x => x.dataset.p), plines: pl.checked, overlap: ov.checked, endToEnd: ee.checked };
+    } }]);
+  }
+
+  // ---------- Herramientas de capas ----------
+  // Recorrer capas: show(nombres) muestra sólo esas capas. Devuelve {keep} al cerrar con el botón, o null (se restauran).
+  layWalk(show) {
+    const doc = this.app.doc, picked = new Set(doc.layers.filter(l => l.on).map(l => l.name));
+    const list = h('div', { class: 'walk-list' }), filt = h('input', { type: 'text', placeholder: 'p. ej. COTA*, *EJE*' });
+    const used = usedLayers(doc);
+    const render = () => list.replaceChildren(...doc.layers.map(l => h('div', { class: 'walk-row' + (picked.has(l.name) ? ' sel' : ''), title: 'Clic: sólo esta capa · Ctrl+clic: añadir o quitar', onclick: ev => {
+      if (ev.ctrlKey || ev.metaKey) { if (picked.has(l.name)) picked.delete(l.name); else picked.add(l.name); } else { picked.clear(); picked.add(l.name); }
+      apply();
+    } }, h('span', { class: 'swatch', style: `background:${l.color}` }), l.name, used.has(l.name) ? null : h('span', { class: 'tag' }, ' sin uso'))));
+    const apply = () => { show([...picked]); render(); };
+    filt.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault(); e.stopPropagation();
+      const re = filt.value.split(',').filter(s => s.trim()).map(p => new RegExp('^' + p.trim().replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i'));
+      picked.clear(); for (const l of doc.layers) if (re.some(r => r.test(l.name))) picked.add(l.name);
+      apply();
+    });
+    const restore = h('input', { type: 'checkbox', checked: true });
+    render();
+    const box = h('div', {}, h('label', { class: 'fld' }, 'Filtro (Intro: elegir las capas que coinciden)', filt), list,
+      h('div', { class: 'lay-bar' }, h('button', { class: 'btn', onclick: () => { picked.clear(); for (const l of doc.layers) picked.add(l.name); apply(); } }, 'Todas'),
+        h('button', { class: 'btn', onclick: () => { const inv = doc.layers.filter(l => !picked.has(l.name)).map(l => l.name); picked.clear(); inv.forEach(n => picked.add(n)); apply(); } }, 'Invertir')),
+      h('label', { class: 'chk' }, restore, 'Restaurar las capas al cerrar'));
+    return this.modal('Recorrer capas', box, [{ label: 'Cerrar', primary: true, value: () => ({ keep: !restore.checked }) }]);
+  }
+  // Filtros de capa por propiedades y por grupos (la paleta de capas los usa para mostrar sólo algunas capas)
+  async layerFilterManager() {
+    const app = this.app, doc = app.doc;
+    for (;;) {
+      let sel = this.layFilter && findLayerFilter(doc, this.layFilter) ? findLayerFilter(doc, this.layFilter).name : doc.layerFilters[0]?.name;
+      const tbody = h('tbody'), used = usedLayers(doc);
+      const defText = f => (f.kind === 'group' ? f.layers.join(', ') || '(vacío)' : Object.entries(f.rules || {}).filter(([, v]) => v !== '' && v != null).map(([k, v]) => `${LF_RULES[k].split(' (')[0]}: ${v}`).join(' · ') || '(todas)');
+      for (const f of doc.layerFilters) {
+        const n = doc.layers.filter(l => layerMatches(f, l, used)).length;
+        const tr = h('tr', { class: f.name === sel ? 'sel' : '', onclick: () => { sel = f.name; tbody.querySelectorAll('tr').forEach(x => x.classList.toggle('sel', x === tr)); } },
+          h('td', {}, h('b', {}, f.name)), h('td', {}, f.kind === 'group' ? 'Grupo' : 'Propiedades'), h('td', {}, defText(f)), h('td', { class: 'num' }, String(n)));
+        tbody.append(tr);
+      }
+      const box = h('div', {}, doc.layerFilters.length ? h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...['Nombre', 'Tipo', 'Definición', 'Capas'].map(t => h('th', {}, t)))), tbody)
+        : h('p', { class: 'hint' }, 'No hay filtros de capa. Un filtro de propiedades muestra las capas que cumplen unas condiciones (nombre con comodines, color, activadas…); un filtro de grupo, las capas elegidas a mano.'));
+      const r = await this.modal('Filtros de capa', box, [{ label: 'Cerrar', value: null }, { label: 'Nuevo de propiedades…', value: { a: 'prop' } }, { label: 'Nuevo de grupo…', value: { a: 'group' } },
+        ...(doc.layerFilters.length ? [{ label: 'Editar…', value: () => (sel ? { a: 'edit' } : null) }, { label: 'Eliminar', value: () => (sel ? { a: 'del' } : null) }, { label: 'Usar en la paleta', primary: true, value: () => (sel ? { a: 'use' } : null) }] : [])]);
+      if (!r) return;
+      const f = findLayerFilter(doc, sel);
+      if (r.a === 'del' && f) { doc.layerFilters = doc.layerFilters.filter(x => x !== f); if (this.layFilter === f.name) this.layFilter = ''; doc.changed(); continue; }
+      if (r.a === 'use' && f) { this.layFilter = f.name; this.showPalette('layers'); return; }
+      const base = r.a === 'edit' ? f : { name: '', kind: r.a, ...(r.a === 'group' ? { layers: [] } : { rules: {} }) };
+      if (!base) continue;
+      const out = await this.layerFilterEditor(base);
+      if (!out) continue;
+      if (doc.layerFilters.some(x => x !== base && x.name.toLowerCase() === out.name.toLowerCase())) { app.print(`Ya existe un filtro de capa "${out.name}".`); continue; }
+      if (r.a === 'edit') { if (this.layFilter === base.name) this.layFilter = out.name; Object.assign(base, out); } else doc.layerFilters.push(out);
+      doc.changed();
+    }
+  }
+  layerFilterEditor(f) {
+    const doc = this.app.doc, used = usedLayers(doc);
+    const name = h('input', { type: 'text', value: f.name || `Filtro${doc.layerFilters.length + 1}` });
+    const count = h('p', { class: 'hint' });
+    let read;
+    let body;
+    if (f.kind === 'group') {
+      const set = new Set(f.layers);
+      body = h('div', { class: 'walk-list' }, ...doc.layers.map(l => h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: set.has(l.name), onchange: e => { if (e.target.checked) set.add(l.name); else set.delete(l.name); upd(); } }), h('span', { class: 'swatch', style: `background:${l.color}` }), l.name)));
+      read = () => ({ name: name.value.trim(), kind: 'group', layers: doc.layers.map(l => l.name).filter(n => set.has(n)) });
+    } else {
+      const r = f.rules || {}, yn = v => { const s = h('select', { onchange: () => upd() }, h('option', { value: '' }, 'Indiferente'), h('option', { value: 'sí' }, 'Sí'), h('option', { value: 'no' }, 'No')); s.value = v || ''; return s; };
+      const nm = h('input', { type: 'text', value: r.name || '', oninput: () => upd() });
+      const col = h('select', { onchange: () => upd() }, h('option', { value: '' }, 'Cualquiera'), ...[...new Set(doc.layers.map(l => l.color.toLowerCase()))].map(c => h('option', { value: c, style: `color:${c}` }, `■ ${COLORS.find(x => x[0] === c)?.[1] || c}`)));
+      col.value = r.color || '';
+      const on = yn(r.on), lock = yn(r.lock), use = yn(r.used);
+      const lt = h('select', { onchange: () => upd() }, h('option', { value: '' }, 'Cualquiera'), ...this.ltypeOptions(false)); lt.value = r.ltype || '';
+      const lw = h('select', { onchange: () => upd() }, h('option', { value: '' }, 'Cualquiera'), ...this.lwOptions(false)); lw.value = r.lw ?? '';
+      body = h('div', { class: 'grid2' }, h('label', { class: 'fld' }, LF_RULES.name, nm), h('label', { class: 'fld' }, 'Color', col), h('label', { class: 'fld' }, 'Activada', on), h('label', { class: 'fld' }, 'Bloqueada', lock),
+        h('label', { class: 'fld' }, 'Tipo de línea', lt), h('label', { class: 'fld' }, 'Grosor de línea', lw), h('label', { class: 'fld' }, 'En uso (con objetos)', use));
+      read = () => ({ name: name.value.trim(), kind: 'prop', rules: { name: nm.value.trim(), color: col.value, on: on.value, lock: lock.value, ltype: lt.value, lw: lw.value, used: use.value } });
+    }
+    const upd = () => { const x = read(); const ls = doc.layers.filter(l => layerMatches(x, l, used)); count.textContent = `${ls.length} capa(s): ${ls.slice(0, 12).map(l => l.name).join(', ')}${ls.length > 12 ? '…' : ''}`; };
+    upd();
+    const box = h('div', {}, h('label', { class: 'fld' }, 'Nombre del filtro', name), body, count);
+    return this.modal(f.kind === 'group' ? 'Filtro de grupo' : 'Filtro de propiedades', box, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', primary: true, value: () => { const x = read(); return x.name ? x : null; } }]);
+  }
+
   openHelp() {
     const groups = {};
     for (const d of Object.values(CMDS)) if (!d.hidden) (groups[d.group || 'Otros'] ||= []).push(d);
@@ -1466,6 +1771,7 @@ export class UI {
       <ul>
         <li><code>x,y</code> absoluta · <code>@dx,dy</code> relativa · <code>@dist&lt;ángulo</code> polar relativa · <code>dist&lt;ángulo</code> polar absoluta</li>
         <li>Un número solo = <b>distancia directa</b> en la dirección del cursor (combínelo con ORTO o POLAR).</li>
+        <li>Las coordenadas se miden en el <b>SCP</b> actual; con <code>*</code> delante (<code>*x,y</code>, <code>@*dx,dy</code>) se miden en el universal.</li>
       </ul>
       <h4>Selección</h4>
       <ul>
@@ -1478,6 +1784,16 @@ export class UI {
         <li>Pestañas <b>Modelo / Presentación</b> abajo a la izquierda; <b>+</b> crea una presentación con marco, cajetín y una ventana gráfica a escala estándar.</li>
         <li>Doble clic dentro de una ventana gráfica: trabaja en el modelo a través de ella (zoom y encuadre cambian su vista). Doble clic fuera: vuelve al papel.</li>
         <li>La escala de la ventana se cambia en la paleta de Propiedades. Imprimir, SVG y PNG de una presentación salen a escala real en milímetros.</li>
+      </ul>
+      <h4>Novedades de la v0.11</h4>
+      <ul>
+        <li><b>SCP</b> (<code>UCS</code>, <code>SCP</code>): origen y eje X, 3 puntos, alineado con un objeto, giro Z, previo, universal y SCP con nombre; <b>UCSMAN</b> los administra y <b>UCSICON</b> muestra el icono en el origen. Las coordenadas escritas, la barra de estado, ORTO, POLAR, la rejilla y FORZC siguen el SCP.</li>
+        <li><b>Vistas con nombre</b> (<code>VIEW</code>, <code>-VIEW</code>): guardan la vista actual o una ventana, del modelo o de una presentación, con su SCP y el estado de las capas.</li>
+        <li><b>Ventanas en mosaico</b> (<code>VPORTS</code>): divide el modelo en 2, 3 o 4 ventanas con su propia vista; clic para activar una, Unir, Única y configuraciones guardadas. En una presentación crea varias ventanas gráficas de una vez.</li>
+        <li><b>QSELECT</b> (selección rápida por tipo y propiedad) y <b>FILTER</b> (<code>FI</code>, condiciones combinadas con Y / O, guardadas con nombre).</li>
+        <li><b>FIND</b> (<code>BUSCAR</code>): busca y reemplaza en textos, atributos, cotas, directrices y tablas, en el espacio actual, en todo el dibujo o en la designación.</li>
+        <li><b>OVERKILL</b> suprime duplicados y combina líneas y arcos solapados; <b>AUDIT</b> (<code>REVISAR</code>) comprueba el dibujo y corrige los errores.</li>
+        <li><b>Capas</b>: LAYISO y LAYUNISO (aislar y desaislar), LAYWALK (recorrer), LAYMRG (fusionar) y filtros de capa por propiedades y por grupos en la paleta (LAYFILTER).</li>
       </ul>
       <h4>Novedades de la v0.10</h4>
       <ul>

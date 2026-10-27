@@ -544,6 +544,11 @@ export function writeDXF(doc, version = '2000') {
   g(9, '$PSLTSCALE'); g(70, doc.settings.psltscale ? 1 : 0);
   const ib = doc.settings.insBase || P(0, 0);
   g(9, '$INSBASE'); xy(0, ib);
+  { // SCP actual del espacio modelo
+    const u = doc.ucs, o = u ? u.o : P(0, 0), a = u ? u.ang : 0;
+    if (!R12 && u?.name) { g(9, '$UCSNAME'); g(2, nm(u.name)); }
+    g(9, '$UCSORG'); xy(0, o); g(9, '$UCSXDIR'); xy(0, P(Math.cos(a), Math.sin(a))); g(9, '$UCSYDIR'); xy(0, P(-Math.sin(a), Math.cos(a)));
+  }
   if (!R12) { g(9, '$DIMSTYLE'); g(2, nm(doc.dimStyle(doc.cur.dimStyle).name)); }
   const ext = doc.extents(doc.model);
   if (ext) { g(9, '$EXTMIN'); xy(0, P(ext.x1, ext.y1)); g(9, '$EXTMAX'); xy(0, P(ext.x2, ext.y2)); }
@@ -612,8 +617,27 @@ export function writeDXF(doc, version = '2000') {
       g(3, `${s.font.toLowerCase().replace(/\s+/g, '')}.ttf`); g(4, '');
     }
   });
-  table('VIEW', 0, () => {});
-  table('UCS', 0, () => {});
+  // Vistas con nombre (las de una presentación llevan su nombre y la instantánea de capas en XDATA propios)
+  table('VIEW', doc.views.length, th => {
+    for (const v of doc.views) {
+      rec('VIEW', th, 'AcDbViewTableRecord');
+      g(2, nm(v.name)); g(70, v.space === 'model' ? 0 : 1); g(40, num(v.h)); g(10, num(v.cx)); g(20, num(v.cy)); g(41, num(v.w));
+      g(11, 0); g(21, 0); g(31, 1); g(12, 0); g(22, 0); g(32, 0); g(42, 50); g(43, 0); g(44, 0); g(50, 0); g(71, 0);
+      if (!R12) {
+        g(281, 0); g(72, v.ucs ? 1 : 0);
+        if (v.ucs) { const a = v.ucs.ang; g(110, num(v.ucs.o.x)); g(120, num(v.ucs.o.y)); g(130, 0); g(111, num(Math.cos(a))); g(121, num(Math.sin(a))); g(131, 0); g(112, num(-Math.sin(a))); g(122, num(Math.cos(a))); g(132, 0); g(79, 0); g(146, 0); }
+        if (v.space !== 'model' || v.layers) { g(1001, 'TRAZOCAD'); g(1000, 'VISTA'); gLong(JSON.stringify({ space: v.space, layers: v.layers || null })); }
+      }
+    }
+  });
+  table('UCS', doc.ucsList.length, th => {
+    for (const u of doc.ucsList) {
+      rec('UCS', th, 'AcDbUCSTableRecord');
+      const a = u.ang;
+      g(2, nm(u.name)); g(70, 0); g(10, num(u.o.x)); g(20, num(u.o.y)); g(30, 0); g(11, num(Math.cos(a))); g(21, num(Math.sin(a))); g(31, 0); g(12, num(-Math.sin(a))); g(22, num(Math.cos(a))); g(32, 0);
+      if (!R12) { g(79, 0); g(146, 0); }
+    }
+  });
   table('APPID', R12 ? 1 : 2, th => {
     rec('APPID', th, 'AcDbRegAppTableRecord'); g(2, 'ACAD'); g(70, 0);
     if (!R12) { rec('APPID', th, 'AcDbRegAppTableRecord'); g(2, 'TRAZOCAD'); g(70, 0); } // datos extendidos propios (tablas y delimitaciones)
@@ -1645,8 +1669,26 @@ export function readDXF(text) {
     }
     if (s.name) layerStates.push(s);
   }
+  // SCP con nombre, vistas y SCP actual
+  const ucsList = [], views = [];
+  for (const gr of sections.TABLES || []) {
+    if (gr.type === 'UCS' && val(gr, 2)) ucsList.push({ name: val(gr, 2), o: P(numv(gr, 10), numv(gr, 20)), ang: G.normAng(Math.atan2(numv(gr, 21), numv(gr, 11, 1))) });
+    else if (gr.type === 'VIEW' && val(gr, 2)) {
+      const v = { name: val(gr, 2), space: 'model', cx: numv(gr, 10), cy: numv(gr, 20), w: numv(gr, 41, 1), h: numv(gr, 40, 1) };
+      const x = xdataText(gr, 'VISTA');
+      let meta = null;
+      try { meta = x ? JSON.parse(x) : null; } catch { /* datos propios dañados */ }
+      if (+val(gr, 70, '0') & 1) v.space = meta?.space && outLayouts.some(l => l.name === meta.space) ? meta.space : outLayouts[0]?.name || 'model';
+      if (meta?.layers) v.layers = meta.layers;
+      if (val(gr, 72) === '1') v.ucs = { o: P(numv(gr, 110), numv(gr, 120)), ang: G.normAng(Math.atan2(numv(gr, 121), numv(gr, 111, 1))) };
+      views.push(v);
+    }
+  }
+  const uo = headerPoint(pairs, '$UCSORG'), ux = headerPoint(pairs, '$UCSXDIR');
+  const uname = (() => { const i = pairs.findIndex(p => p[0] === 9 && p[1] === '$UCSNAME'); return i >= 0 && pairs[i + 1]?.[0] === 2 ? pairs[i + 1][1] : ''; })();
+  const ucs = uo && ux && (Math.hypot(uo.x, uo.y) > 1e-12 || Math.abs(Math.atan2(ux.y, ux.x)) > 1e-12) ? { o: uo, ang: G.normAng(Math.atan2(ux.y, ux.x)), ...(uname && ucsList.some(u => u.name === uname) ? { name: uname } : {}) } : null;
   return { layers: [...layers.values()], ents, blocks: outBlocks, textStyles, dimStyles, mleaderStyles, mlineStyles, tableStyles, layouts: outLayouts, groups: groupsOut, patterns, layerStates, insBase: headerPoint(pairs, '$INSBASE') || P(0, 0),
-    psltscale: headerInt(pairs, '$PSLTSCALE'), modelPlotStyle, skipped };
+    psltscale: headerInt(pairs, '$PSLTSCALE'), modelPlotStyle, ucs, ucsList, views, skipped };
 }
 // Entero de una variable de cabecera (código 9 seguido de 70), o null
 function headerInt(pairs, name) {
