@@ -1,6 +1,6 @@
 // Comandos estilo AutoCAD. Cada comando es una función asíncrona que pide datos con el contexto `c`.
 import * as G from './geom.js';
-import { TYPES, cloneEnt, xformEnt, crosses, bboxOf, bbPts, describe, fmt, dimParts, plArea, plLength, plPieces, pieceAt, plPolygon, hatchArea, blockAttdefs, mlEff, fieldText, FIELD_PROPS, DATE_FORMATS, insertMatrix, LTYPES, primsOf, ellPts, imageClipLoops, DIM_VARS, dimStyleOf, DEFAULT_DIMSTYLE } from './entities.js';
+import { TYPES, cloneEnt, xformEnt, setTwist, crosses, bboxOf, bbPts, describe, fmt, dimParts, plArea, plLength, plPieces, pieceAt, plPolygon, hatchArea, blockAttdefs, mlEff, fieldText, FIELD_PROPS, DATE_FORMATS, insertMatrix, LTYPES, primsOf, ellPts, imageClipLoops, DIM_VARS, dimStyleOf, DEFAULT_DIMSTYLE } from './entities.js';
 import { entityLoop, chainLoops, booleanLoops, nestLoops, regionArea, regionPerimeter } from './region.js';
 import { srcCenter, toLocal, itemCount, pathFit, localPath, pathable, ARRAY_KINDS, arrayInv, arrayM, invertM, itemWorld, itemMatrices, rectLevels } from './arrays.js';
 import { rectClip } from './xclip.js';
@@ -18,6 +18,11 @@ import { makeGroup, removeGroup, findGroup, groupsOf, copyGroups, validGroupName
 import { saveLayerState, restoreLayerState, findLayerState, validStateName, renameLayerState, deleteLayerState, LS_ALL } from './layerstates.js';
 import { linsOf, rotsOf, lookupCols } from './dynblock.js';
 import { WORLD, ucsOf, toUcs, setUcs, prevUcs, findUcs, saveUcs, deleteUcs, renameUcs, validUcsName, ucs3P, ucsFromObject } from './ucs.js';
+import { toFrame, fromFrame } from './view.js';
+import * as AN from './annoscale.js';
+import * as SC from './scripting.js';
+import { LIBRARY, libItem, libScale, ensureLibBlock, LIB_UNITS } from './library.js';
+import { loadPalettes } from './toolpalettes.js';
 import { findView, validViewName, captureView, saveView, deleteView, restoreView, splitTile, joinTiles, splitPaper, TILE_DIRS, findVportConfig } from './views.js';
 import { candidates, qselect, findFilter, applyFilter, condText } from './select.js';
 import { findText, replaceText } from './find.js';
@@ -75,6 +80,19 @@ function remapAssoc(ents, map) {
   }
 }
 const rectPts = (a, b) => [a, P(b.x, a.y), b, P(a.x, b.y)];
+// Rectángulo de esquinas opuestas a y b alineado con los ejes de la vista v (girada o no)
+const viewRectPts = (v, a, b) => {
+  const r = v.rot || 0;
+  if (!r) return rectPts(a, b);
+  const [au, av] = toFrame(r, a.x, a.y), [bu, bv] = toFrame(r, b.x, b.y);
+  return [[au, av], [bu, av], [bu, bv], [au, bv]].map(([u, w]) => P(...fromFrame(r, u, w)));
+};
+// Estiramiento con la ventana de captura de una vista girada: en los ejes de la vista
+function stretchIn(e, W, d) {
+  if (!W.rot) return OPS.stretchEntity(e, W.rect, d);
+  const n = OPS.stretchEntity(xformEnt(cloneEnt(e), Mx.R(-W.rot)), W.rect, G.rot(d, -W.rot));
+  return n && xformEnt(n, Mx.R(W.rot));
+}
 const deg = r => fmt(G.deg(G.normAng(r)), 2) + '°';
 const setPoly = (c, id, src) => c.doc.modify(id, e => { e.pts = src.pts; e.closed = src.closed; if (src.bulges?.some(b => b)) e.bulges = src.bulges; else delete e.bulges; });
 const sendToBack = (c, e) => { const arr = c.doc.ents, i = arr.indexOf(e); if (i > 0) { arr.splice(i, 1); arr.unshift(e); c.doc.changed(); } };
@@ -844,7 +862,8 @@ def('TEXT', ['DT', 'DTEXT', 'TEXTO'], 'Crea texto de una línea', async c => {
     }
     p = await c.getPoint('Precise punto inicial de texto', { options: ['Justificar', 'Estilo'] });
   }
-  const h = await c.getDistance('Precise altura', { base: p, def: S.textH });
+  const ann = c.doc.textStyle(c.doc.cur.textStyle)?.annotative; // estilo anotativo: la altura es la del papel
+  const h = await c.getDistance(ann ? 'Precise altura del texto en el papel' : 'Precise altura', { base: p, def: S.textH });
   if (!(h > 0)) return;
   S.textH = h;
   const rot = await c.getAngle('Precise ángulo de rotación del texto', { base: p, def: 0 });
@@ -1390,7 +1409,8 @@ def('ATTDEF', ['ATT', 'DEFATR', 'ATRDEF'], 'Define un atributo (texto variable) 
     else align = { Izquierda: 'l', Centro: 'c', Derecha: 'r' }[await c.getKeyword('Indique una opción', ['Izquierda', 'Centro', 'Derecha'], 'Izquierda')];
     p = await c.getPoint('Precise punto inicial de texto', { options: ['Justificar', 'Invisible'] });
   }
-  const h = await c.getDistance('Precise altura', { base: p, def: S.textH });
+  const ann = c.doc.textStyle(c.doc.cur.textStyle)?.annotative; // estilo anotativo: la altura es la del papel
+  const h = await c.getDistance(ann ? 'Precise altura del texto en el papel' : 'Precise altura', { base: p, def: S.textH });
   if (!(h > 0)) return;
   S.textH = h;
   const rot = await c.getAngle('Precise ángulo de rotación', { base: p, def: 0 });
@@ -1404,18 +1424,21 @@ def('ATTEDIT', ['ATE', 'EATTEDIT', 'EDITATR'], 'Edita los valores de los atribut
   if (v) c.doc.modify(o.e.id, e => { e.attribs = v; });
 }, { group: 'Bloques' });
 
-def('INSERT', ['I', 'INSERTAR', 'DDINSERT'], 'Inserta una referencia a un bloque', async (c, arg) => {
-  if (!Object.keys(c.doc.blocks).some(n => !n.startsWith('*') && !c.doc.blocks[n].xrefDep)) return c.print('No hay bloques definidos. Cree uno con BLOQUE.');
+def('INSERT', ['I', 'INSERTAR', 'DDINSERT'], 'Inserta una referencia a un bloque (también los de la biblioteca, por su nombre)', async (c, arg) => {
+  if (arg && !c.doc.blocks[arg] && libItem(arg)) return placeInsert(c, arg, libOpts(c, arg));
+  if (!Object.keys(c.doc.blocks).some(n => !n.startsWith('*') && !c.doc.blocks[n].xrefDep)) return c.print('No hay bloques definidos. Cree uno con BLOQUE o inserte uno de la biblioteca con ADCENTER o LIBINSERT.');
   const name = arg || await c.app.ui.pickBlock();
   if (!name || !c.doc.blocks[name]) return;
   await placeInsert(c, name);
 }, { group: 'Bloques' });
 
-// Pide punto de inserción, escala y rotación (y los atributos) y añade la referencia al bloque
-async function placeInsert(c, name) {
-  let s = 1, rot = 0;
+// Pide punto de inserción, escala y rotación (y los atributos) y añade la referencia al bloque.
+// o: valores iniciales (s, rot en radianes, layer, color, dyn) y at (punto: se inserta allí sin preguntar)
+async function placeInsert(c, name, o = {}) {
+  let s = o.s ?? 1, rot = o.rot ?? 0;
   const cur = c.doc.cur;
-  const mk = p => ({ type: 'insert', name, p, sx: s, sy: s, rot, layer: cur.layer, color: cur.color, ltype: cur.ltype, lw: cur.lw });
+  const mk = p => ({ type: 'insert', name, p, sx: s, sy: s, rot, layer: o.layer ?? cur.layer, color: o.color ?? cur.color, ltype: cur.ltype, lw: cur.lw, ...(o.dyn ? { dyn: { ...o.dyn } } : {}) });
+  if (o.at) { const ins = mk(o.at), defs = blockAttdefs(name); if (defs.length) ins.attribs = Object.fromEntries(defs.map(a => [a.tag, a.def || ''])); return c.add(ins); }
   for (;;) {
     const r = await c.getPoint(`Precise punto de inserción de "${name}"`, { options: ['Escala', 'Rotación'], preview: p => [mk(p)] });
     if (r === 'Escala') { const v = await c.getNumber('Indique factor de escala', { def: s }); if (v) s = v; continue; }
@@ -1423,10 +1446,96 @@ async function placeInsert(c, name) {
     const ins = mk(r), defs = blockAttdefs(name);
     if (defs.length) {
       ins.attribs = {};
-      for (const a of defs) ins.attribs[a.tag] = await c.getString(a.prompt || `Indique valor de ${a.tag}`, { spaces: true, def: a.def || '' });
+      for (const a of defs) if (!(a.tag in ins.attribs)) ins.attribs[a.tag] = await c.getString(a.prompt || `Indique valor de ${a.tag}`, { spaces: true, def: a.def || '' }); // una vez por etiqueta
     }
     return c.add(ins);
   }
+}
+
+// ---- Biblioteca de bloques viales (library.js) ----
+// Opciones de inserción de un bloque de la biblioteca: lo define si falta y aplica el factor de unidades (LIBUNITS)
+function libOpts(c, name, o = {}) {
+  const it = libItem(name);
+  if (ensureLibBlock(c.doc, name)) c.print(`Bloque "${name}" de la biblioteca añadido al dibujo${it.anno ? ' (anotativo: tamaño en el papel)' : ` (en metros, factor ${libScale(c.doc, it)} por LIBUNITS)`}.`);
+  return { ...o, s: (o.s ?? 1) * libScale(c.doc, it) };
+}
+def('LIBINSERT', ['BIBLIOTECA', 'INSERTARBIBLIOTECA', '-BIBLIOTECA'], 'Inserta un bloque de la biblioteca de obras viales (señales, alcantarillas, defensas, cordones y cunetas)', async (c, arg) => {
+  let name = arg;
+  while (!name) {
+    const t = (await c.getString('Indique nombre del bloque de la biblioteca o [?]', { spaces: true, def: '?' })).trim();
+    if (t === '?') { for (const l of LIBRARY) c.print(`  ${l.name}: ${l.label} — ${l.desc}`); continue; }
+    const it = LIBRARY.find(l => l.name.toUpperCase() === t.toUpperCase() || l.name.toUpperCase() === `TC_${t.toUpperCase()}`);
+    if (!it) { c.print(`No hay ningún bloque "${t}" en la biblioteca.`); continue; }
+    name = it.name;
+  }
+  if (!libItem(name)) return c.print(`No hay ningún bloque "${name}" en la biblioteca.`);
+  await placeInsert(c, name, libOpts(c, name));
+}, { group: 'Bloques' });
+def('LIBUNITS', ['UNIDADESBIBLIOTECA'], 'Unidades del dibujo para los planos tipo de la biblioteca (definidos en metros): m, cm o mm', async (c, arg) => {
+  const KW = { Metros: 'm', Centímetros: 'cm', Milímetros: 'mm' }, cur = Object.keys(KW).find(n => KW[n] === (c.settings.libUnits || 'm'));
+  const r = arg || await c.getKeyword('Unidades del dibujo', Object.keys(KW), cur), k = KW[r] || r;
+  if (!LIB_UNITS[k]) return;
+  c.settings.libUnits = k; c.doc.changed();
+  c.print(`Los planos tipo de la biblioteca se insertarán con factor ${LIB_UNITS[k]} (unidades: ${k}).`);
+}, { group: 'Bloques', keepSel: true });
+// Herramienta de una paleta que inserta un bloque (con sus propiedades); arg = {tool, at}
+def('_TOOLBLOCK', [], 'Herramienta de bloque', async (c, { tool: t, at } = {}) => {
+  if (!t) return;
+  const doc = c.doc;
+  if (t.layer) doc.ensureLayer(t.layer, '#ffffff');
+  if (!doc.blocks[t.block] && !libItem(t.block)) return c.print(`El bloque "${t.block}" no está en el dibujo ni en la biblioteca.`);
+  let o = { s: t.scale || 1, rot: G.rad(t.rot || 0), ...(t.layer ? { layer: t.layer } : {}), ...(t.color ? { color: t.color } : {}), ...(t.vis ? { dyn: { vis: t.vis } } : {}), at };
+  if (libItem(t.block)) o = libOpts(c, t.block, o);
+  c.print(`Herramienta: ${t.label}`);
+  await placeInsert(c, t.block, o);
+}, { group: 'Bloques', hidden: true });
+def('TOOLPALETTES', ['PH', 'PALETAHERRAMIENTAS', 'HERRAMIENTAS'], 'Muestra la paleta de herramientas: bloques de la biblioteca, sombreados y órdenes con sus propiedades', async c => {
+  c.app.ui.showPalette('tools');
+  c.print(`Paleta de herramientas: ${loadPalettes().map(p => p.name).join(', ')}. Clic en una herramienta o arrástrela al dibujo.`);
+}, { group: 'Herramientas', noTx: true, keepSel: true });
+def('TOOLPALETTESCLOSE', ['CERRARPH'], 'Cierra la paleta de herramientas', async c => { c.app.ui.showPalette('props', false); c.app.ui.togglePalette(false); }, { group: 'Herramientas', noTx: true, keepSel: true });
+def('ADCENTER', ['DC', 'ADC', 'DESIGNCENTER', 'CENTRODISEÑO'], 'DesignCenter: inserta bloques, capas y estilos de la biblioteca o de otros dibujos', async c => {
+  for (;;) {
+    const r = await c.app.ui.designCenter();
+    if (!r) return;
+    if (r.action === 'insert') {
+      if (r.lib) return placeInsert(c, r.name, libOpts(c, r.name));
+      const src = r.src;
+      if (!c.doc.blocks[r.name]) importBlock(c.doc, src, r.name);
+      else if (src !== c.doc && !(await c.app.ui.confirm(`El dibujo ya tiene un bloque "${r.name}". ¿Insertar el existente?`, 'Insertar'))) continue;
+      return placeInsert(c, r.name);
+    }
+    if (r.action === 'add') { const n = importItems(c.doc, r.src, r.kind, r.names); c.print(`${n} elemento(s) añadido(s) al dibujo${n < r.names.length ? ` (${r.names.length - n} ya existían)` : ''}.`); }
+  }
+}, { group: 'Bloques' });
+// Copia un bloque de otro dibujo (con los bloques que inserta, las capas y estilos que usa)
+function importBlock(doc, src, name, seen = new Set()) {
+  if (seen.has(name) || doc.blocks[name] || !src.blocks[name]) return;
+  seen.add(name);
+  const b = JSON.parse(JSON.stringify(src.blocks[name]));
+  for (const e of b.ents) {
+    if (e.type === 'insert') importBlock(doc, src, e.name, seen);
+    if (e.layer && !doc.layers.some(l => l.name === e.layer)) { const l = src.layers.find(x => x.name === e.layer); if (l) doc.layers.push(JSON.parse(JSON.stringify(l))); }
+    if (e.style && (e.type === 'text' || e.type === 'mtext' || e.type === 'attdef')) importItems(doc, src, 'textStyles', [e.style]);
+  }
+  const { base, ents, ...extra } = b;
+  delete extra.name; delete extra.ver;
+  doc.defineBlock(name, base, ents, extra);
+}
+// Copia capas o estilos (kind: layers, textStyles, dimStyles, mleaderStyles, tableStyles, mlineStyles) que no existan
+function importItems(doc, src, kind, names) {
+  if (kind === 'blocks') { let n = 0; for (const nm of names) if (!doc.blocks[nm]) { importBlock(doc, src, nm); n++; } return n; }
+  let n = 0;
+  for (const nm of names) {
+    if (doc[kind].some(x => x.name === nm)) continue;
+    const it = src[kind].find(x => x.name === nm);
+    if (!it) continue;
+    doc[kind].push(JSON.parse(JSON.stringify(it)));
+    if (kind === 'dimStyles' || kind === 'mleaderStyles' || kind === 'tableStyles') if (it.textStyle) importItems(doc, src, 'textStyles', [it.textStyle]);
+    n++;
+  }
+  doc.changed();
+  return n;
 }
 
 // ---- Referencias externas ----
@@ -1969,7 +2078,7 @@ def('STRETCH', ['S', 'ESTIRA'], 'Estira objetos designados con ventana de captur
   const base = await c.getPoint('Precise punto base');
   const calc = p => {
     const d = G.sub(p, base);
-    return ids.map(id => { const e = c.doc.get(id); return W ? OPS.stretchEntity(e, W.rect, d) : xformEnt(cloneEnt(e), Mx.T(d.x, d.y)); }).filter(Boolean);
+    return ids.map(id => { const e = c.doc.get(id); return W ? stretchIn(e, W, d) : xformEnt(cloneEnt(e), Mx.T(d.x, d.y)); }).filter(Boolean);
   };
   const p2 = await c.getPoint('Precise segundo punto', { base, preview: calc });
   for (const n of calc(p2)) c.doc.modify(n.id, e => Object.assign(e, n));
@@ -2375,8 +2484,8 @@ def('ZOOM', ['Z'], 'Amplía o reduce la vista', async (c, arg) => {
   if (r === 'Previo') { if (!v.prev()) c.print('No hay vista previa.'); c.app.renderer.invalidate(); return; }
   if (typeof r === 'number') { v.push(); v.zoomAt(r, { x: (v.ox || 0) + v.w / 2, y: (v.oy || 0) + v.h / 2 }); c.app.renderer.invalidate(); return; }
   const a = r === 'Ventana' ? await c.getPoint('Precise primera esquina', { noSnap: true }) : r;
-  const b = await c.getPoint('Precise esquina opuesta', { noSnap: true, base: a, rubber: false, preview: p => [{ type: 'pline', pts: rectPts(a, p), closed: true }] });
-  v.push(); v.fit(G.normRect(a, b), 0); c.app.renderer.invalidate();
+  const b = await c.getPoint('Precise esquina opuesta', { noSnap: true, base: a, rubber: false, preview: p => [{ type: 'pline', pts: viewRectPts(v, a, p), closed: true }] });
+  v.push(); v.fitPts(viewRectPts(v, a, b), 0); c.app.renderer.invalidate();
 }, { group: 'Vista', noTx: true });
 
 def('PAN', ['P', 'ENCUADRE'], 'Desplaza la vista arrastrando', async c => {
@@ -2405,6 +2514,11 @@ async function ucsNamed(c, arg) {
   setUcs(doc, u, u.name); c.print(`SCP "${u.name}" restituido.`);
 }
 def('UCS', ['SCP'], 'Sistema de coordenadas personal: origen y eje X, tres puntos, objeto, giro, con nombre, previo o universal', async (c, arg) => {
+  const before = JSON.stringify(c.doc.ucs || null);
+  await ucsCmd(c, arg);
+  if (c.settings.ucsfollow && c.doc.space === 'model' && JSON.stringify(c.doc.ucs || null) !== before) planView(c, ucsOf(c.doc));
+}, { group: 'Vista', keepSel: true });
+async function ucsCmd(c, arg) {
   const doc = c.doc;
   if (doc.space !== 'model') return c.print('El SCP sólo se usa en el espacio modelo (en una presentación, active una ventana gráfica).');
   if (arg && typeof arg === 'object' && arg.o) { setUcs(doc, arg, arg.name); return; }
@@ -2428,7 +2542,251 @@ def('UCS', ['SCP'], 'Sistema de coordenadas personal: origen y eje X, tres punto
   if (r === '3puntos' && px) await c.getPoint('Precise punto en la parte positiva Y del plano XY o <aceptar>', { base: o, allowEnter: true });
   setUcs(doc, px ? ucs3P(o, px) : { o, ang: cur.ang });
   c.print(`SCP: ${ucsDesc(doc.ucs)}.`);
+}
+
+// ---- Vistas giradas ----
+// Giro de la vista actual: en el modelo, el de la vista (o de la ventana en mosaico); en una ventana gráfica, su giro.
+// a: ángulo del dibujo que se ve horizontal; p: punto que no se mueve en la pantalla (el centro, si no se indica)
+function setViewRot(c, a, p = null) {
+  const app = c.app, v = app.view;
+  if (v.vp) {
+    const keep = p || v.modelAt(v.vc);
+    setTwist(v.vp, a);
+    if (!p) { v.vp.cx = keep.x; v.vp.cy = keep.y; } else { const s = v.toScreen(p), w = v.toWorld(s); v.vp.cx += keep.x - w.x; v.vp.cy += keep.y - w.y; }
+  } else v.setRot(G.normAng(a) < 1e-12 || G.TAU - G.normAng(a) < 1e-12 ? 0 : G.normAng(a), p);
+  app.renderer.invalidate(); app.ui.updateStatus();
+}
+const viewRotOk = c => {
+  if (c.app.layoutShown() && !c.app.vpActive) { c.print('Esta orden gira la vista del modelo: entre en una ventana gráfica (MSPACE o doble clic) o vaya a la pestaña Modelo. En el papel, el giro de una ventana se cambia en Propiedades (Giro) o con GIRA.'); return false; }
+  if (c.doc.bedit) { c.print('En el editor de bloques la vista no se gira.'); return false; }
+  return true;
+};
+// PLAN: vista en planta del SCP u (su eje X horizontal). En el modelo amplía la extensión; en una ventana gráfica
+// conserva la escala y el centro para no estropear la escala de la lámina
+function planView(c, u) {
+  const app = c.app, v = app.view;
+  v.push();
+  setViewRot(c, u ? u.ang : 0);
+  if (!v.vp) app.zoomExtents();
+}
+def('PLAN', ['PLANTA'], 'Vista en planta: gira la vista para alinearla con el SCP actual, con un SCP con nombre o con el universal', async (c, arg) => {
+  if (!viewRotOk(c)) return;
+  const doc = c.doc;
+  const k = arg || await c.getKeyword('Indique una opción', ['SCP actual', 'SCP', 'Universal'], 'SCP actual');
+  let u = ucsOf(doc), what = 'el SCP actual';
+  if (k === 'Universal') { u = WORLD; what = 'el SCP universal'; }
+  else if (k === 'SCP') {
+    const name = (await c.getString('Indique nombre del SCP', { spaces: true })).trim();
+    u = findUcs(doc, name);
+    if (!u) return c.print(`No existe el SCP "${name}".`);
+    what = `el SCP "${u.name}"`;
+  }
+  planView(c, u);
+  c.print(`Vista en planta de ${what}${u.ang ? ` (girada ${deg(u.ang)})` : ''}.`);
 }, { group: 'Vista', keepSel: true });
+
+def('DVIEW', ['DV', 'VISTADIN', 'GIRARVISTA', 'VIEWTWIST'], 'Gira la vista: ángulo, alinear con dos puntos o con un objeto, o restablecer (VIEWTWIST)', async (c, arg) => {
+  if (!viewRotOk(c)) return;
+  const v = c.app.view, cur = v.rot || 0;
+  const k = arg ?? await c.getKeyword(`Giro actual ${deg(cur)}. Indique una opción`, ['Giro', 'Dos puntos', 'Objeto', 'Restablecer'], 'Giro');
+  if (typeof k === 'number') { v.push(); setViewRot(c, G.rad(k)); return c.print(`Vista girada ${deg(G.rad(k))}.`); }
+  if (k === 'Restablecer') { v.push(); setViewRot(c, 0); return c.print('Vista sin giro: el eje X universal se ve horizontal.'); }
+  let a;
+  if (k === 'Giro') a = G.rad(await c.getNumber('Indique ángulo del dibujo que se verá horizontal', { def: +G.deg(cur).toFixed(6) }));
+  else if (k === 'Dos puntos') {
+    const p1 = await c.getPoint('Precise primer punto de la dirección horizontal');
+    const p2 = await c.getPoint('Precise segundo punto', { base: p1 });
+    if (G.dist(p1, p2) < 1e-12) return c.print('Los puntos coinciden.');
+    a = G.ang(p1, p2);
+  } else {
+    const o = await c.getEntity('Designe la línea, el tramo de polilínea, el arco o el texto con el que alinear la vista');
+    const u = ucsFromObject(o.e, o.pt);
+    if (!u) return c.print('No se puede alinear la vista con ese objeto.');
+    a = o.e.type === 'pline' ? plTangentAt(o.e, o.pt) ?? u.ang : o.e.type === 'arc' || o.e.type === 'circle' ? G.ang(o.e.c, o.pt) - Math.PI / 2 : u.ang;
+  }
+  v.push(); setViewRot(c, a);
+  c.print(`Vista girada ${deg(G.normAng(a))}: esa dirección se ve horizontal.`);
+}, { group: 'Vista', keepSel: true });
+
+// Dirección del tramo de polilínea más cercano al punto (o null)
+function plTangentAt(e, p) {
+  let best = null, bd = Infinity;
+  for (const q of primsOf(e)) {
+    const n = G.nearPrim(p, q), d = G.dist(p, n);
+    if (d < bd) { bd = d; best = q.k === 's' ? G.ang(q.a, q.b) : G.ang(q.c, n) + Math.PI / 2; }
+  }
+  return best;
+}
+
+// ---- Escalas anotativas (annoscale.js) ----
+const scaleDesc = s => `${s.name} (${fmt(s.paper, 4)} unidad(es) del papel = ${fmt(s.draw, 4)} del dibujo)`;
+// Cambia la escala de anotación actual: en una ventana gráfica, su escala (las dos van unidas); en el modelo, CANNOSCALE.
+// Con ANNOAUTOSCALE = 1 la escala nueva se añade a los objetos anotativos de las capas activadas y desbloqueadas
+function setAnnoScale(c, s) {
+  const app = c.app, doc = c.doc;
+  if (app.vpActive) {
+    const vp = doc.get(app.vpActive);
+    vp.s = 1 / AN.factorOf(s);
+  } else if (app.tab !== 'model') { c.print('En el papel la escala de anotación es 1:1: active una ventana gráfica o vaya al modelo.'); return false; }
+  else doc.settings.cannoscale = s.name;
+  if (doc.settings.annoAutoScale) {
+    let n = 0;
+    for (const e of doc.model) if (AN.isAnno(e) && doc.layer(e.layer).on && !doc.locked(e)) n += AN.addScales(e, [s.name]) ? 1 : 0;
+    if (n) c.print(`ANNOAUTOSCALE: escala ${s.name} añadida a ${n} objeto(s) anotativo(s).`);
+  }
+  doc.changed();
+  app.renderer.invalidate(); app.ui.updateStatus();
+  return true;
+}
+def('CANNOSCALE', ['ESCALAANOTACION', 'ESCANOT'], 'Escala de anotación actual (del modelo o de la ventana gráfica activa)', async (c, arg) => {
+  const cur = AN.curScale();
+  const t = arg ?? (await c.getString(`Escala de anotación actual ${cur.name}. Indique escala nueva (nombre o proporción, p. ej. 1:500)`, { def: cur.name })).trim();
+  if (!t) return;
+  const s = AN.resolveScale(c.doc, t, true);
+  if (!s) return c.print(`Escala no válida: "${t}".`);
+  if (setAnnoScale(c, s)) c.print(`Escala de anotación: ${s.name}.`);
+}, { group: 'Anotación', keepSel: true });
+
+def('SCALELISTEDIT', ['EDITARLISTAESCALAS', 'LISTAESCALAS'], 'Edita la lista de escalas del dibujo: añadir, suprimir, listar o restablecer la lista por defecto', async c => {
+  const doc = c.doc;
+  for (;;) {
+    const k = await c.getKeyword('Indique una opción', ['?', 'Añadir', 'Suprimir', 'Restablecer', 'Salir'], 'Salir');
+    if (k === 'Salir') return;
+    if (k === '?') { for (const s of AN.scalesOf(doc)) c.print(`  ${scaleDesc(s)}${AN.inUse(doc, s.name) ? '  (en uso)' : ''}`); continue; }
+    if (k === 'Restablecer') {
+      const used = AN.scalesInUse(doc), keep = AN.scalesOf(doc).filter(s => used.has(s.name.toLowerCase()) && !AN.DEFAULT_SCALES.some(d => d.name === s.name));
+      doc.scales = [...AN.defaultScales(), ...keep]; doc.changed();
+      c.print(`Lista de escalas restablecida (${doc.scales.length} escalas${keep.length ? `; se conservan ${keep.length} en uso` : ''}).`);
+      continue;
+    }
+    if (k === 'Añadir') {
+      const name = (await c.getString('Indique nombre de la escala', { spaces: true })).trim();
+      if (!name) continue;
+      if (AN.findScale(doc, name)) { c.print(`Ya existe la escala "${name}".`); continue; }
+      const p = AN.parseScale(name);
+      const paper = await c.getNumber('Indique unidades del papel', { def: p?.paper ?? 1, min: 1e-9 });
+      const draw = await c.getNumber('Indique unidades del dibujo', { def: p?.draw ?? 1, min: 1e-9 });
+      AN.scalesOf(doc).push({ name, paper, draw }); doc.changed();
+      c.print(`Escala añadida: ${scaleDesc({ name, paper, draw })}.`);
+      continue;
+    }
+    const name = (await c.getString('Indique nombre de la escala que desea suprimir', { spaces: true })).trim();
+    const s = AN.findScale(doc, name);
+    if (!s) { c.print(`No existe la escala "${name}".`); continue; }
+    if (AN.inUse(doc, s.name)) { c.print(`La escala ${s.name} está en uso (es la actual o la tienen objetos anotativos).`); continue; }
+    if (AN.scalesOf(doc).length < 2) { c.print('La lista debe tener al menos una escala.'); continue; }
+    doc.scales = AN.scalesOf(doc).filter(x => x !== s); doc.changed();
+    c.print(`Escala ${s.name} suprimida.`);
+  }
+}, { group: 'Anotación', keepSel: true });
+
+// Añade o quita escalas de anotación a los objetos anotativos designados
+async function objScales(c, op, names) {
+  const ids = await c.getSelection('Designe objetos anotativos');
+  const ents = ids.map(id => c.doc.get(id)).filter(e => AN.isAnno(e));
+  if (!ents.length) return c.print('Ningún objeto anotativo designado.');
+  if (!op) op = await c.getKeyword('Indique una opción', ['Añadir', 'Suprimir', '?'], 'Añadir');
+  if (op === '?') { for (const e of ents) c.print(`  ${TYPES[e.type].name}: ${e.anno.join(', ')}`); return; }
+  if (!names) {
+    const t = (await c.getString(`Indique escala(s) que desea ${op === 'Añadir' ? 'añadir' : 'suprimir'}, separadas por comas (* = todas las de la lista)`, { spaces: true, def: AN.curScale().name })).trim();
+    names = t === '*' ? AN.scalesOf(c.doc).map(s => s.name) : t.split(/[;,]/).map(x => x.trim()).filter(Boolean);
+  }
+  const ok = [];
+  for (const n of names) { const s = AN.resolveScale(c.doc, n, op === 'Añadir'); if (s) ok.push(s.name); else c.print(`Escala no válida: "${n}".`); }
+  if (!ok.length) return;
+  let n = 0, last = 0;
+  for (const e of ents) c.doc.modify(e.id, x => { const r = op === 'Añadir' ? AN.addScales(x, ok) : AN.removeScales(x, ok); if (r > 0) n++; if (r < 0) last++; });
+  c.print(`${n} objeto(s) modificado(s)${last ? `; ${last} conservan su única escala (un objeto anotativo necesita al menos una)` : ''}.`);
+}
+def('OBJECTSCALE', ['ESCALAOBJETO', 'ESCALASOBJETO'], 'Añade o suprime escalas de anotación de los objetos anotativos', c => objScales(c), { group: 'Anotación' });
+def('AIOBJECTSCALEADD', ['ESCALAOBJETOAÑADIR'], 'Añade la escala de anotación actual a los objetos anotativos designados', c => objScales(c, 'Añadir', [AN.curScale().name]), { group: 'Anotación' });
+def('AIOBJECTSCALEREMOVE', ['ESCALAOBJETOQUITAR'], 'Quita la escala de anotación actual de los objetos anotativos designados', c => objScales(c, 'Suprimir', [AN.curScale().name]), { group: 'Anotación' });
+def('ANNOTATIVE', ['ANOTATIVO'], 'Hace anotativos (o no) los objetos designados, con la escala de anotación actual', async c => {
+  const ids = await c.getSelection('Designe textos, cotas, directrices, sombreados o bloques');
+  const ents = ids.map(id => c.doc.get(id)).filter(e => AN.ANNO_TYPES.has(e.type));
+  if (!ents.length) return c.print('Ningún objeto que pueda ser anotativo.');
+  const on = (await c.getKeyword('¿Anotativos?', ['Sí', 'No'], 'Sí')) === 'Sí';
+  for (const e of ents) c.doc.modify(e.id, x => AN.setAnnotative(x, on));
+  c.print(`${ents.length} objeto(s) ${on ? `anotativo(s) con la escala ${AN.curScale().name}` : 'ya no anotativo(s)'}.`);
+}, { group: 'Anotación' });
+
+// ---- Automatización: guiones, grabación de acciones y JavaScript (scripting.js) ----
+// El guion se ejecuta después de esta orden (sus órdenes no se pueden anidar en ella); app.scriptPromise permite esperarlo
+function startScript(c, text, name) {
+  const app = c.app;
+  app.scriptPromise = SC.runScript(app, text, name)
+    .then(n => { app.print(`Guion "${name}" terminado (${n} respuesta(s)).`); return n; })
+    .catch(err => { app.print(err.message, 'err'); return -1; });
+}
+def('SCRIPT', ['SCR', 'GUION'], 'Ejecuta un guion .scr: órdenes y respuestas como en la línea de comandos (espacio o fin de línea = Intro)', async (c, arg) => {
+  let text = arg?.text, name = arg?.name || 'guion';
+  if (text == null) {
+    const f = await c.app.io.pickFile('Guiones', ['.scr', '.txt']);
+    if (!f) return;
+    text = await f.file.text(); name = f.file.name;
+  }
+  c.print(`Ejecutando el guion "${name}" (Esc lo interrumpe)…`);
+  startScript(c, text, name);
+}, { group: 'Herramientas', noTx: true });
+def('DELAY', ['RETARDO', 'PAUSA'], 'Pausa en un guion (milisegundos)', async c => {
+  const ms = await c.getNumber('Indique retardo en milisegundos', { def: 1000, min: 0, max: 60000 });
+  await new Promise(r => setTimeout(r, ms));
+}, { group: 'Herramientas', noTx: true, keepSel: true });
+def('ACTRECORD', ['GRABARACCION', 'GRABAR'], 'Empieza a grabar las órdenes y respuestas para guardarlas como guion .scr (ACTSTOP termina)', async c => {
+  if (SC.REC.on) return c.print('Ya se está grabando. ACTSTOP termina la grabación.');
+  SC.REC.on = true; SC.REC.lines = []; SC.REC.name = '';
+  c.app.ui.updateStatus();
+  c.print('Grabando acciones: lo que haga desde ahora (órdenes, puntos, designaciones y respuestas) se guardará como guion. ACTSTOP termina.');
+}, { group: 'Herramientas', noTx: true, keepSel: true });
+def('ACTSTOP', ['PARARGRABACION', 'DETENERGRABACION'], 'Termina la grabación de acciones y la guarda como guion .scr', async (c, arg) => {
+  if (!SC.REC.on) return c.print('No se está grabando. ACTRECORD empieza una grabación.');
+  SC.REC.on = false;
+  c.app.ui.updateStatus();
+  if (!SC.REC.lines.length) return c.print('No se ha grabado ninguna acción.');
+  const name = arg?.name ?? ((await c.getString('Indique nombre del guion', { spaces: true, def: 'accion' })).trim() || 'accion');
+  SC.REC.name = name;
+  const text = SC.recText();
+  c.app.lastRecording = text;
+  c.print(`Grabación terminada: ${SC.REC.lines.length} línea(s). SCRIPT la vuelve a ejecutar.`);
+  if (!arg?.noSave) await c.app.io.writeFile(text, `${name}.scr`, 'text/plain', '.scr', 'Guion de TrazoCAD', false);
+}, { group: 'Herramientas', noTx: true, keepSel: true });
+def('JSEVAL', ['-JS', 'EVALJS'], 'Ejecuta una línea de JavaScript con la API de TrazoCAD (tc) y muestra el resultado', async (c, arg) => {
+  const code = arg ?? await c.getString('JavaScript (tc = API, app = aplicación)', { spaces: true });
+  if (!code.trim()) return;
+  const v = await SC.runJs(c.app, /\breturn\b|;/.test(code) ? code : `return (${code});`, 'JSEVAL');
+  if (v !== undefined) c.print(`= ${typeof v === 'string' ? v : JSON.stringify(v)}`);
+}, { group: 'Herramientas', noTx: true, keepSel: true });
+def('JSCONSOLE', ['JS', 'CONSOLAJS', 'CONSOLA'], 'Consola de JavaScript con la API de TrazoCAD para automatizar y definir órdenes nuevas', async c => { await c.app.ui.jsConsole(); }, { group: 'Herramientas', noTx: true, keepSel: true });
+def('APPLOAD', ['AP', 'CARGARAPLIC'], 'Carga aplicaciones JavaScript (.js) o guiones (.scr) y administra las que se cargan al iniciar', async c => {
+  const app = c.app;
+  for (;;) {
+    const r = await app.ui.appManager();
+    if (!r) return;
+    if (r.action === 'remove') { SC.saveStartupApps(SC.startupApps().filter(a => a.name !== r.name)); continue; }
+    const f = await app.io.pickFile('Aplicaciones', ['.js', '.scr']);
+    if (!f) continue;
+    const text = await f.file.text(), name = f.file.name;
+    if (/\.scr$/i.test(name)) { startScript(c, text, name); return; }
+    try { await SC.runJs(app, text, name); c.print(`Aplicación "${name}" cargada.`); }
+    catch (err) { c.print(`Error en "${name}": ${err.message}`, 'err'); continue; }
+    if (r.startup) {
+      const list = SC.startupApps().filter(a => a.name !== name);
+      if (SC.saveStartupApps([...list, { name, code: text }])) c.print(`"${name}" se cargará cada vez que se abra TrazoCAD.`);
+    }
+  }
+}, { group: 'Herramientas', noTx: true, keepSel: true });
+
+const sysvar01 = (name, aliases, desc, key, after) => def(name, aliases, desc, async c => {
+  const v = await c.getNumber(`Indique valor nuevo para ${name} (0 o 1)`, { def: c.settings[key] ? 1 : 0, int: true, min: 0, max: 1 });
+  c.settings[key] = v; c.doc.changed();
+  after?.(c, v);
+}, { group: 'Vista', keepSel: true });
+sysvar01('UCSVP', ['SCPVENTANA'], 'SCP propio de cada ventana (en mosaico y gráficas): 1 = cada una conserva el suyo, 0 = todas usan el actual', 'ucsvp');
+sysvar01('UCSFOLLOW', ['SCPSIGUE'], 'Vista en planta automática: 1 = al cambiar el SCP, la vista se alinea con él (como PLAN)', 'ucsfollow');
+sysvar01('ANNOALLVISIBLE', ['ANOTODOVISIBLE'], 'Objetos anotativos que no tienen la escala actual: 1 = se ven atenuados, 0 = se ocultan', 'annoAllVisible', c => c.app.renderer.invalidate());
+sysvar01('ANNOAUTOSCALE', ['ANOESCALAAUTO'], 'Al cambiar la escala de anotación: 1 = se añade a los objetos anotativos', 'annoAutoScale');
+sysvar01('HPANNOTATIVE', ['SOMBREADOANOTATIVO'], 'Sombreados nuevos anotativos: 1 = la escala del patrón es la del papel', 'hatchAnno');
+sysvar01('VPROTATEASSOC', ['GIROVENTANAASOC'], 'Al girar una ventana gráfica con GIRA: 1 = la vista del modelo gira con ella, 0 = sólo el marco', 'vprotateassoc');
 
 def('UCSMAN', ['ADMINSCP', 'SCPMAN', 'UC'], 'Administrador de SCP: restituir, guardar, renombrar y suprimir SCP con nombre y opciones del icono', async c => {
   const doc = c.doc, ui = c.app.ui;
@@ -2467,15 +2825,15 @@ def('UCSICON', ['ICONOSCP', 'ICONSCP'], 'Muestra u oculta el icono del SCP y lo 
   c.print(`Icono del SCP ${S.ucsIcon === false ? 'oculto' : 'visible'}${S.ucsIcon !== false ? (S.ucsIconOrigin === false ? ', en la esquina' : ', en el origen') : ''}.`);
 }, { group: 'Vista', noTx: true });
 
-const viewDesc = v => `${v.name}: ${v.space === 'model' ? 'Modelo' : `presentación "${v.space}"`}, centro ${fmt(v.cx, 2)},${fmt(v.cy, 2)}, ${fmt(v.w, 2)} × ${fmt(v.h, 2)}${v.ucs ? ', con SCP' : ''}${v.layers ? ', con capas' : ''}`;
+const viewDesc = v => `${v.name}: ${v.space === 'model' ? 'Modelo' : `presentación "${v.space}"`}, centro ${fmt(v.cx, 2)},${fmt(v.cy, 2)}, ${fmt(v.w, 2)} × ${fmt(v.h, 2)}${v.twist ? `, girada ${deg(v.twist)}` : ''}${v.ucs ? ', con SCP' : ''}${v.layers ? ', con capas' : ''}`;
 async function newView(c, name, o = {}) {
-  let rect = null;
+  let pts = null;
   if (o.window) {
-    const a = await c.getPoint('Precise primera esquina', { noSnap: true });
-    const b = await c.getPoint('Precise esquina opuesta', { noSnap: true, base: a, rubber: false, preview: p => [{ type: 'pline', pts: rectPts(a, p), closed: true }] });
-    rect = G.normRect(a, b);
+    const vw = c.app.view, a = await c.getPoint('Precise primera esquina', { noSnap: true });
+    const b = await c.getPoint('Precise esquina opuesta', { noSnap: true, base: a, rubber: false, preview: p => [{ type: 'pline', pts: viewRectPts(vw, a, p), closed: true }] });
+    pts = viewRectPts(vw, a, b);
   }
-  const v = saveView(c.doc, captureView(c.app, name, { rect, ucs: o.ucs !== false, layers: !!o.layers }));
+  const v = saveView(c.doc, captureView(c.app, name, { pts, ucs: o.ucs !== false, layers: !!o.layers }));
   c.print(`Vista "${v.name}" guardada (${viewDesc(v)}).`);
 }
 function goView(c, v) {
@@ -2525,7 +2883,7 @@ function tileBeside(app, side) {
   const a = app.activeTile(), eq = (u, v) => Math.abs(u - v) < 1e-9;
   return app.tiles.find(t => t !== a && joinTiles(a.r, t.r) && (side === 'Izquierda' ? eq(t.r.x2, a.r.x1) : side === 'deRecha' ? eq(t.r.x1, a.r.x2) : side === 'ENcima' ? eq(t.r.y2, a.r.y1) : eq(t.r.y1, a.r.y2))) || null;
 }
-const tileItem = t => ({ r: t.r, cx: t.view.cx, cy: t.view.cy, scale: t.view.scale });
+const tileItem = t => ({ r: t.r, cx: t.view.cx, cy: t.view.cy, scale: t.view.scale, rot: t.view.rot || 0, ...('ucs' in t ? { ucs: t.ucs } : {}) });
 def('VPORTS', ['VENTANASMODELO', 'VMOSAICO', 'MOSAICO'], 'Divide el espacio modelo en ventanas en mosaico (o crea varias ventanas gráficas en una presentación); unir, guardar y restituir configuraciones', async (c, arg) => {
   const app = c.app, doc = c.doc;
   if (doc.bedit) return c.print('Cierre primero el editor de bloques.');

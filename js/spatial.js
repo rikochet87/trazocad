@@ -1,5 +1,5 @@
 // Índice espacial (árbol R empaquetado con STR) para designación, referencias y dibujado rápidos.
-import { bboxOf } from './entities.js';
+import { bboxIndex } from './entities.js';
 import { bbOverlap } from './geom.js';
 
 const M = 12;
@@ -22,7 +22,7 @@ function level(nodes) {
 class Tree {
   constructor(ents) {
     let nodes = [];
-    ents.forEach((e, i) => { const b = bboxOf(e); if (b && isFinite(b.x1)) nodes.push({ b, e, i }); });
+    ents.forEach((e, i) => { const b = bboxIndex(e); if (b && isFinite(b.x1)) nodes.push({ b, e, i }); });
     this.size = nodes.length;
     while (nodes.length > 1) nodes = level(nodes);
     this.root = nodes[0] || null;

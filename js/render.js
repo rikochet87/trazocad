@@ -5,6 +5,8 @@ const arrayEntsOf = e => ENV.arrayEnts?.(e) || [];
 import { linsOf, rotsOf } from './dynblock.js';
 import { evalParams, refGeom, consDim, refIds, DIM_TYPES } from './constraints.js';
 import { ucsOf, isWorld } from './ucs.js';
+import { toFrame, fromFrame, vpModelBox } from './view.js';
+import { annoEff, ANNO, vpScale, PAPER_SCALE } from './annoscale.js';
 
 export const BG = '#212830';
 const LAYOUT_BG = '#3a4049';
@@ -14,30 +16,35 @@ const SNAP_COLOR = '#d4e157';
 const TRACK_COLOR = '#58d68d';
 export const ISO_AXES = { top: [30, 150], left: [90, 150], right: [30, 90] };
 
-export function makeRV(cx, cy, scale, w, h, dpr, ox = 0, oy = 0) {
-  return { scale, dpr, w, h, cx, cy, ox, oy, toScreen: p => ({ x: (p.x - cx) * scale + ox + w / 2, y: oy + h / 2 - (p.y - cy) * scale }) };
+// rot: giro de la vista (la dirección del dibujo con ese ángulo se ve horizontal)
+export function makeRV(cx, cy, scale, w, h, dpr, ox = 0, oy = 0, rot = 0) {
+  return { scale, dpr, w, h, cx, cy, ox, oy, rot, toScreen: p => { const [u, v] = toFrame(rot, p.x - cx, p.y - cy); return { x: u * scale + ox + w / 2, y: oy + h / 2 - v * scale }; } };
 }
-export const makeR = (view, dpr) => makeRV(view.cx, view.cy, view.scale, view.w, view.h, dpr, view.ox || 0, view.oy || 0);
+export const makeR = (view, dpr) => makeRV(view.cx, view.cy, view.scale, view.w, view.h, dpr, view.ox || 0, view.oy || 0, view.rot || 0);
 export function setWorld(c, R) {
-  const s = R.scale, d = R.dpr;
-  c.setTransform(d * s, 0, 0, -d * s, d * ((R.ox || 0) + R.w / 2 - R.cx * s), d * ((R.oy || 0) + R.h / 2 + R.cy * s));
+  const s = R.scale, d = R.dpr, r = R.rot || 0, co = Math.cos(r), sn = Math.sin(r);
+  const ex = (R.ox || 0) + R.w / 2 - s * (co * R.cx + sn * R.cy), fy = (R.oy || 0) + R.h / 2 - s * (sn * R.cx - co * R.cy);
+  c.setTransform(d * s * co, d * s * sn, d * s * sn, -d * s * co, d * ex, d * fy);
 }
-// Vista del modelo dentro de una ventana gráfica, a partir de la vista del papel
+// Vista del modelo dentro de una ventana gráfica (con su giro), a partir de la vista del papel
 export function vpR(R, vp) {
-  const vcx = (vp.p1.x + vp.p2.x) / 2, vcy = (vp.p1.y + vp.p2.y) / 2;
-  return makeRV(vp.cx - (vcx - R.cx) / vp.s, vp.cy - (vcy - R.cy) / vp.s, R.scale * vp.s, R.w, R.h, R.dpr);
+  const vcx = (vp.p1.x + vp.p2.x) / 2, vcy = (vp.p1.y + vp.p2.y) / 2, t = vp.twist || 0;
+  const [x, y] = fromFrame(t, (R.cx - vcx) / vp.s, (R.cy - vcy) / vp.s);
+  return makeRV(vp.cx + x, vp.cy + y, R.scale * vp.s, R.w, R.h, R.dpr, R.ox || 0, R.oy || 0, t + (R.rot || 0));
 }
-export function vpModelRect(vp) {
-  const vcx = (vp.p1.x + vp.p2.x) / 2, vcy = (vp.p1.y + vp.p2.y) / 2;
-  return { x1: vp.cx + (vp.p1.x - vcx) / vp.s, y1: vp.cy + (vp.p1.y - vcy) / vp.s, x2: vp.cx + (vp.p2.x - vcx) / vp.s, y2: vp.cy + (vp.p2.y - vcy) / vp.s };
-}
+// Rectángulo del modelo que contiene lo visible a través de la ventana
+export const vpModelRect = vpModelBox;
 
+// Color semitransparente (#rrggbb → rgba)
+export const fadeColor = (col, a) => { const m = /^#(..)(..)(..)$/.exec(col); return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : col; };
 // Factor de escala de tipo de línea dentro de una ventana: el suyo y, con PSLTSCALE = 1, el que deja los trazos con el
 // mismo tamaño en el papel en todas las ventanas (como en AutoCAD)
 export const vpLtk = (doc, vp) => (vp.ltscale || 1) * (doc.settings.psltscale ? 1 / (vp.s || 1) : 1);
 // st: {color, px, pat, ltscale}; sty: función entidad → st (para las entidades de los bloques);
 // vis: función entidad → visible, aplicada también a las entidades de los bloques
 export function paintEntity(c, e, R, st, sty, vis) {
+  e = annoEff(e); // anotativo: representación de la escala actual; si no la tiene, atenuado (ANNOALLVISIBLE = 1)
+  if (e._annoOff && !st.hl) st = { ...st, color: fadeColor(st.color, 0.35) };
   if (e.type === 'insert') {
     const k = insertClip(e);
     if (k) { // delimitación (XCLIP): recorte del contorno, o de todo lo de fuera si está invertida
@@ -106,7 +113,9 @@ export class Renderer {
     setWorld(c, R);
     c.beginPath(); c.rect(vp.p1.x, vp.p1.y, vp.p2.x - vp.p1.x, vp.p2.y - vp.p1.y); c.clip();
     const k = vpLtk(this.app.doc, vp), vsty = k === 1 ? sty : e => { const s = sty(e); return { ...s, ltscale: (s.ltscale || 1) * k }; };
-    this.drawModel(c, vpR(R, vp), vpModelRect(vp), vsty, this.app.doc.visibleIn(vp));
+    const prev = ANNO.override;
+    ANNO.override = vpScale(this.app.doc, vp); // escala de anotación de la ventana: la suya
+    try { this.drawModel(c, vpR(R, vp), vpModelRect(vp), vsty, this.app.doc.visibleIn(vp)); } finally { ANNO.override = prev; }
     c.restore();
   }
   drawLayout(c, R, layout, sty, forExport = false) {
@@ -124,12 +133,15 @@ export class Renderer {
     const on = x => doc.layer(x.layer).on; // en el papel no cuentan las capas inutilizadas en ventanas
     const prev = ENV.layout;
     ENV.layout = layout; // campos %<Presentación>% y %<Escala>%
-    for (const e of layout.ents) {
-      if (e.type === 'vport') this.drawViewport(c, R, e, sty);
-      setWorld(c, R);
-      if (on(e)) paintEntity(c, e, R, sty(e), sty, on);
-    }
-    ENV.layout = prev;
+    const pa = ANNO.override;
+    ANNO.override = PAPER_SCALE; // los objetos anotativos del papel, a 1:1
+    try {
+      for (const e of layout.ents) {
+        if (e.type === 'vport') this.drawViewport(c, R, e, sty);
+        setWorld(c, R);
+        if (on(e)) paintEntity(c, e, R, sty(e), sty, on);
+      }
+    } finally { ANNO.override = pa; ENV.layout = prev; }
   }
 
   // ENV.onScreen: dibujo en pantalla (los marcos de delimitación con XCLIPFRAME = 2 sólo se ven aquí)
@@ -288,9 +300,9 @@ export class Renderer {
       ? [[30, step * Math.cos(Math.PI / 6)], [150, step * Math.cos(Math.PI / 6)], [90, step * Math.cos(Math.PI / 6)]]
       : [[ua, step], [ua + 90, step]];
     const cs = [G.P(r.x1, r.y1), G.P(r.x2, r.y1), G.P(r.x2, r.y2), G.P(r.x1, r.y2)];
-    const far = Math.hypot(v.w, v.h) * 2;
+    const far = Math.hypot(v.w, v.h) * 2, vr = v.rot || 0;
     for (const [deg, sp] of fams) {
-      const a = G.rad(deg), u = G.P(Math.cos(a), Math.sin(a)), n = G.perp(u), off = G.dot(o, n);
+      const a = G.rad(deg), n = G.perp(G.P(Math.cos(a), Math.sin(a))), off = G.dot(o, n), u = G.P(Math.cos(a - vr), Math.sin(a - vr)); // u: dirección en la pantalla
       const ns = cs.map(p => (G.dot(p, n) - off) / sp), k0 = Math.ceil(Math.min(...ns)), k1 = Math.floor(Math.max(...ns));
       if (k1 - k0 > 600) return;
       for (let k = k0; k <= k1; k++) {
@@ -303,7 +315,7 @@ export class Renderer {
     c.strokeStyle = 'rgba(255,255,255,0.045)'; c.stroke(minor);
     c.strokeStyle = 'rgba(255,255,255,0.10)'; c.stroke(major);
     // ejes X e Y del SCP (o del universal)
-    const so = v.toScreen(o), ax = S.iso ? 0 : u.ang;
+    const so = v.toScreen(o), ax = (S.iso ? 0 : u.ang) - vr;
     for (const [aa, col] of [[ax, 'rgba(220,80,80,0.45)'], [ax + Math.PI / 2, 'rgba(80,200,90,0.45)']]) {
       const dx = Math.cos(aa) * far, dy = -Math.sin(aa) * far;
       let x = so.x, y = so.y;
@@ -324,7 +336,7 @@ export class Renderer {
       if (s.x >= v.ox + 50 && s.x <= v.ox + v.w - 50 && s.y >= v.oy + 50 && s.y <= v.oy + v.h - 50) { x = s.x; y = s.y; atOrigin = true; }
     }
     // a: distancia sobre el eje X del SCP; b: sobre el eje Y (en píxeles)
-    const cs = Math.cos(u.ang), sn = Math.sin(u.ang), P = (a, b) => [x + a * cs - b * sn, y - a * sn - b * cs];
+    const ia = u.ang - (v.rot || 0), cs = Math.cos(ia), sn = Math.sin(ia), P = (a, b) => [x + a * cs - b * sn, y - a * sn - b * cs];
     c.setTransform(d, 0, 0, d, 0, 0); c.setLineDash([]); c.lineWidth = 2; c.font = '11px sans-serif';
     const arrow = (dir, col, lab) => {
       const [ax, ay] = dir, pt = k => P(ax * k, ay * k), side = (k, w) => P(ax * k - ay * w, ay * k + ax * w);
@@ -422,7 +434,8 @@ export class Renderer {
     c.strokeStyle = TRACK_COLOR; c.setLineDash([3, 4]);
     if (m.polar) {
       const s = app.view.toScreen(m.polar.base), far = Math.hypot(app.view.w, app.view.h) * 2;
-      c.beginPath(); c.moveTo(s.x, s.y); c.lineTo(s.x + Math.cos(m.polar.ang) * far, s.y - Math.sin(m.polar.ang) * far); c.stroke();
+      const pa = m.polar.ang - (app.view.rot || 0);
+      c.beginPath(); c.moveTo(s.x, s.y); c.lineTo(s.x + Math.cos(pa) * far, s.y - Math.sin(pa) * far); c.stroke();
     }
     if (m.track) {
       for (const ln of m.track.lines) {
@@ -493,8 +506,8 @@ export class Renderer {
     c.beginPath();
     if (!pickOnly) {
       const S = app.doc.settings;
-      const ua = G.deg(ucsOf(app.doc).ang), axes = S.iso && app.tab === 'model' ? ISO_AXES[S.isoPlane] : [ua, ua + 90];
-      for (const deg of axes) { const a = G.rad(deg), dx = Math.cos(a) * arm, dy = Math.sin(a) * arm; c.moveTo(x - dx, y + dy); c.lineTo(x + dx, y - dy); }
+      const ua = G.deg(ucsOf(app.doc).ang), axes = S.iso && app.tab === 'model' ? ISO_AXES[S.isoPlane] : [ua, ua + 90], vr = app.view.rot || 0;
+      for (const deg of axes) { const a = G.rad(deg) - vr, dx = Math.cos(a) * arm, dy = Math.sin(a) * arm; c.moveTo(x - dx, y + dy); c.lineTo(x + dx, y - dy); }
     }
     c.stroke();
     if (!req || req.kind === 'select' || req.kind === 'entity') c.strokeRect(x - 5, y - 5, 10, 10);

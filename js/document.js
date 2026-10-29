@@ -9,6 +9,7 @@ import { remapDyn } from './dynblock.js';
 import { solve, consValid, refIds } from './constraints.js';
 import { cleanGroups } from './groups.js';
 import { DEFAULT_MLINESTYLE } from './mline.js';
+import { annoHidden, defaultScales } from './annoscale.js';
 import { localPath, pathable } from './arrays.js';
 
 export const DEFAULT_SETTINGS = {
@@ -18,6 +19,7 @@ export const DEFAULT_SETTINGS = {
   dimAssoc: true, mleaderContent: 'mtext', balloonNum: 0, insBase: { x: 0, y: 0 },
   mlScale: 20, mlJust: 'top', arrayAssoc: true, xclipFrame: 2, wipeoutFrame: 2, boundaryType: 'pline', boundaryIslands: true, revcloud: 5,
   unitsPerInch: 25.4, hatchIslands: 'normal', psltscale: 0, ucsIcon: true, ucsIconOrigin: true,
+  ucsvp: 1, ucsfollow: 0, vprotateassoc: 1, cannoscale: '1:1', annoAllVisible: 1, annoAutoScale: 0,
 };
 const newMlStyle = () => JSON.parse(JSON.stringify(DEFAULT_MLINESTYLE));
 export const PAPERS = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841], Carta: [279.4, 215.9], Oficio: [355.6, 215.9] };
@@ -50,6 +52,7 @@ export class Doc {
     this.selFilters = [];  // filtros de selección con nombre (FILTER, select.js)
     this.layerFilters = []; // filtros de capa por propiedades y por grupos (layertools.js)
     this.layIso = null;    // estado de las capas antes de LAYISO
+    this.scales = defaultScales(); // lista de escalas (SCALELISTEDIT)
     this.tiles = null;     // ventanas en mosaico leídas del archivo (la aplicación las restituye)
     this.space = 'model';
     this.textStyles = [{ name: 'Standard', font: 'Arial', width: 1, oblique: 0 }];
@@ -80,11 +83,11 @@ export class Doc {
 
   // ----- Deshacer / rehacer por instantáneas -----
   state() {
-    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso });
+    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso, scales: this.scales });
   }
   loadState(s) {
     const o = JSON.parse(s);
-    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {}, plotStyles: o.plotStyles || {}, ucs: o.ucs || null, ucsList: o.ucsList || [], views: o.views || [], vportConfigs: o.vportConfigs || [], selFilters: o.selFilters || [], layerFilters: o.layerFilters || [], layIso: o.layIso || null });
+    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {}, plotStyles: o.plotStyles || {}, ucs: o.ucs || null, ucsList: o.ucsList || [], views: o.views || [], vportConfigs: o.vportConfigs || [], selFilters: o.selFilters || [], layerFilters: o.layerFilters || [], layIso: o.layIso || null, scales: o.scales?.length ? o.scales : defaultScales() });
     if (this.bedit) this.space = 'bedit';
     else if (this.space === 'bedit') this.space = 'model';
     else if (this.space !== 'model' && this.space !== 'bedit' && !this.layouts[this.space]) this.space = 'model';
@@ -235,12 +238,12 @@ export class Doc {
   addLayer(name, color) { const l = newLayer(name, color); this.layers.push(l); this.changed(); return l; }
   ensureLayer(name, color) { return this.layers.find(l => l.name === name) || this.addLayer(name, color); }
   visible(e) {
-    if (!this.layer(e.layer).on) return false;
+    if (!this.layer(e.layer).on || annoHidden(e)) return false;
     const vp = this.activeVp != null ? this.byId.get(this.activeVp) : null;
     return !vp?.frozen?.includes(e.layer);
   }
   // Visibilidad dentro de una ventana gráfica concreta (capas activadas y no inutilizadas en ella)
-  visibleIn(vp) { return e => this.layer(e.layer).on && !vp.frozen?.includes(e.layer); }
+  visibleIn(vp) { return e => this.layer(e.layer).on && !vp.frozen?.includes(e.layer) && !annoHidden(e); }
   locked(e) { return this.layer(e.layer).lock; }
   textStyle(name) { return this.textStyles.find(s => s.name === name) || this.textStyles[0]; }
   dimStyle(name) { return this.dimStyles.find(s => s.name === name) || this.dimStyles[0]; }
@@ -319,9 +322,9 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 11, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      app: 'TrazoCAD', version: 12, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
       textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, cur: this.cur, settings: this.settings, nextId: this.nextId,
-      ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso,
+      ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso, scales: this.scales,
       ...(this.viewState ? { tiles: this.viewState() } : {}),
     };
   }
@@ -350,6 +353,7 @@ export class Doc {
     this.selFilters = o.selFilters || [];
     this.layerFilters = o.layerFilters || [];
     this.layIso = o.layIso || null;
+    this.scales = o.scales?.length ? o.scales : defaultScales();
     this.tiles = o.tiles || null;
     if (o.mleaderStyles?.length) this.mleaderStyles = o.mleaderStyles;
     if (o.tableStyles?.length) this.tableStyles = o.tableStyles;

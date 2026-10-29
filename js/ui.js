@@ -20,6 +20,11 @@ import { OPS, propNames, propValue, candidates, findFilter } from './select.js';
 import { FIND_KINDS, findText, replaceText } from './find.js';
 import { OK_PROPS } from './cleanup.js';
 import { usedLayers, LF_RULES, findLayerFilter, layerMatches, filteredLayers } from './layertools.js';
+import { scalesOf, curScale } from './annoscale.js';
+import { REC, runJs, startupApps } from './scripting.js';
+import { LIBRARY, LIB_CATS, libItem, libPreview } from './library.js';
+import { loadPalettes, savePalettes, resetPalettes, toolFromEntity, toolDesc } from './toolpalettes.js';
+import { readDXF } from './dxf.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
@@ -61,6 +66,7 @@ const RIBBON = [
     { name: 'Series', items: [['DIMCONTINUE', 'Continua', 'dimcont'], ['DIMBASELINE', 'Línea base', 'dimbase'], ['QDIM', 'Rápida', 'qdim']] },
     { name: 'Directrices y tablas', items: [['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table'], ['MLEADERSTYLE', 'Estilo dir.', 'mlstyle'], ['TABLESTYLE', 'Estilo tabla', 'tblstyle']] },
     { name: 'Sombreado', items: [['HATCH', 'Sombreado', 'hatch'], ['GRADIENT', 'Degradado', 'gradient'], ['PATTERNS', 'Patrones', 'patlib']] },
+    { name: 'Escalas de anotación', items: [['CANNOSCALE', 'Escala actual', 'annoscale'], ['ANNOTATIVE', 'Anotativo', 'annotative'], ['OBJECTSCALE', 'Escalas objeto', 'objscale'], ['AIOBJECTSCALEADD', 'Añadir actual', 'objscaleadd'], ['AIOBJECTSCALEREMOVE', 'Quitar actual', 'objscalerem'], ['SCALELISTEDIT', 'Lista escalas', 'scalelist']] },
   ] },
   { tab: 'Paramétrico', groups: [
     { name: 'Geométricas', items: [['AUTOCONSTRAIN', 'Automática', 'autocons'], ['GCCOINCIDENT', 'Coincidente', 'gccoinc'], ['GCCOLLINEAR', 'Colineal', 'gccol'], ['GCCONCENTRIC', 'Concéntrica', 'gcconc'], ['GCFIX', 'Fija', 'gcfix'], ['GCPARALLEL', 'Paralela', 'gcpar'],
@@ -71,6 +77,7 @@ const RIBBON = [
   { tab: 'Vista', groups: [
     { name: 'Navegar', items: [['!zoomext', 'Extensión', 'zoomext'], ['!zoomwin', 'Ventana', 'zoomwin'], ['!zoomprev', 'Previo', 'zoomprev'], ['PAN', 'Encuadre', 'pan'], ['REGEN', 'Regenerar', 'regen']] },
     { name: 'Coordenadas', items: [['UCS', 'SCP', 'ucs'], ['!ucsworld', 'Universal', 'ucsworld'], ['!ucsprev', 'Previo', 'ucsprev'], ['!ucsobj', 'Objeto', 'ucsobj'], ['!ucs3p', '3 puntos', 'ucs3p'], ['UCSMAN', 'Admin. SCP', 'ucsman'], ['UCSICON', 'Icono', 'ucsicon']] },
+    { name: 'Vista girada', items: [['PLAN', 'Planta del SCP', 'plan'], ['!planworld', 'Sin giro', 'planworld'], ['DVIEW', 'Girar vista', 'twist']] },
     { name: 'Vistas y ventanas', items: [['VIEW', 'Vistas', 'view'], ['VPORTS', 'Ventanas', 'vports'], ['!vpjoin', 'Unir', 'vpjoin'], ['!vpsingle', 'Única', 'vpsingle']] },
     { name: 'Dibujo', items: [['ISODRAFT', 'Isométrico', 'iso'], ['DSETTINGS', 'Parámetros', 'settings']] },
     { name: 'Paletas', items: [['PROPERTIES', 'Propiedades', 'props'], ['LAYER', 'Capas', 'layers'], ['!palette', 'Mostrar/ocultar', 'sidebar'], ['!fullscreen', 'Pantalla completa', 'fullscreen'], ['HELP', 'Ayuda', 'help']] },
@@ -79,6 +86,10 @@ const RIBBON = [
     { name: 'Presentación', items: [['!newlayout', 'Nueva', 'layout'], ['PAGESETUP', 'Configurar página', 'page'], ['!model', 'Modelo', 'model']] },
     { name: 'Ventanas gráficas', items: [['MVIEW', 'Ventana', 'vport'], ['MSPACE', 'Espacio modelo', 'mspace'], ['PSPACE', 'Espacio papel', 'page'], ['VPLAYER', 'Capas ventana', 'freeze']] },
     { name: 'Trazar', items: [['PLOT', 'Imprimir', 'print'], ['STYLESMANAGER', 'Estilos de trazado', 'plotstyle'], ['PDFOUT', 'PDF', 'pdf'], ['SVGOUT', 'SVG', 'svg'], ['PNGOUT', 'PNG', 'png']] },
+  ] },
+  { tab: 'Administrar', groups: [
+    { name: 'Paletas y bibliotecas', items: [['TOOLPALETTES', 'Paleta de herramientas', 'toolpal'], ['ADCENTER', 'DesignCenter', 'adcenter'], ['LIBINSERT', 'Biblioteca vial', 'library']] },
+    { name: 'Automatización', items: [['SCRIPT', 'Ejecutar guion', 'script'], ['ACTRECORD', 'Grabar', 'actrec'], ['ACTSTOP', 'Detener', 'actstop'], ['JSCONSOLE', 'Consola JS', 'jsconsole'], ['APPLOAD', 'Cargar aplicación', 'appload']] },
   ] },
   { tab: 'Salida', groups: [
     { name: 'Archivo', items: [['NEW', 'Nuevo', 'new'], ['OPEN', 'Abrir', 'open'], ['QSAVE', 'Guardar', 'save'], ['SAVEAS', 'Guardar como', 'save']] },
@@ -156,6 +167,7 @@ export class UI {
       case '!dxf2000': app.run('DXFOUT', '2000'); break;
       case '!dxf12': app.run('DXFOUT', 'R12'); break;
       case '!ucsworld': app.run('UCS', 'Universal'); break;
+      case '!planworld': app.run('PLAN', 'Universal'); break;
       case '!ucsprev': app.run('UCS', 'Previo'); break;
       case '!ucsobj': app.run('UCS', 'OBjeto'); break;
       case '!ucs3p': app.run('UCS', '3puntos'); break;
@@ -262,7 +274,18 @@ export class UI {
       if (app.tab === 'model') return;
       if (app.vpActive) app.pspace(); else app.mspace();
     } }, 'MODELO');
-    sb.append(this.spaceEl, this.coordsEl, tg,
+    // Escala de anotación (la del modelo o la de la ventana gráfica activa) y visibilidad de los anotativos
+    this.annoSel = h('select', { class: 'sb-anno', title: 'Escala de anotación (CANNOSCALE). En una ventana gráfica es su escala', onchange: ev => {
+      const v = ev.target.value;
+      if (v === '*edit*') this.app.run('SCALELISTEDIT'); else if (v === '*other*') this.app.run('CANNOSCALE'); else this.app.run('CANNOSCALE', v);
+    } });
+    this.annoVisEl = h('button', { class: 'sb-tg', title: 'ANNOALLVISIBLE: mostrar (atenuados) los objetos anotativos que no tienen la escala actual', onclick: () => {
+      const S = this.app.doc.settings;
+      S.annoAllVisible = S.annoAllVisible === 0 ? 1 : 0; this.app.doc.changed(); this.app.renderer.invalidate(); this.updateStatus();
+      this.app.print(`<Objetos anotativos sin la escala actual ${S.annoAllVisible ? 'visibles (atenuados)' : 'ocultos'}>`);
+    } }, 'ANOT');
+    this.recEl = h('button', { class: 'sb-rec', hidden: true, title: 'Grabando acciones (ACTRECORD). Clic para terminar (ACTSTOP)', onclick: () => this.app.run('ACTSTOP') }, '● GRABANDO');
+    sb.append(this.spaceEl, this.recEl, this.coordsEl, tg, this.annoSel, this.annoVisEl,
       h('button', { class: 'sb-tg icon', title: 'Zoom extensión (doble clic con rueda)', html: icon('zoomext', 16), onclick: () => this.app.zoomExtents() }),
       h('button', { class: 'sb-tg icon', title: 'Parámetros de dibujo', html: icon('settings', 16), onclick: () => this.openSettings() }));
     // Pestañas Modelo / Presentaciones (abajo a la izquierda del área de dibujo)
@@ -282,6 +305,14 @@ export class UI {
     this.toggleEls.iso.textContent = S.iso ? `ISO ${{ top: 'SUP', left: 'IZQ', right: 'DER' }[S.isoPlane]}` : 'ISO';
     this.spaceEl.textContent = be ? 'EDITOR DE BLOQUES' : app.tab === 'model' ? 'MODELO' : app.vpActive ? 'MODELO (ventana)' : 'PAPEL';
     this.spaceEl.classList.toggle('paper', app.tab !== 'model' && !app.vpActive);
+    if (this.recEl) this.recEl.hidden = !REC.on;
+    if (this.annoSel) {
+      const cur = curScale(), list = scalesOf(app.doc), paper = (app.tab !== 'model' && !app.vpActive) || !!be;
+      this.annoSel.replaceChildren(...(list.some(s => s.name === cur.name) ? [] : [h('option', { value: cur.name }, cur.name)]), ...list.map(s => h('option', { value: s.name }, s.name)),
+        h('option', { value: '*other*' }, 'Otra…'), h('option', { value: '*edit*' }, 'Editar lista…'));
+      this.annoSel.value = cur.name; this.annoSel.disabled = paper;
+      this.annoVisEl.classList.toggle('on', S.annoAllVisible !== 0);
+    }
     this.beditBar.hidden = !be;
     this.tabsEl.hidden = !!be;
     if (be) this.beditName.textContent = be.name;
@@ -312,13 +343,13 @@ export class UI {
     const tabs = h('div', { class: 'pal-tabs' });
     this.palTabs = {};
     this.palBodies = {};
-    for (const [k, label, ic] of [['props', 'Propiedades', 'props'], ['layers', 'Capas', 'layers']]) {
+    for (const [k, label, ic] of [['props', 'Propiedades', 'props'], ['layers', 'Capas', 'layers'], ['tools', 'Herramientas', 'toolpal']]) {
       const b = h('button', { class: 'pal-tab', onclick: () => this.showPalette(k) }, h('span', { html: icon(ic, 16) }), label);
       this.palTabs[k] = b; tabs.append(b);
       this.palBodies[k] = h('div', { class: 'pal-body' });
     }
     tabs.append(h('button', { class: 'pal-close', title: 'Cerrar paleta', html: icon('close', 16), onclick: () => this.togglePalette(false) }));
-    pal.append(tabs, this.palBodies.props, this.palBodies.layers);
+    pal.append(tabs, this.palBodies.props, this.palBodies.layers, this.palBodies.tools);
     this.showPalette('props', false);
     if (window.innerWidth < 900) this.togglePalette(false);
   }
@@ -340,7 +371,7 @@ export class UI {
     requestAnimationFrame(() => {
       this.pending = false;
       this.refreshRibbonProps();
-      if (this.palTab === 'props') this.renderProps(); else this.renderLayers();
+      if (this.palTab === 'props') this.renderProps(); else if (this.palTab === 'tools') this.renderTools(); else this.renderLayers();
       this.updateTitle();
       this.updateStatus();
     });
@@ -456,6 +487,171 @@ export class UI {
     for (const id of ids) doc.modify(id, e => { const pr = propsOf(e).find(q => !q.sec && q.label === label); if (pr && !pr.ro) pr.set(e, v); });
     doc.commit();
     this.app.renderer.invalidate(); this.refresh();
+  }
+
+  // ---------- Paleta de herramientas ----------
+  renderTools() {
+    const body = this.palBodies.tools, app = this.app;
+    if (this._toolsVer === this._toolsShown && body.childNodes.length) return; // sólo se reconstruye cuando cambian las paletas
+    this._toolsShown = this._toolsVer;
+    const pals = this.palettes ||= loadPalettes();
+    let idx = Math.min(this.palIdx || 0, pals.length - 1);
+    const save = () => { savePalettes(pals); this._toolsVer = (this._toolsVer || 0) + 1; this.renderTools(); };
+    const sel = h('select', { class: 'tp-sel', onchange: ev => { this.palIdx = +ev.target.value; this._toolsVer = (this._toolsVer || 0) + 1; this.renderTools(); } }, ...pals.map((p, i) => h('option', { value: i }, p.name)));
+    sel.value = String(idx);
+    const pal = pals[idx], grid = h('div', { class: 'tp-grid' });
+    pal.tools.forEach((t, i) => {
+      const it = t.kind === 'block' ? libItem(t.block) : null, b = t.kind === 'block' && !it ? app.doc.blocks[t.block] : null;
+      const ico = it ? this.thumb(libPreview(it, t.vis), 44, 40) : b ? this.thumb(b.ents, 44, 40) : t.kind === 'hatch' ? this.hatchSwatch(t) : h('span', { class: 'tp-ico', html: icon(t.kind === 'command' ? 'jsconsole' : 'insert', 22) });
+      const btn = h('button', { class: 'tp-tool', title: `${t.label}\n${toolDesc(t)}\nClic: usar · Arrastrar al dibujo: colocar · Clic derecho: opciones`, draggable: 'true',
+        onclick: () => this.runTool(t),
+        ondragstart: ev => { ev.dataTransfer.setData('text/x-trazocad-tool', JSON.stringify(t)); ev.dataTransfer.effectAllowed = 'copy'; },
+        oncontextmenu: ev => {
+          ev.preventDefault();
+          this.contextMenu(ev.clientX, ev.clientY, [
+            { label: 'Propiedades de la herramienta…', fn: async () => { if (await this.editTool(t)) save(); } },
+            { label: 'Subir', fn: () => { if (i > 0) { pal.tools.splice(i - 1, 0, ...pal.tools.splice(i, 1)); save(); } } },
+            { label: 'Eliminar', fn: () => { pal.tools.splice(i, 1); save(); } },
+          ]);
+        } }, ico, h('span', {}, t.label));
+      grid.append(btn);
+    });
+    const fromSel = () => {
+      const ts = [...app.sel].map(id => app.doc.get(id)).map(e => e && toolFromEntity(e)).filter(Boolean);
+      if (!ts.length) return app.print('Designe referencias a bloques o sombreados para crear herramientas con sus propiedades.');
+      pal.tools.push(...ts); save(); app.print(`${ts.length} herramienta(s) añadida(s) a la paleta "${pal.name}".`);
+    };
+    const bar = h('div', { class: 'tp-bar' },
+      h('button', { class: 'btn', title: 'Crear herramientas a partir de los bloques o sombreados designados', onclick: fromSel }, '+ Designación'),
+      h('button', { class: 'btn', title: 'Añadir una herramienta que ejecute una orden o una línea de guion', onclick: async () => { const t = { kind: 'command', label: 'Orden', cmd: 'LINE' }; if (await this.editTool(t)) { pal.tools.push(t); save(); } } }, '+ Orden'),
+      h('button', { class: 'btn', title: 'Nueva paleta vacía', onclick: async () => { const n = await this.prompt('Nueva paleta', 'Nombre', 'Mis herramientas'); if (n) { pals.push({ name: n, tools: [] }); this.palIdx = pals.length - 1; save(); } } }, 'Nueva'),
+      h('button', { class: 'btn', title: 'Cambiar el nombre de la paleta', onclick: async () => { const n = await this.prompt('Renombrar paleta', 'Nombre', pal.name); if (n) { pal.name = n; save(); } } }, 'Renombrar'),
+      h('button', { class: 'btn', title: 'Eliminar esta paleta', onclick: async () => { if (pals.length > 1 && await this.confirm(`¿Eliminar la paleta "${pal.name}"?`, 'Eliminar')) { pals.splice(idx, 1); this.palIdx = 0; save(); } } }, 'Eliminar'),
+      h('button', { class: 'btn', title: 'Volver a las paletas de TrazoCAD (se pierden los cambios)', onclick: async () => { if (await this.confirm('¿Restablecer las paletas de herramientas por defecto?', 'Restablecer')) { this.palettes = resetPalettes(); this.palIdx = 0; this._toolsVer = (this._toolsVer || 0) + 1; this.renderTools(); } } }, 'Restablecer'));
+    body.replaceChildren(h('div', { class: 'tp-head' }, sel), grid, bar, h('p', { class: 'hint' }, 'Las herramientas guardan capa, color, escala, rotación y estado de visibilidad (bloques) o patrón, escala y ángulo (sombreados). Las paletas se guardan en este navegador.'));
+  }
+  hatchSwatch(t) {
+    const cv = h('canvas', { width: 88, height: 80, style: 'width:44px;height:40px', class: 'thumb' }), c = cv.getContext('2d');
+    c.fillStyle = '#1b2027'; c.fillRect(0, 0, 88, 80);
+    if (t.pattern === 'SOLID') { c.fillStyle = t.color || '#9aa4b1'; c.fillRect(10, 10, 68, 60); return cv; }
+    c.strokeStyle = '#cfd6de'; c.lineWidth = 1.5; c.save(); c.beginPath(); c.rect(10, 10, 68, 60); c.clip();
+    const fam = PATTERNS[t.pattern]?.fam || [];
+    for (const [ang, ox, oy, dx, dy, ...dash] of fam) {
+      const a = (ang + (t.angle || 0)) * Math.PI / 180, u = [Math.cos(a), -Math.sin(a)], n = [-u[1], u[0]], sp = Math.max(6, Math.abs(dy) * 2.2);
+      for (let k = -12; k <= 12; k++) {
+        const cx = 44 + n[0] * k * sp + ox, cy = 40 + n[1] * k * sp - oy;
+        c.setLineDash(dash.length ? dash.map(v => Math.max(1, Math.abs(v) * 2.2)) : []);
+        c.beginPath(); c.moveTo(cx - u[0] * 80, cy - u[1] * 80); c.lineTo(cx + u[0] * 80, cy + u[1] * 80); c.stroke();
+      }
+    }
+    c.restore();
+    return cv;
+  }
+  // Ejecuta una herramienta; at: punto del dibujo donde se soltó
+  async runTool(t, at = null) {
+    const app = this.app, doc = app.doc;
+    if (t.kind === 'block') return app.run('_TOOLBLOCK', { tool: t, at });
+    if (t.kind === 'hatch') {
+      const S = doc.settings, prev = { layer: doc.cur.layer, color: doc.cur.color };
+      S.hatchPat = t.pattern; S.hatchScale = t.scale || 1; S.hatchAng = t.angle || 0;
+      if (t.layer) { doc.begin(); doc.ensureLayer(t.layer, '#ffffff'); doc.commit(); doc.cur.layer = t.layer; }
+      if (t.color) doc.cur.color = t.color;
+      const p = app.run('HATCH');
+      if (at) { // soltado en el dibujo: sombrea la zona del punto y termina
+        const t0 = () => new Promise(r => setTimeout(r, 0));
+        await t0(); if (app.req?.pointLike) app.req.resolve(at);
+        await t0(); if (app.req?.pointLike) app.submit('');
+      }
+      try { await p; } finally { Object.assign(doc.cur, prev); this.refresh(); }
+      return;
+    }
+    const cmd = String(t.cmd || '').trim();
+    if (!cmd) return;
+    if (/\s/.test(cmd)) return app.run('SCRIPT', { text: cmd, name: t.label });
+    return app.run(cmd);
+  }
+  // Propiedades de una herramienta (devuelve true si se aceptan)
+  async editTool(t) {
+    const F = t.kind === 'block' ? [['label', 'Nombre'], ['block', 'Bloque'], ['layer', 'Capa'], ['color', 'Color (#rrggbb, vacío = PorCapa)'], ['scale', 'Escala', 1], ['rot', 'Rotación (°)', 1], ['vis', 'Estado de visibilidad']]
+      : t.kind === 'hatch' ? [['label', 'Nombre'], ['pattern', 'Patrón'], ['scale', 'Escala', 1], ['angle', 'Ángulo (°)', 1], ['layer', 'Capa'], ['color', 'Color (#rrggbb, vacío = PorCapa)']]
+        : [['label', 'Nombre'], ['cmd', 'Orden o línea de guion (p. ej. CIRCLE o UCS OB)']];
+    const inputs = F.map(([k, label, numeric]) => [k, numeric, h('input', { type: 'text', value: t[k] ?? '', class: 'full' }), label]);
+    const box = h('div', { class: 'grid2' }, ...inputs.map(([, , inp, label]) => h('label', { class: 'fld' }, label, inp)));
+    const ok = await this.modal('Propiedades de la herramienta', box, [{ label: 'Cancelar', value: false }, { label: 'Aceptar', value: true, primary: true }]);
+    if (!ok) return false;
+    for (const [k, numeric, inp] of inputs) {
+      const v = inp.value.trim();
+      if (!v) { if (k !== 'label' && k !== 'block' && k !== 'cmd' && k !== 'pattern') delete t[k]; continue; }
+      t[k] = numeric ? (Number.isFinite(parseFloat(v.replace(',', '.'))) ? parseFloat(v.replace(',', '.')) : t[k]) : v;
+    }
+    return true;
+  }
+
+  // ---------- DesignCenter ----------
+  // Fuentes: la biblioteca, el dibujo actual y los dibujos abiertos en el DesignCenter durante la sesión. Devuelve
+  // {action: 'insert', lib, name, src} | {action: 'add', src, kind, names} | null
+  designCenter() {
+    const app = this.app, doc = app.doc;
+    this.dcSources ||= [];
+    let src = this.dcSrc || 'lib', kind = 'blocks', picked = [];
+    const KINDS = [['blocks', 'Bloques'], ['layers', 'Capas'], ['textStyles', 'Estilos de texto'], ['dimStyles', 'Estilos de cota'], ['mleaderStyles', 'Estilos de directriz'], ['tableStyles', 'Estilos de tabla'], ['mlineStyles', 'Estilos de línea múltiple']];
+    const left = h('div', { class: 'dc-col dc-src' }), mid = h('div', { class: 'dc-col dc-kinds' }), right = h('div', { class: 'dc-items' }), info = h('p', { class: 'hint dc-info' });
+    const data = () => (src === 'doc' ? doc : this.dcSources.find(s => s.name === src)?.data);
+    const pick = (name, el, multi) => {
+      if (!multi) { picked = [name]; right.querySelectorAll('.sel').forEach(x => x.classList.remove('sel')); el.classList.add('sel'); }
+      else if (picked.includes(name)) { picked = picked.filter(n => n !== name); el.classList.remove('sel'); } else { picked.push(name); el.classList.add('sel'); }
+      const it = src === 'lib' ? libItem(name) : null;
+      info.textContent = it ? `${it.label}: ${it.desc}${it.anno ? ' · Anotativo (tamaño en el papel).' : ' · En metros: se escala según LIBUNITS.'}` : `${picked.length} elemento(s) elegido(s).`;
+    };
+    const renderItems = () => {
+      picked = []; info.textContent = '';
+      if (src === 'lib') {
+        right.replaceChildren(...LIB_CATS.flatMap(cat => [h('div', { class: 'prop-sec' }, cat), h('div', { class: 'swatches blocks' }, ...LIBRARY.filter(l => l.cat === cat).map(l => {
+          const el = h('button', { class: 'swatch-btn', title: l.desc, onclick: ev => pick(l.name, el, ev.ctrlKey || ev.metaKey), ondblclick: () => this.closeModalWith({ action: 'insert', lib: true, name: l.name }) }, this.thumb(libPreview(l), 96, 70), h('span', {}, l.label));
+          return el;
+        }))]));
+        return;
+      }
+      const d = data();
+      if (!d) { right.replaceChildren(); return; }
+      if (kind === 'blocks') {
+        const names = Object.keys(d.blocks || {}).filter(n => !n.startsWith('*') && !d.blocks[n].xrefDep).sort();
+        right.replaceChildren(names.length ? h('div', { class: 'swatches blocks' }, ...names.map(n => {
+          const el = h('button', { class: 'swatch-btn', title: n, onclick: ev => pick(n, el, ev.ctrlKey || ev.metaKey), ondblclick: () => this.closeModalWith({ action: 'insert', src: d, name: n }) }, this.thumb(d.blocks[n].ents || [], 96, 70), h('span', {}, n));
+          return el;
+        })) : h('p', { class: 'hint' }, 'No hay bloques.'));
+        return;
+      }
+      const list = d[kind] || [];
+      right.replaceChildren(...(list.length ? list.map(x => {
+        const el = h('div', { class: 'dc-row', onclick: ev => pick(x.name, el, true) }, kind === 'layers' ? h('span', { class: 'sw', style: `background:${x.color}` }) : null, h('span', {}, x.name), doc !== d && doc[kind]?.some(y => y.name === x.name) ? h('span', { class: 'tag' }, ' ya existe') : null);
+        return el;
+      }) : [h('p', { class: 'hint' }, 'Vacío.')]));
+    };
+    const renderKinds = () => {
+      mid.replaceChildren(...(src === 'lib' ? [h('div', { class: 'dc-row sel' }, 'Bloques')] : KINDS.map(([k, l]) => h('div', { class: 'dc-row' + (k === kind ? ' sel' : ''), onclick: () => { kind = k; renderKinds(); renderItems(); } }, l, h('span', { class: 'tag' }, ` ${k === 'blocks' ? Object.keys(data()?.blocks || {}).filter(n => !n.startsWith('*')).length : (data()?.[k] || []).length}`)))));
+    };
+    const renderSrc = () => {
+      const row = (id, label) => h('div', { class: 'dc-row' + (src === id ? ' sel' : ''), onclick: () => { src = this.dcSrc = id; kind = 'blocks'; renderSrc(); renderKinds(); renderItems(); } }, label);
+      left.replaceChildren(row('lib', 'Biblioteca de obras viales'), row('doc', `Dibujo actual (${doc.name})`), ...this.dcSources.map(s => row(s.name, s.name)),
+        h('button', { class: 'btn', onclick: async () => {
+          const f = await app.io.pickFile('Dibujos', ['.tcad', '.dxf', '.json']);
+          if (!f) return;
+          try {
+            const text = await f.file.text(), d = /\.dxf$/i.test(f.file.name) ? readDXF(text) : JSON.parse(text);
+            const blocks = Array.isArray(d.blocks) ? Object.fromEntries(d.blocks.map(b => [b.name, b])) : d.blocks || {};
+            this.dcSources = [...this.dcSources.filter(s => s.name !== f.file.name), { name: f.file.name, data: { name: f.file.name, blocks, layers: d.layers || [], textStyles: d.textStyles || [], dimStyles: d.dimStyles || [], mleaderStyles: d.mleaderStyles || [], tableStyles: d.tableStyles || [], mlineStyles: d.mlineStyles || [] } }];
+            src = this.dcSrc = f.file.name; kind = 'blocks'; renderSrc(); renderKinds(); renderItems();
+          } catch (err) { app.print(`No se pudo leer "${f.file.name}": ${err.message}`, 'err'); }
+        } }, 'Abrir dibujo…'));
+    };
+    renderSrc(); renderKinds(); renderItems();
+    const box = h('div', { class: 'dc' }, left, mid, h('div', { class: 'dc-col grow' }, right, info));
+    const p = this.modal('DesignCenter', box, [{ label: 'Cerrar', value: null },
+      { label: 'Añadir al dibujo', value: () => (picked.length && src !== 'lib' && data() !== doc ? { action: 'add', src: data(), kind, names: picked } : null) },
+      { label: 'Insertar', value: () => (picked.length && (src === 'lib' || kind === 'blocks') ? (src === 'lib' ? { action: 'insert', lib: true, name: picked[0] } : { action: 'insert', src: data(), name: picked[0] }) : null), primary: true }]);
+    this.closeModalWith = v => { const b = document.querySelector('#modal-root .modal'); if (b) { this._appPick = v; b.querySelector('.modal-head .ib').click(); } };
+    return p.then(v => { const x = this._appPick; this._appPick = null; this.closeModalWith = null; return x || v; });
   }
 
   renderLayers() {
@@ -650,6 +846,40 @@ export class UI {
       });
       setTimeout(() => (box.querySelector('textarea,input,select') || box.querySelector('.btn.primary'))?.focus(), 30);
     });
+  }
+  // Consola de JavaScript: el código se ejecuta con la API (tc) y la aplicación (app); Ctrl+Intro ejecuta
+  jsConsole() {
+    const KEY = 'trazocad.jsconsole';
+    let saved = '';
+    try { saved = localStorage.getItem(KEY) || ''; } catch { /* sin almacenamiento */ }
+    const code = h('textarea', { class: 'js-code', spellcheck: 'false', placeholder: "// Ejemplos:\n// tc.line([0, 0], [100, 50]);\n// for (let i = 0; i < 10; i++) tc.circle([i * 20, 0], 5);\n// tc.defineCommand('RECTA100', { desc: 'Recta de 100', fn: async (c, tc) => { const p = await c.getPoint('Punto inicial'); tc.line(p, [p.x + 100, p.y]); } });\n// return tc.all({ type: 'line' }).length;" });
+    code.value = saved;
+    const outEl = h('pre', { class: 'js-out' });
+    const log = (msg, cls = '') => { outEl.append(h('div', { class: cls }, msg)); outEl.scrollTop = outEl.scrollHeight; };
+    const run = async () => {
+      try { localStorage.setItem(KEY, code.value); } catch { /* sin almacenamiento */ }
+      try {
+        const v = await runJs(this.app, code.value);
+        log(v === undefined ? '✔ Hecho.' : `= ${typeof v === 'string' ? v : JSON.stringify(v, null, 1)}`, 'ok');
+      } catch (err) { log(`✖ ${err.message}`, 'err'); }
+      this.app.renderer.invalidate(); this.refresh();
+    };
+    code.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); run(); } });
+    const help = h('p', { class: 'hint' }, 'API: tc.line, circle, arc, pline, point, text, mtext, insert (devuelven el identificador) · get, all({type, layer}), selection, select · modify, erase, transaction, layer, setLayer, undo · command(nombre, …respuestas), script(texto) · defineCommand(nombre, {aliases, desc, fn(ctx, tc)}) · print. Las coordenadas son universales; los ángulos, en grados.');
+    const box = h('div', { class: 'js-console' }, code, h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: run }, 'Ejecutar (Ctrl+Intro)'), h('button', { class: 'btn', onclick: () => outEl.replaceChildren() }, 'Limpiar')), outEl, help);
+    return this.modal('Consola de JavaScript', box, [{ label: 'Cerrar', value: null }]);
+  }
+  // Aplicaciones que se cargan al iniciar; devuelve {action: 'load', startup} | {action: 'remove', name} | null
+  appManager() {
+    const list = startupApps(), startup = h('input', { type: 'checkbox' });
+    const rows = list.length ? list.map(a => h('div', { class: 'app-row' }, h('b', {}, a.name), h('span', { class: 'hint' }, `${a.code.length.toLocaleString('es')} caracteres`),
+      h('button', { class: 'btn', onclick: () => this.closeModalWith?.({ action: 'remove', name: a.name }) }, 'Quitar'))) : [h('p', { class: 'hint' }, 'No hay aplicaciones que se carguen al iniciar.')];
+    const box = h('div', {}, h('div', { class: 'prop-sec' }, 'Se cargan al iniciar'), ...rows,
+      h('label', { class: 'chk' }, startup, ' Cargar también al iniciar TrazoCAD (sólo .js; se guarda en este navegador)'),
+      h('p', { class: 'hint' }, 'Un archivo .js se ejecuta con la API de TrazoCAD (tc) y puede definir órdenes nuevas con tc.defineCommand. Un archivo .scr se ejecuta como guion.'));
+    const p = this.modal('Cargar aplicaciones (APPLOAD)', box, [{ label: 'Cerrar', value: null }, { label: 'Cargar archivo…', value: () => ({ action: 'load', startup: startup.checked }), primary: true }]);
+    this.closeModalWith = v => { const b = document.querySelector('#modal-root .modal'); if (b) { this._appPick = v; b.querySelector('.modal-head .ib').click(); } };
+    return p.then(v => { const x = this._appPick; this._appPick = null; this.closeModalWith = null; return x || v; });
   }
   confirm(msg, okLabel = 'Aceptar') {
     return this.modal('TrazoCAD', h('p', {}, msg), [{ label: 'Cancelar', value: false }, { label: okLabel, value: true, primary: true }]).then(v => !!v);
@@ -1139,8 +1369,12 @@ export class UI {
         if (f.render) return h('div', { class: 'fld wide' }, f.label, f.render(s, () => prev.replaceChildren(preview(s))));
         let inp;
         if (f.options) { inp = h('select', {}, ...(typeof f.options === 'function' ? f.options() : f.options).map(([v, l]) => h('option', { value: v }, l))); inp.value = String(s[f.key]); }
+        else if (f.type === 'bool') inp = h('input', { type: 'checkbox', checked: !!s[f.key] });
         else inp = h('input', { type: f.type || 'number', step: 'any', value: s[f.key] ?? '' });
-        inp.addEventListener('change', () => { s[f.key] = f.type === 'text' || f.options ? inp.value : parseFloat(inp.value) || 0; prev.replaceChildren(preview(s)); });
+        inp.addEventListener('change', () => {
+          if (f.type === 'bool') { if (inp.checked) s[f.key] = true; else delete s[f.key]; } else s[f.key] = f.type === 'text' || f.options ? inp.value : parseFloat(inp.value) || 0;
+          prev.replaceChildren(preview(s));
+        });
         return h('label', { class: 'fld' }, f.label, inp);
       }));
       prev.replaceChildren(preview(s));
@@ -1180,7 +1414,7 @@ export class UI {
   textStyleManager() {
     return this.styleManager({
       title: 'Estilos de texto', listKey: 'textStyles', curKey: 'textStyle', make: s => s,
-      fields: [{ key: 'font', label: 'Fuente', options: FONTS.map(f => [f, f]) }, { key: 'width', label: 'Factor de anchura' }, { key: 'oblique', label: 'Ángulo oblicuo (°)' }],
+      fields: [{ key: 'font', label: 'Fuente', options: FONTS.map(f => [f, f]) }, { key: 'width', label: 'Factor de anchura' }, { key: 'oblique', label: 'Ángulo oblicuo (°)' }, { key: 'annotative', label: 'Anotativo (tamaños en el papel)', type: 'bool' }],
       preview: s => {
         const el = h('div', { class: 'text-sample' }, 'AaBbCc 0123 ÁÑ');
         el.style.fontFamily = `"${s.font}", Arial`;
@@ -1195,7 +1429,7 @@ export class UI {
     return this.styleManager({
       title: 'Estilos de directriz múltiple', listKey: 'mleaderStyles', curKey: 'mleaderStyle', make: s => s,
       fields: [
-        { key: 'h', label: 'Altura de texto' }, { key: 'textStyle', label: 'Estilo de texto', options: () => doc.textStyles.map(t => [t.name, t.name]) },
+        { key: 'h', label: 'Altura de texto' }, { key: 'textStyle', label: 'Estilo de texto', options: () => doc.textStyles.map(t => [t.name, t.name]) }, { key: 'annotative', label: 'Anotativo (tamaños en el papel)', type: 'bool' },
         { key: 'arrow', label: 'Punta de flecha', options: Object.entries(ARROWS) }, { key: 'asz', label: 'Tamaño de flecha' },
         { key: 'land', label: 'Longitud del rellano' }, { key: 'gap', label: 'Separación del texto' },
         { key: 'content', label: 'Contenido por defecto', options: ML_CONTENT },
@@ -1346,7 +1580,7 @@ export class UI {
     return this.styleManager({
       title: 'Estilos de cota', listKey: 'dimStyles', curKey: 'dimStyle', make: s => s,
       fields: [
-        { key: 'txt', label: 'Altura de texto' }, { key: 'asz', label: 'Tamaño de flecha' },
+        { key: 'annotative', label: 'Anotativo (tamaños en el papel)', type: 'bool' }, { key: 'txt', label: 'Altura de texto' }, { key: 'asz', label: 'Tamaño de flecha' },
         { key: 'arrow', label: 'Tipo de flecha', options: Object.entries(ARROWS) },
         { key: 'textStyle', label: 'Estilo de texto', options: () => doc.textStyles.map(t => [t.name, t.name]) },
         { key: 'gap', label: 'Separación del texto' }, { key: 'exo', label: 'Desfase desde origen' },
@@ -1784,6 +2018,16 @@ export class UI {
         <li>Pestañas <b>Modelo / Presentación</b> abajo a la izquierda; <b>+</b> crea una presentación con marco, cajetín y una ventana gráfica a escala estándar.</li>
         <li>Doble clic dentro de una ventana gráfica: trabaja en el modelo a través de ella (zoom y encuadre cambian su vista). Doble clic fuera: vuelve al papel.</li>
         <li>La escala de la ventana se cambia en la paleta de Propiedades. Imprimir, SVG y PNG de una presentación salen a escala real en milímetros.</li>
+      </ul>
+      <h4>Novedades de la v0.12</h4>
+      <ul>
+        <li><b>Vistas giradas</b>: <code>PLAN</code> alinea la vista con el SCP (actual, con nombre o universal) y <code>DVIEW</code> la gira un ángulo, según dos puntos o un objeto; con <code>UCSFOLLOW</code> = 1 la vista sigue al SCP. La designación por ventana, la rejilla, el rastreo, ZOOM Ventana, las vistas con nombre, la impresión, PDF, SVG, PNG y DXF funcionan con la vista girada.</li>
+        <li><b>Ventanas gráficas giradas</b>: propiedad <b>Giro</b> en la paleta Propiedades; al girar una ventana con <code>GIRA</code> la vista gira con ella (<code>VPROTATEASSOC</code>). Con <code>UCSVP</code> = 1 cada ventana (en mosaico o gráfica) conserva su propio SCP.</li>
+        <li><b>Escalas anotativas</b>: lista de escalas (<code>SCALELISTEDIT</code>), escala actual en la barra de estado (<code>CANNOSCALE</code>; en una ventana gráfica es la suya), estilos de texto, cota y directriz <i>Anotativos</i>, propiedad <i>Anotativo</i> de los objetos (<code>ANNOTATIVE</code>), escalas por objeto (<code>OBJECTSCALE</code>, <code>AIOBJECTSCALEADD</code>, <code>AIOBJECTSCALEREMOVE</code>), <code>ANNOALLVISIBLE</code> (botón ANOT) y <code>ANNOAUTOSCALE</code>.</li>
+        <li><b>Guiones</b>: <code>SCRIPT</code> ejecuta un archivo .scr (espacio o fin de línea = Intro; un punto escrito designa el objeto que pasa por él); <code>ACTRECORD</code> / <code>ACTSTOP</code> graban lo que hace como guion; <code>DELAY</code> hace pausas.</li>
+        <li><b>JavaScript</b>: <code>JSCONSOLE</code> (consola), <code>JSEVAL</code> (una línea) y <code>APPLOAD</code> (archivos .js, también al iniciar). La API <code>tc</code> crea, consulta y modifica objetos, ejecuta órdenes y guiones y define órdenes nuevas con <code>tc.defineCommand</code>.</li>
+        <li><b>Paleta de herramientas</b> (<code>TOOLPALETTES</code>, pestaña Herramientas): señales, obras de arte, defensas, drenaje, sombreados y órdenes con su capa, escala, rotación y estado; clic para usarlas o arrastrarlas al dibujo; se crean desde la designación.</li>
+        <li><b>Biblioteca vial</b> (<code>LIBINSERT</code>) y <b>DesignCenter</b> (<code>ADCENTER</code>): señales reglamentarias, preventivas e informativas anotativas con atributos, alcantarillas de caño y de cajón con tabla de medidas, defensas metálicas, cordones y cunetas con parámetros; bloques, capas y estilos de otros dibujos. <code>LIBUNITS</code>: unidades del dibujo para los planos tipo.</li>
       </ul>
       <h4>Novedades de la v0.11</h4>
       <ul>

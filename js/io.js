@@ -6,6 +6,8 @@ import { splinePts } from './spline.js';
 import { writeDXF, readDXF } from './dxf.js';
 import { hatchSegments, gradientSpec } from './patterns.js';
 import { makeRV, setWorld, vpModelRect, vpLtk } from './render.js';
+import { toFrame, fromFrame } from './view.js';
+import { annoEff, ANNO, vpScale, PAPER_SCALE } from './annoscale.js';
 import { PdfContext, buildPdf } from './pdf.js';
 import { xrefNames, restoreXrefs } from './xref.js';
 import { plotStyler } from './plotstyles.js';
@@ -127,6 +129,7 @@ export class IO {
         if (r.ucsList?.length) doc.ucsList = r.ucsList;
         if (r.views?.length) doc.views = r.views;
         if (r.ucs) doc.ucs = r.ucs;
+        if (r.modelView?.vh > 0) doc.tiles = { active: 0, tiles: [{ r: { x1: 0, y1: 0, x2: 1, y2: 1 }, ...r.modelView }] };
         if (r.mleaderStyles?.length) { doc.mleaderStyles = r.mleaderStyles; doc.cur.mleaderStyle = r.mleaderStyles[0].name; }
         if (r.tableStyles?.length) { doc.tableStyles = r.tableStyles; doc.cur.tableStyle = r.tableStyles[0].name; }
         for (const s of r.mlineStyles || []) { const i = doc.mlineStyles.findIndex(x => x.name.toUpperCase() === s.name.toUpperCase()); if (i >= 0) doc.mlineStyles[i] = s; else doc.mlineStyles.push(s); }
@@ -252,8 +255,9 @@ export class IO {
     };
     const pts = l => l.map(p => `${n5(p.x)},${n5(p.y)}`).join(' ');
     const arcD = ([c, r, a1, a2]) => { const a = G.polar(c, a1, r), b = G.polar(c, a2, r); return `M${n5(a.x)} ${n5(a.y)} A${n5(r)} ${n5(r)} 0 ${G.sweep(a1, a2) > Math.PI ? 1 : 0} 1 ${n5(b.x)} ${n5(b.y)}`; };
-    for (const e of ents) {
+    for (let e of ents) {
       if (!vis(e)) continue;
+      e = annoEff(e); // representación de la escala de anotación (la de la ventana gráfica, 1:1 en el papel)
       const s = stroke(e), col = this.plot ? this.plotSt(e).color : printColor(doc.style(e).color);
       switch (e.type) {
         case 'line': out.push(`<line x1="${n5(e.p1.x)}" y1="${n5(e.p1.y)}" x2="${n5(e.p2.x)}" y2="${n5(e.p2.y)}" ${s}/>`); break;
@@ -347,13 +351,16 @@ export class IO {
           for (const t of dimTexts(d)) out.push(textEl(t, col));
           break;
         }
-        case 'vport': {
+        case 'vport': { // papel = centro + giro(modelo − centro del modelo, −twist)·s
           const id = `vp${e.id}`, m = vpModelRect(e), sc = e.s, vcx = (e.p1.x + e.p2.x) / 2, vcy = (e.p1.y + e.p2.y) / 2;
+          const t = e.twist || 0, co = Math.cos(t) * sc, sn = Math.sin(t) * sc;
           out.push(`<clipPath id="${id}"><rect x="${n5(e.p1.x)}" y="${n5(e.p1.y)}" width="${n5(e.p2.x - e.p1.x)}" height="${n5(e.p2.y - e.p1.y)}"/></clipPath>`);
-          out.push(`<g clip-path="url(#${id})"><g transform="matrix(${n5(sc)} 0 0 ${n5(sc)} ${n5(vcx - sc * e.cx)} ${n5(vcy - sc * e.cy)})">`);
+          out.push(`<g clip-path="url(#${id})"><g transform="matrix(${n5(co)} ${n5(-sn)} ${n5(sn)} ${n5(co)} ${n5(vcx - co * e.cx - sn * e.cy)} ${n5(vcy + sn * e.cx - co * e.cy)})">`);
           const doc2 = this.app.doc, k0 = this.ltk || 1;
           this.ltk = k0 * vpLtk(doc2, e); // escala de tipo de línea propia de la ventana
-          this.svgEnts(this.app.spatial.of(doc2.model, doc2.ver).query(m, true), lwScale / sc, out, doc2.visibleIn(e));
+          const pa = ANNO.override;
+          ANNO.override = vpScale(doc2, e);
+          try { this.svgEnts(this.app.spatial.of(doc2.model, doc2.ver).query(m, true), lwScale / sc, out, doc2.visibleIn(e)); } finally { ANNO.override = pa; }
           this.ltk = k0;
           out.push('</g></g>');
           out.push(`<rect x="${n5(e.p1.x)}" y="${n5(e.p1.y)}" width="${n5(e.p2.x - e.p1.x)}" height="${n5(e.p2.y - e.p1.y)}" ${s}/>`);
@@ -371,15 +378,18 @@ export class IO {
     if (lay) {
       x1 = 0; y1 = 0; w = lay.w; h = lay.h;
       ENV.layout = lay;
-      body = this.svgEnts(lay.ents, 1, []);
+      const pa = ANNO.override;
+      ANNO.override = PAPER_SCALE;
+      try { body = this.svgEnts(lay.ents, 1, []); } finally { ANNO.override = pa; }
       ENV.layout = null;
       size = `width="${n5(w)}mm" height="${n5(h)}mm"`;
     } else {
-      const b = doc.extents(doc.model.filter(e => doc.visible(e)));
-      if (!b) return null;
-      const pad = Math.max(b.x2 - b.x1, b.y2 - b.y1) * 0.03 || 5;
-      x1 = b.x1 - pad; y1 = b.y1 - pad; w = b.x2 - b.x1 + 2 * pad; h = b.y2 - b.y1 + 2 * pad;
+      const f = this.modelFrame();
+      if (!f) return null;
+      const pad = Math.max(f.bw, f.bh) * 0.03 || 5, [u0, v0] = toFrame(f.rot, f.cx, f.cy);
+      x1 = u0 - f.bw / 2 - pad; y1 = v0 - f.bh / 2 - pad; w = f.bw + 2 * pad; h = f.bh + 2 * pad;
       body = this.svgEnts(doc.model, null, []);
+      if (f.rot) { const co = Math.cos(f.rot), sn = Math.sin(f.rot); body = [`<g transform="matrix(${n5(co)} ${n5(-sn)} ${n5(sn)} ${n5(co)} 0 0)">`, ...body, '</g>']; }
       size = `width="${n5(w)}mm" height="${n5(h)}mm"`;
     }
     this.plot = null;
@@ -390,6 +400,16 @@ export class IO {
 ${body.join('\n')}
 </g>
 </svg>` };
+  }
+
+  // Extensión del modelo en los ejes de la vista del modelo (girada o no): centro en el dibujo, ancho y alto
+  modelFrame() {
+    const doc = this.app.doc, b = doc.extents(doc.model.filter(e => doc.visible(e)));
+    if (!b) return null;
+    const rot = this.app.modelView.rot || 0;
+    const fs = [[b.x1, b.y1], [b.x2, b.y1], [b.x2, b.y2], [b.x1, b.y2]].map(([x, y]) => toFrame(rot, x, y)), us = fs.map(q => q[0]), vs = fs.map(q => q[1]);
+    const [cx, cy] = fromFrame(rot, (Math.min(...us) + Math.max(...us)) / 2, (Math.min(...vs) + Math.max(...vs)) / 2);
+    return { cx, cy, bw: Math.max(...us) - Math.min(...us) || 1, bh: Math.max(...vs) - Math.min(...vs) || 1, rot };
   }
 
   async exportSVG() {
@@ -408,11 +428,10 @@ ${body.join('\n')}
       R = makeRV(lay.w / 2, lay.h / 2, ppm, W, H, 1);
       sty = this.printSty(lay, lw => Math.max(1, lw * ppm));
     } else {
-      const b = doc.extents(doc.model.filter(e => doc.visible(e)));
-      if (!b) return app.print('El dibujo está vacío.');
-      const bw = b.x2 - b.x1 || 1, bh = b.y2 - b.y1 || 1;
-      W = 2400; H = Math.max(200, Math.min(4800, Math.round(W * bh / bw)));
-      R = makeRV((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2, Math.min(W / bw, H / bh) * 0.94, W, H, 1);
+      const f = this.modelFrame();
+      if (!f) return app.print('El dibujo está vacío.');
+      W = 2400; H = Math.max(200, Math.min(4800, Math.round(W * f.bh / f.bw)));
+      R = makeRV(f.cx, f.cy, Math.min(W / f.bw, H / f.bh) * 0.94, W, H, 1, 0, 0, f.rot);
       sty = this.printSty(null, lw => Math.max(1.5, lw * 8));
     }
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
@@ -438,10 +457,10 @@ ${body.join('\n')}
     if (which === 'all' && doc.layouts.length) return doc.layouts.map(pageOf);
     if (lay) return [pageOf(lay)];
     // Modelo: ajustado a una hoja A3 apaisada con 10 mm de margen
-    const b = doc.extents(doc.model.filter(e => doc.visible(e)));
-    if (!b) return null;
-    const W = 420 * K, H = 297 * K, bw = b.x2 - b.x1 || 1, bh = b.y2 - b.y1 || 1, s = Math.min((W - 20 * K) / bw, (H - 20 * K) / bh);
-    const ctx = new PdfContext(H), R = makeRV((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2, s, W, H, 1);
+    const f = this.modelFrame();
+    if (!f) return null;
+    const W = 420 * K, H = 297 * K, s = Math.min((W - 20 * K) / f.bw, (H - 20 * K) / f.bh);
+    const ctx = new PdfContext(H), R = makeRV(f.cx, f.cy, s, W, H, 1, 0, 0, f.rot);
     setWorld(ctx, R);
     app.renderer.paintList(ctx, R, doc.model, this.printSty(null, lw => Math.max(0.1, lw) * K));
     return [{ w: W, h: H, ctx }];

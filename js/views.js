@@ -1,14 +1,20 @@
 // Vistas con nombre (VIEW) y ventanas en mosaico del espacio modelo (VPORTS): división, unión y configuraciones guardadas.
 import { setUcs } from './ucs.js';
+import { toFrame, fromFrame, vpModelPoly } from './view.js';
+import { setTwist } from './entities.js';
 
 export const findView = (doc, name) => doc.views.find(v => v.name.toLowerCase() === String(name).trim().toLowerCase());
 export const validViewName = n => /^[^<>/\\":;?*|,=`]{1,255}$/.test(n);
 
-// Vista actual (o el rectángulo rect) como vista con nombre; ucs: guardar el SCP actual; layers: instantánea de las capas
-export function captureView(app, name, { rect = null, ucs = true, layers = false } = {}) {
-  const doc = app.doc, r = rect || app.view.rect();
+// Vista actual (o la ventana de esquinas pts, alineada con la vista) como vista con nombre; ucs: guardar el SCP actual;
+// layers: instantánea de las capas. w y h se miden en los ejes de la vista; twist: su giro (sólo en el modelo)
+export function captureView(app, name, { pts = null, ucs = true, layers = false } = {}) {
+  const doc = app.doc, v = app.view;
   const space = app.tab === 'model' || app.vpActive ? 'model' : doc.layouts[app.tab].name;
-  const rec = { name, space, cx: (r.x1 + r.x2) / 2, cy: (r.y1 + r.y2) / 2, w: Math.abs(r.x2 - r.x1), h: Math.abs(r.y2 - r.y1) };
+  const rot = space === 'model' ? v.rot || 0 : 0, q = pts || (v.vp ? vpModelPoly(v.vp) : v.poly());
+  const fs = q.map(p => toFrame(rot, p.x, p.y)), us = fs.map(f => f[0]), vs = fs.map(f => f[1]);
+  const [cx, cy] = fromFrame(rot, (Math.min(...us) + Math.max(...us)) / 2, (Math.min(...vs) + Math.max(...vs)) / 2);
+  const rec = { name, space, cx, cy, w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs), ...(rot ? { twist: rot } : {}) };
   if (ucs && space === 'model' && doc.ucs) rec.ucs = { o: { ...doc.ucs.o }, ang: doc.ucs.ang, ...(doc.ucs.name ? { name: doc.ucs.name } : {}) };
   if (layers) rec.layers = Object.fromEntries(doc.layers.map(l => [l.name, { on: l.on, lock: l.lock }]));
   return rec;
@@ -36,8 +42,11 @@ export function restoreView(app, rec) {
     if (i < 0) return false;
     if (app.tab !== i) app.switchTab(i); else if (app.vpActive) app.pspace();
   }
-  app.view.push();
-  app.view.fit({ x1: rec.cx - rec.w / 2, y1: rec.cy - rec.h / 2, x2: rec.cx + rec.w / 2, y2: rec.cy + rec.h / 2 }, 0);
+  const v = app.view, t = rec.twist || 0;
+  v.push();
+  if (rec.space === 'model') { if (v.vp) setTwist(v.vp, t); else v.setRot(t); }
+  const [u0, w0] = toFrame(t, rec.cx, rec.cy);
+  v.fitPts([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, j]) => { const [x, y] = fromFrame(t, u0 + i * rec.w / 2, w0 + j * rec.h / 2); return { x, y }; }), 0);
   if (rec.ucs) setUcs(doc, rec.ucs, rec.ucs.name);
   if (rec.layers) {
     for (const l of doc.layers) { const s = rec.layers[l.name]; if (s) { l.on = s.on; l.lock = s.lock; } }

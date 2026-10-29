@@ -1,11 +1,11 @@
 // Núcleo de la aplicación: estado, entrada (ratón, táctil, teclado), motor de comandos y peticiones de datos.
 import * as G from './geom.js';
 import { Doc } from './document.js';
-import { View, VpView } from './view.js';
+import { View, VpView, toFrame, fromFrame } from './view.js';
 import { SpatialIndex } from './spatial.js';
 import { Renderer } from './render.js';
 import { Snapper } from './snap.js';
-import { ENV, hitDist, inWindow, crosses, gripsOf, STD_SCALES, scaleLabel, blockAttdefs, tableCellAt } from './entities.js';
+import { ENV, hitDist, inWindowRot, crossesRot, gripsOf, STD_SCALES, scaleLabel, blockAttdefs, tableCellAt, bbPts } from './entities.js';
 import { findCmd, suggest } from './commands.js';
 import { UI } from './ui.js';
 import { IO } from './io.js';
@@ -16,6 +16,8 @@ import { PAT_ENV } from './patterns.js';
 import { expandGroups } from './groups.js';
 import { plotStyler } from './plotstyles.js';
 import { ucsOf, fromUcs, vecFromUcs, WORLD } from './ucs.js';
+import { ANNO, vpScale, PAPER_SCALE, ANNO_TYPES } from './annoscale.js';
+import { makeApi, recCommand, recAnswer, loadStartupApps } from './scripting.js';
 
 const CANCEL = Symbol('cancel');
 const FULL = { x1: 0, y1: 0, x2: 1, y2: 1 };
@@ -29,6 +31,8 @@ class App {
     this.doc = new Doc();
     ENV.doc = this.doc;
     PAT_ENV.doc = this.doc;
+    ANNO.doc = this.doc;
+    ANNO.ctx = () => this.annoContext();
     this.view = this.modelView = new View();
     this.vw = 800; this.vh = 600; // tamaño de la zona de dibujo
     this.tiles = [{ r: FULL, view: this.modelView }]; // ventanas en mosaico del espacio modelo (VPORTS); r en fracciones
@@ -57,6 +61,8 @@ class App {
     this.ui.build();
     this.doc.on(kind => this.onDocChange(kind));
     this.doc.viewState = () => this.tilesState(); // las ventanas en mosaico se guardan con el dibujo
+    this.api = makeApi(this); // API en JavaScript para el usuario (consola, APPLOAD): también window.tc
+    window.tc = this.api;
     this.bindEvents();
     this.renderer.resize();
     this.ui.setPrompt(null);
@@ -64,6 +70,7 @@ class App {
     if (!/[?&]nuevo/.test(location.search) && this.io.restore()) { this.afterLoad(); this.print('Se ha recuperado el dibujo autoguardado.'); this.io.restoreXrefs(); }
     this.ui.updateStatus();
     this.ui.refresh();
+    if (!/[?&]sinapps/.test(location.search)) setTimeout(() => loadStartupApps(this), 0); // aplicaciones de APPLOAD › Al iniciar
   }
 
   // ---------- Preferencias ----------
@@ -119,6 +126,22 @@ class App {
     if (this.layoutShown()) { const v = this.paperView; v.w = w; v.h = h; }
   }
 
+  // ---------- Escalas anotativas ----------
+  // Escala de anotación del contexto actual: la de la ventana gráfica activa, 1:1 en el papel o, en el modelo, CANNOSCALE (null)
+  annoContext() {
+    if (this.doc.bedit) return null;
+    if (this.vpActive) { const vp = this.doc.get(this.vpActive); if (vp) return vpScale(this.doc, vp); }
+    return this.tab !== 'model' ? PAPER_SCALE : null;
+  }
+  // Los objetos nuevos con un estilo anotativo (de texto, cota o directriz) son anotativos con la escala actual
+  annoNew(e) {
+    if (!ANNO_TYPES.has(e.type) || 'anno' in e) return e;
+    const d = this.doc, c = d.cur;
+    const st = e.type === 'dim' ? d.dimStyle(e.style ?? c.dimStyle) : e.type === 'mleader' ? d.mleaderStyle(e.mstyle ?? c.mleaderStyle) : e.type === 'text' || e.type === 'mtext' || e.type === 'attdef' ? d.textStyle(e.style ?? c.textStyle) : e.type === 'insert' ? d.blocks[e.name] : null;
+    if (st?.annotative || (e.type === 'hatch' && d.settings.hatchAnno)) e.anno = [(this.annoContext() || { name: d.settings.cannoscale || '1:1' }).name];
+    return e;
+  }
+
   // ---------- Ventanas en mosaico del espacio modelo ----------
   layoutTiles() {
     const W = this.vw, H = this.vh;
@@ -132,14 +155,17 @@ class App {
   activeTile() { return this.tiles.find(t => t.view === this.modelView) || this.tiles[0]; }
   setActiveTile(t) {
     if (!t || t.view === this.modelView) return;
+    // UCSVP = 1: cada ventana en mosaico conserva su SCP (las nuevas heredan el de la ventana desde la que se dividió)
+    if (this.doc.settings.ucsvp !== 0) { this.activeTile().ucs = this.doc.ucs || null; if ('ucs' in t) this.doc.ucs = t.ucs; }
     this.modelView = t.view;
     if (this.tab === 'model' && !this.doc.bedit) this.view = t.view;
     this.acquired = []; this.hover = null;
     this.renderer.invalidate(); this.updateMouse(); this.ui.updateTips();
   }
   // list: [{r, cx, cy, scale | vh}] (vh: altura visible en unidades del dibujo); active: índice de la ventana activa
+  // rot: giro de la vista; ucs: SCP de la ventana (UCSVP)
   setTiles(list, active = 0) {
-    this.tiles = list.map(t => { const v = new View(); v.cx = t.cx; v.cy = t.cy; v.scale = t.scale || 1; return { r: { ...t.r }, view: v, vh: t.vh }; });
+    this.tiles = list.map(t => { const v = new View(); v.cx = t.cx; v.cy = t.cy; v.scale = t.scale || 1; v.rot = t.rot || 0; return { r: { ...t.r }, view: v, vh: t.vh, ...('ucs' in t ? { ucs: t.ucs } : {}) }; });
     this.layoutTiles();
     for (const t of this.tiles) { if (t.vh > 0) t.view.scale = t.view.h / t.vh; delete t.vh; }
     this.modelView = this.tiles[Math.max(0, Math.min(active, this.tiles.length - 1))].view;
@@ -147,12 +173,26 @@ class App {
     this.acquired = []; this.hover = null;
     this.renderer.invalidate(); this.ui.refresh();
   }
+  // Se guardan las ventanas en mosaico y, con una sola, la vista si está girada (el SCP de la activa es el del dibujo)
   tilesState() {
-    if (this.tiles.length < 2) return undefined;
-    return { active: this.tiles.indexOf(this.activeTile()), tiles: this.tiles.map(({ r, view: v }) => ({ r, cx: v.cx, cy: v.cy, vh: v.h / v.scale })) };
+    if (this.tiles.length < 2 && !this.modelView.rot) return undefined;
+    const act = this.activeTile();
+    return { active: this.tiles.indexOf(act), tiles: this.tiles.map(t => ({ r: t.r, cx: t.view.cx, cy: t.view.cy, vh: t.view.h / t.view.scale, ...(t.view.rot ? { rot: t.view.rot } : {}), ...(t !== act && 'ucs' in t ? { ucs: t.ucs } : {}) })) };
   }
   restoreTiles(st) {
-    if (st?.tiles?.length > 1) this.setTiles(st.tiles, st.active || 0);
+    if (st?.tiles?.length) this.setTiles(st.tiles, st.active || 0);
+  }
+  // SCP de las ventanas gráficas (UCSVP = 1): al entrar en una se usa el suyo y al salir se le guarda el actual;
+  // fuera de ellas, el SCP del dibujo es el del espacio modelo (modelUcs mientras se trabaja dentro de una ventana)
+  enterVpUcs(vp) {
+    const doc = this.doc;
+    if (this.vpActive) this.leaveVpUcs(false); else this.modelUcs = doc.ucs || null;
+    if (doc.settings.ucsvp !== 0) doc.ucs = vp.ucs || null;
+  }
+  leaveVpUcs(restore = true) {
+    const doc = this.doc, vp = this.vpActive && doc.get(this.vpActive);
+    if (vp && doc.settings.ucsvp !== 0) { if (doc.ucs) vp.ucs = { ...doc.ucs, o: { ...doc.ucs.o } }; else delete vp.ucs; }
+    if (restore && doc.settings.ucsvp !== 0 && this.modelUcs !== undefined) doc.ucs = this.modelUcs;
   }
 
   // ---------- Presentaciones y ventanas gráficas ----------
@@ -184,6 +224,7 @@ class App {
     if (this.doc.bedit) { this.print('Cierre primero el editor de bloques (BCLOSE).'); return; }
     if (t !== 'model' && !this.doc.layouts[t]) t = 'model';
     if (this.cmdPromise) this.cancelCurrent();
+    if (this.vpActive) this.leaveVpUcs();
     this.tab = t; this.vpActive = null; this.doc.activeVp = null;
     this.doc.space = t === 'model' ? 'model' : t;
     this.view = t === 'model' ? this.modelView : this.paperView;
@@ -197,6 +238,7 @@ class App {
     const ents = this.doc.layouts[this.tab].ents;
     vp = vp || ents.find(e => e.type === 'vport' && this.doc.visible(e)) || ents.find(e => e.type === 'vport');
     if (!vp) return this.print('La presentación no tiene ventanas gráficas. Cree una con MVIEW.');
+    this.enterVpUcs(vp);
     this.vpActive = vp.id; this.doc.activeVp = vp.id;
     this.doc.space = 'model';
     this.view = new VpView(this.paperView, vp);
@@ -205,6 +247,7 @@ class App {
   }
   pspace() {
     if (this.tab === 'model' || !this.vpActive) return;
+    this.leaveVpUcs();
     this.vpActive = null; this.doc.activeVp = null;
     this.doc.space = this.tab;
     this.view = this.paperView;
@@ -356,6 +399,8 @@ class App {
     vp.addEventListener('dragleave', () => vp.classList.remove('drop'));
     vp.addEventListener('drop', async e => {
       e.preventDefault(); vp.classList.remove('drop');
+      const tool = e.dataTransfer.getData('text/x-trazocad-tool'); // herramienta arrastrada desde la paleta
+      if (tool) { this.updateMouse(e); try { await this.ui.runTool(JSON.parse(tool), { ...this.mouse.w }); } catch (err) { this.print(err.message, 'err'); } return; }
       const f = e.dataTransfer.files[0];
       if (f && (await this.io.confirmDiscard())) this.io.loadFile(f);
     });
@@ -569,6 +614,7 @@ class App {
   pickSuggestion(d) { this.input.value = ''; this.sugList = []; this.ui.showSuggest([]); this.run(d.name); }
 
   escape() {
+    if (this.scriptDepth) this.scriptStop = true; // Esc interrumpe el guion en curso
     this.ui.hideMenu();
     this.sugList = []; this.ui.showSuggest([]);
     this.input.value = '';
@@ -611,8 +657,10 @@ class App {
     }, 450);
   }
 
-  pickId(sx, sy, filter) {
-    const w = this.view.toWorld({ x: sx, y: sy }), tol = PICKBOX / this.view.scale, doc = this.doc;
+  pickId(sx, sy, filter) { return this.pickAt(this.view.toWorld({ x: sx, y: sy }), filter); }
+  // Objeto visible y desbloqueado más cercano al punto del dibujo w (a menos de la caja de designación)
+  pickAt(w, filter) {
+    const tol = PICKBOX / this.view.scale, doc = this.doc;
     let best = null, bd = tol;
     for (const e of this.idx().query({ x1: w.x - tol, y1: w.y - tol, x2: w.x + tol, y2: w.y + tol }, true)) {
       if (!doc.visible(e) || doc.locked(e) || (filter && !filter(e))) continue;
@@ -699,15 +747,18 @@ class App {
     this.win = null;
     const a = W.s, b = { x: m.sx, y: m.sy };
     if (Math.hypot(b.x - a.x, b.y - a.y) < 3) { this.renderer.invalidate(false); return; }
-    const crossing = b.x < a.x, r = G.normRect(this.view.toWorld(a), this.view.toWorld(b));
+    // con la vista girada, r es el rectángulo en los ejes de la vista y q, el que lo contiene en el dibujo
+    const v = this.view, rot = v.rot || 0, wa = v.toWorld(a), wb = v.toWorld(b), crossing = b.x < a.x;
+    const fa = toFrame(rot, wa.x, wa.y), fb = toFrame(rot, wb.x, wb.y), r = G.normRect(G.P(...fa), G.P(...fb));
+    const q = rot ? bbPts([[r.x1, r.y1], [r.x2, r.y1], [r.x2, r.y2], [r.x1, r.y2]].map(([x, y]) => G.P(...fromFrame(rot, x, y)))) : r;
     const hit = [];
-    for (const e of this.idx().query(r)) {
+    for (const e of this.idx().query(q)) {
       if (!this.doc.visible(e) || this.doc.locked(e)) continue;
-      if (crossing ? crosses(e, r) : inWindow(e, r)) hit.push(e.id);
+      if (crossing ? crossesRot(e, r, rot) : inWindowRot(e, r, rot)) hit.push(e.id);
     }
     const ids = this.withGroups(hit), n = ids.size;
     for (const id of ids) if (W.shift) W.set.delete(id); else W.set.add(id);
-    this.lastWindow = { rect: r, crossing };
+    this.lastWindow = { rect: r, crossing, rot };
     if (this.req?.kind === 'select') this.print(`${n} encontrados, ${W.set.size} total`);
     this.selChanged();
   }
@@ -732,7 +783,7 @@ class App {
     return new Promise((resolve, reject) => {
       const r = { kind, prompt, opts, pointLike: ['point', 'distance', 'angle'].includes(kind), gripCmd: !!opts.gripCmd };
       if (kind === 'select') r.set = new Set();
-      r.resolve = (v, typed) => { if (this.req !== r) return; this.req = null; this.ui.echo(r, typed); resolve(v); };
+      r.resolve = (v, typed) => { if (this.req !== r) return; this.req = null; this.ui.echo(r, typed); recAnswer(this, r, v, typed); resolve(v); };
       r.reject = err => { if (this.req !== r) return; this.req = null; reject(err); };
       this.req = r;
       this.input.value = '';
@@ -768,7 +819,7 @@ class App {
       getEntity: (p, o = {}) => app.ask('entity', p, o),
       getSelection: (p = 'Designe objetos', o = {}) => app.getSelection(p, o),
       print: m => app.print(m),
-      add: e => app.doc.add(e),
+      add: e => app.doc.add(app.annoNew(e)),
       // Referencia a objetos del último punto designado con el ratón (para cotas asociativas)
       ref: () => (app.doc.settings.dimAssoc ? app.lastRef : null),
       setLast: p => { app.lastPt = p; },
@@ -879,9 +930,21 @@ class App {
       case 'select': {
         if (!text) return r.resolve([...r.set], '');
         if (/^(todo|t|all)$/i.test(text)) { this.selectAll(); return; }
+        const p = this.parsePoint(text, null); // un punto escrito designa el objeto que pasa por él (guiones)
+        if (p) {
+          const id = this.pickAt(p);
+          if (!id) return this.print('Ningún objeto en ese punto.', 'err');
+          for (const x of this.withGroups([id])) r.set.add(x);
+          this.print(`1 encontrado, ${r.set.size} total`); this.selChanged(); return;
+        }
         return this.print('Designe objetos o pulse Intro para terminar.', 'err');
       }
-      case 'entity': if (!text && o.allowEnter) return r.resolve(null, ''); return this.print('Designe un objeto.', 'err');
+      case 'entity': {
+        if (!text && o.allowEnter) return r.resolve(null, '');
+        const p = text && this.parsePoint(text, null), id = p && this.pickAt(p, o.filter);
+        if (id) return r.resolve({ e: this.doc.get(id), pt: p, shift: false }, text);
+        return this.print(p ? 'Ningún objeto válido en ese punto.' : 'Designe un objeto.', 'err');
+      }
     }
   }
 
@@ -895,6 +958,7 @@ class App {
     this.ui.hideMenu();
     this.cancelFlag = false;
     if (!d.hidden) this.print(`Comando: ${d.name}`, 'cmd');
+    recCommand(d, arg); // grabación de acciones (ACTRECORD)
     this.cmd = d;
     this.pickfirst = d.sel && this.sel.size ? [...this.sel] : null;
     if (d.sel || (!d.keepSel && !d.noTx)) { this.sel.clear(); this.hoverGrip = null; }

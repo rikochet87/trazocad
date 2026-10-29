@@ -4,6 +4,7 @@ import { PATTERNS, famsOf, famLines, gradientSpec, GRADIENTS, GRAD_DEFAULT, USER
 import { splinePts, rebuild as rebuildSpline } from './spline.js';
 import { parseRich, baseFmt, richPlain } from './richtext.js';
 import { mlineGeom, mlinePrims, mlStyleOf, ML_JUST, reverseCuts } from './mline.js';
+import { annoEff, isAnno, ANNO_TYPES, setAnnotative, scaleEnt, factorOfName, curScale } from './annoscale.js';
 import { clipActive, clipKeeps, clipPrims } from './xclip.js';
 const { P, Mx, TAU } = G;
 
@@ -1580,6 +1581,11 @@ TYPES.array = {
 // ---------- Ventana gráfica (espacio papel) ----------
 const vpCorners = e => [e.p1, P(e.p2.x, e.p1.y), e.p2, P(e.p1.x, e.p2.y)];
 export const scaleLabel = s => { const f = STD_SCALES.find(([, v]) => Math.abs(v - s) / v < 1e-6); return f ? f[0] : s >= 1 ? `${+s.toFixed(3)}:1` : `1:${+(1 / s).toFixed(3)}`; };
+// Giro de una ventana gráfica, normalizado (0 se guarda como ausencia)
+export function setTwist(vp, a) {
+  const t = G.normAng(a);
+  if (Math.abs(t) < 1e-12 || Math.abs(t - TAU) < 1e-12) delete vp.twist; else vp.twist = t;
+}
 TYPES.vport = {
   name: 'Ventana gráfica',
   prims: e => closedSegs(vpCorners(e)),
@@ -1590,9 +1596,13 @@ TYPES.vport = {
     const c = vpCorners(e), o = c[(i + 2) % 4];
     e.p1 = P(Math.min(o.x, p.x), Math.min(o.y, p.y)); e.p2 = P(Math.max(o.x, p.x), Math.max(o.y, p.y));
   },
+  // Al girar la ventana con VPROTATEASSOC = 1, la vista del modelo gira con ella (el marco sigue siendo un rectángulo
+  // del papel: el que contiene las esquinas giradas)
   xform(e, m) {
     const b = bbPts(vpCorners(e).map(q => Mx.ap(m, q)));
     e.p1 = P(b.x1, b.y1); e.p2 = P(b.x2, b.y2); e.s *= Mx.scaleOf(m);
+    const a = Math.atan2(m[1], m[0]);
+    if (Mx.det(m) > 0 && Math.abs(a) > 1e-12 && ENV.doc?.settings?.vprotateassoc !== 0) setTwist(e, (e.twist || 0) - a);
   },
   path(c, e) { c.rect(e.p1.x, e.p1.y, e.p2.x - e.p1.x, e.p2.y - e.p1.y); },
   props: [
@@ -1600,6 +1610,8 @@ TYPES.vport = {
     num('Escala (papel/modelo)', e => e.s, (e, v) => { if (v > 0) e.s = v; }),
     num('Centro modelo X', e => e.cx, (e, v) => { e.cx = v; }),
     num('Centro modelo Y', e => e.cy, (e, v) => { e.cy = v; }),
+    // Giro de la vista del modelo (VIEWTWIST de la ventana): la dirección del modelo con este ángulo se ve horizontal
+    angp('Giro', e => e.twist || 0, (e, v) => setTwist(e, v)),
     ro('Ancho', e => e.p2.x - e.p1.x), ro('Alto', e => e.p2.y - e.p1.y),
     ro('Capas inutilizadas', e => (e.frozen?.length ? e.frozen.join(', ') : '—'), 'text'),
     // Factor de los tipos de línea en esta ventana (se multiplica por LTSCALE y, con PSLTSCALE = 1, por la inversa de la escala)
@@ -1608,14 +1620,25 @@ TYPES.vport = {
 };
 
 // ---------- API genérica ----------
-export const primsOf = e => TYPES[e.type].prims(e);
-export const bboxOf = e => TYPES[e.type].bbox(e);
-export const snapsOf = e => TYPES[e.type].snaps(e);
-export const gripsOf = e => TYPES[e.type].grips(e);
+// Los objetos anotativos se consultan en su representación de la escala de anotación actual (annoscale.js)
+export const primsOf = e => { e = annoEff(e); return TYPES[e.type].prims(e); };
+export const bboxOf = e => { e = annoEff(e); return TYPES[e.type].bbox(e); };
+export const snapsOf = e => { e = annoEff(e); return TYPES[e.type].snaps(e); };
+export const gripsOf = e => { e = annoEff(e); return TYPES[e.type].grips(e); };
+// Rectángulo para el índice espacial: el de todas las representaciones de un objeto anotativo (cada ventana gráfica
+// lo dibuja con su escala)
+export function bboxIndex(e) {
+  if (!isAnno(e)) return TYPES[e.type].bbox(e);
+  const doc = ENV.doc, ks = new Set([...e.anno.map(n => factorOfName(doc, n)), curScale().k]);
+  let b = null;
+  for (const k of ks) b = bbUnion(b, TYPES[e.type].bbox(scaleEnt(e, k)));
+  return b;
+}
 export const xformEnt = (e, m) => { TYPES[e.type].xform(e, m); return e; };
 export const cloneEnt = e => JSON.parse(JSON.stringify(e));
 
 export function hitDist(e, p) {
+  e = annoEff(e);
   const T = TYPES[e.type];
   if (T.hit) return T.hit(e, p);
   let d = Infinity;
@@ -1623,10 +1646,15 @@ export function hitDist(e, p) {
   return d;
 }
 export function inWindow(e, r) {
+  e = annoEff(e);
   const b = bboxOf(e);
   return b.x1 >= r.x1 && b.x2 <= r.x2 && b.y1 >= r.y1 && b.y2 <= r.y2;
 }
+// Con la vista girada, la ventana es un rectángulo en los ejes de la vista: la entidad se lleva a esos ejes (giro −rot)
+export const inWindowRot = (e, r, rot) => (rot ? inWindow(xformEnt(cloneEnt(e), Mx.R(-rot)), r) : inWindow(e, r));
+export const crossesRot = (e, r, rot) => (rot ? crosses(xformEnt(cloneEnt(e), Mx.R(-rot)), r) : crosses(e, r));
 export function crosses(e, r) {
+  e = annoEff(e);
   if (inWindow(e, r)) return true;
   if (!G.bbOverlap(bboxOf(e), r)) return false;
   if (e.type === 'point') return G.inRect(e.p, r);
@@ -1635,7 +1663,12 @@ export function crosses(e, r) {
   return (T.selPrims ? T.selPrims(e) : T.prims(e)).some(q => G.primCrossRect(q, r));
 }
 
-export const propsOf = e => { const p = TYPES[e.type].props; return typeof p === 'function' ? p(e) : p; };
+// Propiedades de escala de anotación de los tipos que pueden ser anotativos
+const ANNO_PROPS = [
+  { label: 'Anotativo', type: 'bool', get: e => isAnno(e), set: (e, v) => setAnnotative(e, !!v) },
+  ro('Escalas de anotación', e => (isAnno(e) ? e.anno.join(', ') : '—'), 'text'),
+];
+export const propsOf = e => { const p = TYPES[e.type].props, list = typeof p === 'function' ? p(e) : p; return ANNO_TYPES.has(e.type) ? [...list, ...ANNO_PROPS] : list; };
 
 export function describe(e) {
   const T = TYPES[e.type], out = [`${T.name}  Capa: "${e.layer}"`];

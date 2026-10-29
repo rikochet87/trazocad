@@ -4,6 +4,7 @@ import { snapsOf, primsOf } from './entities.js';
 import { ISO_AXES } from './render.js';
 import { NO_ASSOC } from './assoc.js';
 import { ucsOf, toUcs, fromUcs } from './ucs.js';
+import { toFrame, fromFrame } from './view.js';
 
 export const OSNAP_MODES = {
   end: 'Punto final', mid: 'Punto medio', cen: 'Centro', qua: 'Cuadrante', int: 'Intersección',
@@ -74,11 +75,17 @@ export class Snapper {
       if (dy < bhy) { bhy = dy; hy = p; }
     }
     if (!vx && !hy) return null;
-    const lines = [];
+    const lines = [], r = v.rot || 0;
     let pt = { ...m.w };
-    if (vx) { pt.x = vx.x; lines.push({ from: vx, vertical: true }); }
-    if (hy) { pt.y = hy.y; lines.push({ from: hy, vertical: false }); }
-    return { pt, lines };
+    if (vx) lines.push({ from: vx, vertical: true });
+    if (hy) lines.push({ from: hy, vertical: false });
+    if (!r) { if (vx) pt.x = vx.x; if (hy) pt.y = hy.y; return { pt, lines }; }
+    // vista girada: las direcciones horizontal y vertical de la pantalla, en los ejes de la vista
+    let [u, w] = toFrame(r, pt.x, pt.y);
+    if (vx) u = toFrame(r, vx.x, vx.y)[0];
+    if (hy) w = toFrame(r, hy.x, hy.y)[1];
+    const [x, y] = fromFrame(r, u, w);
+    return { pt: G.P(x, y), lines };
   }
 
   // Devuelve {pt, snap, track, polar}

@@ -13,6 +13,11 @@ import { splinePts, interpolate, rebuild as rebuildSpline } from './spline.js';
 import { mlGeom, insertMatrix, tableGeom, DEFAULT_TBLSTYLE, dimTexts, dimStyleOf, DIM_VARS, tolFlags, tolMode } from './entities.js';
 import { sortedElems, justShift, DEFAULT_MLINESTYLE, cutParams } from './mline.js';
 import { arrayEnts } from './arrays.js';
+import { toFrame, fromFrame } from './view.js';
+import { annoEff, ANNO, PAPER_SCALE, factorOfName } from './annoscale.js';
+// Giro de TrazoCAD (ángulo que se ve horizontal, en radianes) ↔ VIEWTWIST de AutoCAD (grados)
+const twistOut = t => +G.deg(G.normAng(-(t || 0))).toFixed(10) % 360;
+const twistIn = d => { const t = G.normAng(-G.rad(d || 0)); return t < 1e-12 || G.TAU - t < 1e-12 ? 0 : t; };
 const { P } = G;
 
 const num = v => (Math.abs(v) < 1e-12 ? 0 : +(+v).toFixed(10));
@@ -30,7 +35,14 @@ const ML_CONTENT_CODE = { mtext: 2, block: 1, none: 0 };
 const MT_ATT = ['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br'];
 const mtextEsc = s => String(s).replace(/\\/g, '\\\\').replace(/{/g, '\\{').replace(/}/g, '\\}').replace(/\n/g, '\\P');
 
+// Los objetos anotativos se escriben con su representación de la escala de anotación del modelo (CANNOSCALE) y, en el
+// papel, a 1:1
 export function writeDXF(doc, version = '2000') {
+  const pa = ANNO.override, n = doc.settings.cannoscale || '1:1';
+  ANNO.override = { name: n, k: factorOfName(doc, n) };
+  try { return writeDXFi(doc, version); } finally { ANNO.override = pa; }
+}
+function writeDXFi(doc, version) {
   const R12 = version === 'R12', V07 = version === '2007';
   const o = [];
   const g = (code, val) => { o.push(String(code), typeof val === 'string' && !V07 ? asciiDxf(val) : String(val)); };
@@ -275,13 +287,13 @@ export function writeDXF(doc, version = '2000') {
     if (ps) g(67, 1);
     g(8, nm(e.layer));
   };
-  // VIEWPORT: v = {cx, cy, w, h (papel), vcx, vcy, vh (modelo), id, status, frozen}
+  // VIEWPORT: v = {cx, cy, w, h (papel), vcx, vcy (centro del modelo en DCS), vh (modelo), tw (VIEWTWIST), id, status, frozen}
   const viewport = (e, ow, v) => {
     const h = common('VIEWPORT', e, ow, 'AcDbViewport');
     xy(0, P(v.cx, v.cy)); g(40, num(v.w)); g(41, num(v.h)); g(68, v.status); g(69, v.id);
     g(12, num(v.vcx)); g(22, num(v.vcy)); g(13, 0); g(23, 0); g(14, 10); g(24, 10); g(15, 10); g(25, 10);
     g(16, 0); g(26, 0); g(36, 1); g(17, 0); g(27, 0); g(37, 0);
-    g(42, 50); g(43, 0); g(44, 0); g(45, num(v.vh)); g(50, 0); g(51, 0); g(72, 1000);
+    g(42, 50); g(43, 0); g(44, 0); g(45, num(v.vh)); g(50, 0); g(51, num(v.tw || 0)); g(72, 1000);
     for (const l of v.frozen || []) if (layerH[l]) g(331, layerH[l]);
     g(90, 32864); g(1, ''); g(281, 0); g(71, 1); g(74, 0);
     g(110, 0); g(120, 0); g(130, 0); g(111, 1); g(121, 0); g(131, 0); g(112, 0); g(122, 1); g(132, 0);
@@ -466,6 +478,7 @@ export function writeDXF(doc, version = '2000') {
     g(294, 0); g(178, 0); g(179, gm.side > 0 ? 1 : 3); g(45, 1);
   };
   const writeEnt = (e, ow) => {
+    e = annoEff(e);
     const z0 = zOff;
     zOff = e.z || 0;
     switch (e.type) {
@@ -521,6 +534,11 @@ export function writeDXF(doc, version = '2000') {
   };
   // Entidades de una presentación: primero la ventana general del papel (id 1), después las del usuario
   const writePaper = (lay, i, ow) => {
+    const pa = ANNO.override;
+    ANNO.override = PAPER_SCALE;
+    try { writePaperI(lay, i, ow); } finally { ANNO.override = pa; }
+  };
+  const writePaperI = (lay, i, ow) => {
     ps = true;
     ENV.layout = lay;
     lastVp[i] = viewport({ layer: '0' }, ow, { cx: lay.w / 2, cy: lay.h / 2, w: lay.w, h: lay.h, vcx: lay.w / 2, vcy: lay.h / 2, vh: lay.h, id: 1, status: 1 });
@@ -528,8 +546,8 @@ export function writeDXF(doc, version = '2000') {
     for (const e of lay.ents) {
       pend = e;
       if (e.type !== 'vport') { writeEnt(e, ow); pend = null; continue; }
-      const w = e.p2.x - e.p1.x, h = e.p2.y - e.p1.y;
-      viewport(e, ow, { cx: (e.p1.x + e.p2.x) / 2, cy: (e.p1.y + e.p2.y) / 2, w, h, vcx: e.cx, vcy: e.cy, vh: h / e.s, id, status: id, frozen: e.frozen });
+      const w = e.p2.x - e.p1.x, h = e.p2.y - e.p1.y, [vcx, vcy] = toFrame(e.twist || 0, e.cx, e.cy);
+      viewport(e, ow, { cx: (e.p1.x + e.p2.x) / 2, cy: (e.p1.y + e.p2.y) / 2, w, h, vcx, vcy, vh: h / e.s, tw: twistOut(e.twist), id, status: id, frozen: e.frozen });
       id++;
     }
     ps = false;
@@ -585,10 +603,12 @@ export function writeDXF(doc, version = '2000') {
   table('VPORT', 1, th => {
     rec('VPORT', th, 'AcDbViewportTableRecord');
     g(2, '*ACTIVE'); g(70, 0); g(10, 0); g(20, 0); g(11, 1); g(21, 1);
-    const c = ext ? P((ext.x1 + ext.x2) / 2, (ext.y1 + ext.y2) / 2) : P(0, 0);
+    // la vista del modelo guardada (ventana en mosaico activa, con su giro) o la extensión
+    const st = doc.viewState?.(), t = st?.tiles?.[st.active || 0], rot = t?.rot || 0;
+    const c = t ? P(...toFrame(rot, t.cx, t.cy)) : ext ? P((ext.x1 + ext.x2) / 2, (ext.y1 + ext.y2) / 2) : P(0, 0);
     g(12, num(c.x)); g(22, num(c.y)); g(13, 0); g(23, 0); g(14, 10); g(24, 10); g(15, 10); g(25, 10);
     g(16, 0); g(26, 0); g(36, 1); g(17, 0); g(27, 0); g(37, 0);
-    g(40, num(ext ? Math.max(ext.y2 - ext.y1, 1) * 1.1 : 300)); g(41, 1.6); g(42, 50); g(43, 0); g(44, 0); g(50, 0); g(51, 0);
+    g(40, num(t?.vh || (ext ? Math.max(ext.y2 - ext.y1, 1) * 1.1 : 300))); g(41, 1.6); g(42, 50); g(43, 0); g(44, 0); g(50, 0); g(51, twistOut(rot));
     g(71, 0); g(72, 100); g(73, 1); g(74, 3); g(75, 0); g(76, 0); g(77, 0); g(78, 0);
   });
   const lts = [['ByBlock', '', []], ['ByLayer', '', []], ...Object.entries(LTYPES).map(([k, v]) => [k === 'CONTINUOUS' ? 'Continuous' : k, v.desc, v.pat])];
@@ -621,8 +641,9 @@ export function writeDXF(doc, version = '2000') {
   table('VIEW', doc.views.length, th => {
     for (const v of doc.views) {
       rec('VIEW', th, 'AcDbViewTableRecord');
-      g(2, nm(v.name)); g(70, v.space === 'model' ? 0 : 1); g(40, num(v.h)); g(10, num(v.cx)); g(20, num(v.cy)); g(41, num(v.w));
-      g(11, 0); g(21, 0); g(31, 1); g(12, 0); g(22, 0); g(32, 0); g(42, 50); g(43, 0); g(44, 0); g(50, 0); g(71, 0);
+      const [dx, dy] = toFrame(v.twist || 0, v.cx, v.cy);
+      g(2, nm(v.name)); g(70, v.space === 'model' ? 0 : 1); g(40, num(v.h)); g(10, num(dx)); g(20, num(dy)); g(41, num(v.w));
+      g(11, 0); g(21, 0); g(31, 1); g(12, 0); g(22, 0); g(32, 0); g(42, 50); g(43, 0); g(44, 0); g(50, twistOut(v.twist)); g(71, 0);
       if (!R12) {
         g(281, 0); g(72, v.ucs ? 1 : 0);
         if (v.ucs) { const a = v.ucs.ang; g(110, num(v.ucs.o.x)); g(120, num(v.ucs.o.y)); g(130, 0); g(111, num(Math.cos(a))); g(121, num(Math.sin(a))); g(131, 0); g(112, num(-Math.sin(a))); g(122, num(Math.cos(a))); g(132, 0); g(79, 0); g(146, 0); }
@@ -1154,7 +1175,8 @@ export function readDXF(text) {
           const c = P(numv(gr, 10), numv(gr, 20)), w = numv(gr, 40), h = numv(gr, 41), vh = numv(gr, 45, h);
           if (!(w > 0 && h > 0 && vh > 0)) break;
           const frozen = gr.d.filter(x => x[0] === 331).map(x => layerByHandle.get(x[1])).filter(Boolean);
-          push({ type: 'vport', p1: P(c.x - w / 2, c.y - h / 2), p2: P(c.x + w / 2, c.y + h / 2), cx: numv(gr, 12), cy: numv(gr, 22), s: h / vh, ...(frozen.length ? { frozen } : {}) });
+          const tw = twistIn(numv(gr, 51)), [mx, my] = fromFrame(tw, numv(gr, 12), numv(gr, 22));
+          push({ type: 'vport', p1: P(c.x - w / 2, c.y - h / 2), p2: P(c.x + w / 2, c.y + h / 2), cx: mx, cy: my, s: h / vh, ...(tw ? { twist: tw } : {}), ...(frozen.length ? { frozen } : {}) });
           break;
         }
         case 'ELLIPSE': {
@@ -1671,10 +1693,15 @@ export function readDXF(text) {
   }
   // SCP con nombre, vistas y SCP actual
   const ucsList = [], views = [];
+  let modelView = null; // vista girada del modelo (*ACTIVE con VIEWTWIST)
   for (const gr of sections.TABLES || []) {
-    if (gr.type === 'UCS' && val(gr, 2)) ucsList.push({ name: val(gr, 2), o: P(numv(gr, 10), numv(gr, 20)), ang: G.normAng(Math.atan2(numv(gr, 21), numv(gr, 11, 1))) });
+    if (gr.type === 'VPORT' && String(val(gr, 2, '')).toUpperCase() === '*ACTIVE' && !modelView) {
+      const tw = twistIn(numv(gr, 51)), [mx, my] = fromFrame(tw, numv(gr, 12), numv(gr, 22));
+      if (tw) modelView = { cx: mx, cy: my, vh: numv(gr, 40, 0), rot: tw };
+    } else if (gr.type === 'UCS' && val(gr, 2)) ucsList.push({ name: val(gr, 2), o: P(numv(gr, 10), numv(gr, 20)), ang: G.normAng(Math.atan2(numv(gr, 21), numv(gr, 11, 1))) });
     else if (gr.type === 'VIEW' && val(gr, 2)) {
-      const v = { name: val(gr, 2), space: 'model', cx: numv(gr, 10), cy: numv(gr, 20), w: numv(gr, 41, 1), h: numv(gr, 40, 1) };
+      const tw = twistIn(numv(gr, 50)), [vx, vy] = fromFrame(tw, numv(gr, 10), numv(gr, 20));
+      const v = { name: val(gr, 2), space: 'model', cx: vx, cy: vy, w: numv(gr, 41, 1), h: numv(gr, 40, 1), ...(tw ? { twist: tw } : {}) };
       const x = xdataText(gr, 'VISTA');
       let meta = null;
       try { meta = x ? JSON.parse(x) : null; } catch { /* datos propios dañados */ }
@@ -1688,7 +1715,7 @@ export function readDXF(text) {
   const uname = (() => { const i = pairs.findIndex(p => p[0] === 9 && p[1] === '$UCSNAME'); return i >= 0 && pairs[i + 1]?.[0] === 2 ? pairs[i + 1][1] : ''; })();
   const ucs = uo && ux && (Math.hypot(uo.x, uo.y) > 1e-12 || Math.abs(Math.atan2(ux.y, ux.x)) > 1e-12) ? { o: uo, ang: G.normAng(Math.atan2(ux.y, ux.x)), ...(uname && ucsList.some(u => u.name === uname) ? { name: uname } : {}) } : null;
   return { layers: [...layers.values()], ents, blocks: outBlocks, textStyles, dimStyles, mleaderStyles, mlineStyles, tableStyles, layouts: outLayouts, groups: groupsOut, patterns, layerStates, insBase: headerPoint(pairs, '$INSBASE') || P(0, 0),
-    psltscale: headerInt(pairs, '$PSLTSCALE'), modelPlotStyle, ucs, ucsList, views, skipped };
+    psltscale: headerInt(pairs, '$PSLTSCALE'), modelPlotStyle, ucs, ucsList, views, modelView, skipped };
 }
 // Entero de una variable de cabecera (código 9 seguido de 70), o null
 function headerInt(pairs, name) {
