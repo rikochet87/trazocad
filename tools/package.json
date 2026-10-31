@@ -4,9 +4,13 @@
   "type": "module",
   "description": "Pruebas de TrazoCAD en Chrome sin interfaz (la app no tiene dependencias; esto sólo hace falta para probar)",
   "scripts": {
-    "test": "node test-all.mjs"
+    "test": "node test-all.mjs",
+    "typecheck": "tsc -p ../jsconfig.json"
   },
   "dependencies": {
     "puppeteer-core": "^23.11.1"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
   }
 }
