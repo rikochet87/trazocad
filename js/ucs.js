@@ -2,13 +2,17 @@
 // SCP con nombre, SCP previos y alineación con objetos o tres puntos. El SCP sólo actúa en el espacio modelo.
 import * as G from './geom.js';
 import { primsOf } from './entities.js';
+import { hasOrigin, inModelSpace } from './origin.js';
 
 export const WORLD = Object.freeze({ o: Object.freeze({ x: 0, y: 0 }), ang: 0 });
 const PREV_MAX = 10;
 
-export const isWorld = u => !u || (Math.abs(u.o.x) < 1e-12 && Math.abs(u.o.y) < 1e-12 && Math.abs(Math.sin(u.ang)) < 1e-12 && Math.cos(u.ang) > 0);
+export const isWorld = u => !u || !!u.world || (Math.abs(u.o.x) < 1e-12 && Math.abs(u.o.y) < 1e-12 && Math.abs(Math.sin(u.ang)) < 1e-12 && Math.cos(u.ang) > 0);
+// SCP universal del espacio actual: en el modelo con origen local (origin.js), su origen está en −origen, de modo que las
+// coordenadas que se ven y se escriben son las reales
+export const wcsOf = doc => (hasOrigin(doc) && inModelSpace(doc) ? { o: G.P(-doc.origin.x, -doc.origin.y), ang: 0, world: true } : WORLD);
 // SCP que se usa en el espacio actual (en el papel y en el editor de bloques, el universal)
-export const ucsOf = doc => (doc.space === 'model' && doc.ucs) || WORLD;
+export const ucsOf = doc => (doc.space === 'model' && doc.ucs) || wcsOf(doc);
 
 // Universal → SCP y SCP → universal
 export function toUcs(u, p) {

@@ -10,9 +10,35 @@ import { toFrame, fromFrame } from './view.js';
 import { annoEff, ANNO, vpScale, PAPER_SCALE } from './annoscale.js';
 import { PdfContext, buildPdf } from './pdf.js';
 import { xrefNames, restoreXrefs } from './xref.js';
+import { realDoc, shiftEnt, entsBox, isFar, roundOrigin } from './origin.js';
 import { plotStyler } from './plotstyles.js';
 
 const AUTOSAVE_KEY = 'trazocad.autosave';
+// Autoguardado de los dibujos grandes (más de lo que cabe en localStorage): en IndexedDB
+const IDB_NAME = 'trazocad-autoguardado';
+function idb(mode, fn) {
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open(IDB_NAME, 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+    rq.onerror = () => rej(rq.error);
+    rq.onsuccess = () => {
+      const db = rq.result, tx = db.transaction('kv', mode), r = fn(tx.objectStore('kv'));
+      tx.oncomplete = () => { db.close(); res(r?.result); };
+      tx.onerror = () => { db.close(); rej(tx.error); };
+    };
+  });
+}
+// Mover los objetos del DXF al origen local (coordenadas grandes): objetos, ventanas gráficas, vistas, SCP y punto base
+function shiftDXF(r, o) {
+  const dx = -o.x, dy = -o.y, sp = p => (p ? { ...p, x: p.x + dx, y: p.y + dy } : p);
+  for (const e of r.ents) shiftEnt(e, dx, dy);
+  for (const l of r.layouts) for (const e of l.ents) if (e.type === 'vport') { e.cx += dx; e.cy += dy; }
+  for (const v of r.views || []) { v.cx += dx; v.cy += dy; }
+  if (r.ucs) r.ucs = { ...r.ucs, o: sp(r.ucs.o) };
+  for (const u of r.ucsList || []) u.o = sp(u.o);
+  r.insBase = sp(r.insBase || { x: 0, y: 0 });
+  if (r.modelView) { r.modelView.cx += dx; r.modelView.cy += dy; }
+}
 const fsAccess = 'showSaveFilePicker' in window;
 
 function download(blob, name) {
@@ -35,23 +61,65 @@ export class IO {
     let t = null;
     app.doc.on(kind => {
       if (kind === 'reset') return;
-      clearTimeout(t); t = setTimeout(() => this.autosave(), 800);
+      clearTimeout(t); t = setTimeout(() => this.autosave(), app.doc.model.length > 20000 ? 8000 : 800); // los grandes, en reposo
     });
   }
 
   autosave() {
-    try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(this.app.doc.toJSON())); } catch { /* cuota llena o sin almacenamiento */ }
+    let s;
+    try { s = JSON.stringify(this.app.doc.toJSON()); } catch { return; }
+    if (s.length < 4e6) {
+      try { localStorage.setItem(AUTOSAVE_KEY, s); return; } catch { /* cuota llena: a IndexedDB */ }
+    }
+    try { localStorage.setItem(AUTOSAVE_KEY, 'idb'); idb('readwrite', st => st.put(s, 'dibujo')).catch(() => {}); } catch { /* sin almacenamiento */ }
   }
   restore() {
     try {
       const s = localStorage.getItem(AUTOSAVE_KEY);
       if (!s) return false;
+      if (s === 'idb') { this.restoreIdb(); return false; } // dibujo grande: se recupera de IndexedDB al terminar de cargar
       const o = JSON.parse(s);
       if (!(o.model || o.ents)?.length && !o.layouts?.length) return false;
       this.app.doc.fromJSON(o);
       this.app.doc.dirty = true;
       return true;
     } catch { return false; }
+  }
+
+  async restoreIdb() {
+    try {
+      const s = await idb('readonly', st => st.get('dibujo'));
+      if (!s || this.app.doc.model.length || this.app.doc.dirty) return;
+      const o = JSON.parse(s);
+      if (!(o.model || o.ents)?.length) return;
+      this.app.doc.fromJSON(o);
+      this.app.doc.dirty = true;
+      this.app.afterLoad();
+      this.app.print(`Se ha recuperado el dibujo autoguardado (${this.app.doc.model.length} objetos).`);
+      await this.restoreXrefs();
+    } catch { /* sin IndexedDB */ }
+  }
+
+  // DXF en segundo plano (Web Worker de módulo, dxfworker.js) con barra de progreso; si el navegador no admite workers
+  // de módulo, en el hilo principal
+  async readDXFFile(file) {
+    const prog = this.app.ui.progress(`Abriendo ${file.name}`);
+    try {
+      const buf = await file.arrayBuffer();
+      const r = await new Promise((res, rej) => {
+        let w;
+        try { w = new Worker(new URL('./dxfworker.js', import.meta.url), { type: 'module' }); } catch { res(null); return; }
+        w.onmessage = ev => {
+          const d = ev.data;
+          if (d.progress != null) { prog.set(d.progress); return; }
+          w.terminate();
+          if (d.error) rej(new Error(d.error)); else res(d.result);
+        };
+        w.onerror = ev => { ev.preventDefault?.(); w.terminate(); res(null); };
+        w.postMessage({ buf }, [buf]);
+      });
+      return r || readDXF(await this.readText(file));
+    } finally { prog.done(); }
   }
 
   async confirmDiscard() {
@@ -112,11 +180,16 @@ export class IO {
   }
 
   async loadFile(file, handle = null) {
-    const text = await this.readText(file), doc = this.app.doc;
+    const dxf = /\.dxf$/i.test(file.name), doc = this.app.doc;
     try {
-      if (/\.dxf$/i.test(file.name)) {
-        const r = readDXF(text);
+      const text = dxf ? null : await this.readText(file);
+      if (dxf) {
+        const r = await this.readDXFFile(file);
+        // Coordenadas grandes (de proyección): origen local en el centro redondeado; el usuario sigue viendo las reales
+        const box = entsBox(r.ents), org = isFar(box) ? roundOrigin(box) : null;
+        if (org) shiftDXF(r, org);
         doc.reset();
+        if (org) doc.origin = org;
         doc.layers = r.layers;
         doc.blocks = r.blocks;
         for (const s of r.textStyles) if (!doc.textStyles.some(t => t.name === s.name)) doc.textStyles.push(s);
@@ -135,7 +208,8 @@ export class IO {
         for (const s of r.mlineStyles || []) { const i = doc.mlineStyles.findIndex(x => x.name.toUpperCase() === s.name.toUpperCase()); if (i >= 0) doc.mlineStyles[i] = s; else doc.mlineStyles.push(s); }
         const byHandle = new Map(); // identificador DXF → objeto importado (para los grupos)
         const put = (e, target) => { const h = e._h; delete e._h; doc.add(e, target); if (h) byHandle.set(h, e.id); };
-        for (const e of r.ents) put(e);
+        doc.quiet = true; // sin avisos por cada objeto (con 100 000, la interfaz se pondría al día 100 000 veces)
+        try { for (const e of r.ents) put(e); } finally { doc.quiet = false; }
         for (const l of r.layouts) {
           const lay = { name: l.name, paper: l.paper, w: l.w, h: l.h, ents: [], ...(l.plotStyle ? { plotStyle: l.plotStyle } : {}) };
           doc.layouts.push(lay);
@@ -150,6 +224,7 @@ export class IO {
         doc.name = baseName(file.name);
         this.handle = null;
         this.app.print(`DXF importado: ${r.ents.length} objetos, ${r.layers.length} capas, ${Object.keys(r.blocks).length} bloques${r.layouts.length ? `, ${r.layouts.length} presentación(es)` : ''}${r.skipped ? `, ${r.skipped} entidades no compatibles omitidas` : ''}.`);
+        if (org) this.app.print(`Coordenadas grandes: origen local del dibujo en ${org.x}, ${org.y} (las coordenadas que se ven y se exportan son las reales; LOCALORIGIN lo cambia).`);
       } else {
         const o = JSON.parse(text);
         if (o.app !== 'TrazoCAD') throw new Error('Formato no reconocido');
@@ -204,7 +279,7 @@ export class IO {
 
   async exportDXF(version = '2007') {
     const doc = this.app.doc;
-    const h = await this.writeFile(writeDXF(doc, version), `${doc.name}.dxf`, 'application/dxf', '.dxf', 'DXF', false);
+    const h = await this.writeFile(writeDXF(realDoc(doc), version), `${doc.name}.dxf`, 'application/dxf', '.dxf', 'DXF', false);
     if (h) this.app.print(`Exportado a DXF ${version}: ${doc.name}.dxf (${version === 'R12' || !doc.layouts.length ? 'espacio modelo y bloques' : `modelo, bloques y ${doc.layouts.length} presentación(es)`}${version === '2007' ? '; directrices múltiples y degradados incluidos' : ''}).`);
   }
 
@@ -360,7 +435,7 @@ export class IO {
           this.ltk = k0 * vpLtk(doc2, e); // escala de tipo de línea propia de la ventana
           const pa = ANNO.override;
           ANNO.override = vpScale(doc2, e);
-          try { this.svgEnts(this.app.spatial.of(doc2.model, doc2.ver).query(m, true), lwScale / sc, out, doc2.visibleIn(e)); } finally { ANNO.override = pa; }
+          try { this.svgEnts(this.app.spatial.of(doc2.model, doc2).query(m, true), lwScale / sc, out, doc2.visibleIn(e)); } finally { ANNO.override = pa; }
           this.ltk = k0;
           out.push('</g></g>');
           out.push(`<rect x="${n5(e.p1.x)}" y="${n5(e.p1.y)}" width="${n5(e.p2.x - e.p1.x)}" height="${n5(e.p2.y - e.p1.y)}" ${s}/>`);

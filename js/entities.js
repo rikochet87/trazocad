@@ -14,7 +14,8 @@ const D = () => ENV.doc;
 export const TXT_K = 1.4; // px de fuente por unidad de altura de mayúscula
 export const FONT = 'Arial, Helvetica, sans-serif';
 export const FONTS = ['Arial', 'Arial Narrow', 'Helvetica', 'Verdana', 'Tahoma', 'Segoe UI', 'Trebuchet MS', 'Times New Roman', 'Georgia', 'Courier New', 'Consolas', 'monospace'];
-const mctx = document.createElement('canvas').getContext('2d');
+// Contexto para medir textos (en un Web Worker, como el que lee los DXF, no hay document)
+const mctx = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : new OffscreenCanvas(1, 1).getContext('2d');
 const fontCss = (style, px) => `${px}px "${style.font}", ${FONT}`;
 const styleOf = name => (D()?.textStyle ? D().textStyle(name) : { font: 'Arial', width: 1, oblique: 0 });
 export function textWidth(str, h, style) {
@@ -257,8 +258,9 @@ function dimPartsBase(e) {
   }
   if (e.kind === 'ord') {
     // Cota de coordenadas: directriz desde el punto p1 hasta p3. Directriz horizontal → cota Y; vertical → cota X.
+    // org: origen de las coordenadas (el universal del dibujo al crearla; con origen local, −origen)
     const f = e.p1, q = e.p3, axis = e.axis || (Math.abs(q.x - f.x) >= Math.abs(q.y - f.y) ? 'y' : 'x');
-    const val = axis === 'x' ? f.x : f.y;
+    const val = axis === 'x' ? f.x - (e.org?.x || 0) : f.y - (e.org?.y || 0);
     const sw = axis === 'x' ? (p => P(p.y, p.x)) : (p => p); // trabaja siempre como si la directriz fuera horizontal
     const F = sw(f), Q = sw(q), s = Math.sign(Q.x - F.x) || 1, L = Math.abs(Q.x - F.x), a = P(F.x + s * exo, F.y);
     if (Math.abs(Q.y - F.y) < 1e-9) { if (L > exo) lines.push([sw(a), q]); }
@@ -468,9 +470,12 @@ export function blockEnts(e) {
 const num = (label, get, set) => ({ label, type: 'num', get, set });
 const angp = (label, get, set) => ({ label, type: 'ang', get, set });
 const ro = (label, get, type = 'num') => ({ label, type, get, ro: true });
+// Coordenadas en las propiedades: las reales (con el origen local del modelo, origin.js)
+const ORG0 = { x: 0, y: 0 };
+const org = () => { const d = D(); return d?.origin && (d.space === 'model' || (d.activeVp != null && d.space !== 'bedit')) ? d.origin : ORG0; };
 const ptProps = (name, key) => [
-  num(`${name} X`, e => e[key].x, (e, v) => { e[key] = P(v, e[key].y); }),
-  num(`${name} Y`, e => e[key].y, (e, v) => { e[key] = P(e[key].x, v); }),
+  num(`${name} X`, e => e[key].x + org().x, (e, v) => { e[key] = P(v - org().x, e[key].y); }),
+  num(`${name} Y`, e => e[key].y + org().y, (e, v) => { e[key] = P(e[key].x, v - org().y); }),
 ];
 const sel = (label, options, get, set) => ({ label, type: 'select', options, get, set });
 
@@ -481,7 +486,7 @@ TYPES.line = {
   name: 'Línea',
   prims: e => [{ k: 's', a: e.p1, b: e.p2 }],
   bbox: e => bbPts([e.p1, e.p2]),
-  snaps: e => ({ end: [e.p1, e.p2], mid: [G.mid(e.p1, e.p2)] }),
+  snaps: e => ({ end: [e.z1 ? { ...e.p1, z: e.z1 } : e.p1, e.z2 ? { ...e.p2, z: e.z2 } : e.p2], mid: [G.mid(e.p1, e.p2)] }), // con la Z de cada extremo
   grips: e => [e.p1, G.mid(e.p1, e.p2), e.p2],
   moveGrip(e, i, p) {
     if (i === 0) e.p1 = p; else if (i === 2) e.p2 = p;
@@ -556,7 +561,8 @@ TYPES.pline = {
     e.pts = e.pts.map(p => Mx.ap(m, p));
     if (e.bulges && Mx.det(m) < 0) e.bulges = e.bulges.map(b => -b);
   },
-  path(c, e) {
+  path(c, e, R) {
+    if (!e.bulges?.some(b => b)) { simplePath(c, e.pts, R, e.closed); return; } // tramos rectos (curvas de nivel)
     c.moveTo(e.pts[0].x, e.pts[0].y);
     for (const pc of plPieces(e)) {
       if (!pc.bulge) c.lineTo(pc.b.x, pc.b.y);
@@ -616,12 +622,7 @@ TYPES.spline = {
     e.ctrl = e.ctrl.map((q, j) => (j === i || (i < w && j === n - w + i) ? p : q));
   },
   xform(e, m) { for (const k of ['fit', 'cv', 'ctrl']) if (e[k]) e[k] = e[k].map(q => Mx.ap(m, q)); },
-  path(c, e) {
-    const p = splinePts(e);
-    c.moveTo(p[0].x, p[0].y);
-    for (let i = 1; i < p.length; i++) c.lineTo(p[i].x, p[i].y);
-    if (e.closed) c.closePath();
-  },
+  path(c, e, R) { simplePath(c, splinePts(e), R, e.closed); },
   props: e => [
     ro('Método', x => (x.fit ? 'Ajuste' : x.cv ? 'Vértices de control' : 'Control (sin puntos de ajuste)'), 'text'),
     e.fit || e.cv
@@ -1210,7 +1211,7 @@ function imageOf(src) {
   let im = IMG_CACHE.get(src);
   if (!im) {
     im = new Image();
-    im.onload = () => ENV.doc?.emit('change');
+    im.onload = () => { ENV.onImageLoad?.(); ENV.doc?.emit('change'); };
     im.src = src;
     IMG_CACHE.set(src, im);
   }
@@ -1452,6 +1453,94 @@ export function applyDash(c, pat, k, R) {
   c.lineCap = d.length && pat.includes(0) ? 'round' : 'butt';
 }
 
+// ---------- Polilínea 3D y cara 3D ----------
+// Vértices {x, y, z}. Se dibujan en planta (proyección sobre el plano XY); la Z se ve y se edita en Propiedades y LIST,
+// se conserva al copiar, desplazar, girar o escalar (en planta) y viaja en el DXF (POLYLINE 3D y 3DFACE).
+const p3 = (q, z) => ({ x: q.x, y: q.y, z: +z || 0 });
+const len3 = (a, b) => Math.hypot(b.x - a.x, b.y - a.y, (b.z || 0) - (a.z || 0));
+const mid3 = (a, b) => p3(G.mid(a, b), ((a.z || 0) + (b.z || 0)) / 2);
+// Simplificación al dibujar en pantalla (curvas de nivel con miles de vértices): se saltan los vértices a menos de medio
+// píxel del último dibujado. No afecta a la impresión ni a la exportación.
+// En las teselas (R.clip) se saltan además los tramos que quedan fuera de la tesela, si la línea es continua (con un tipo
+// de línea, los trazos se descolocarían entre teselas).
+export function simplePath(c, pts, R, closed) {
+  const n = pts.length;
+  if (!n) return;
+  c.moveTo(pts[0].x, pts[0].y);
+  if (n > 32 && ENV.onScreen && R?.scale) {
+    const tol = 0.5 / R.scale, k = R.clip && !c.getLineDash().length ? R.clip : null;
+    let lx = pts[0].x, ly = pts[0].y, up = false;
+    for (let i = 1; i < n; i++) {
+      const q = pts[i];
+      if (i < n - 1 && Math.abs(q.x - lx) < tol && Math.abs(q.y - ly) < tol) continue;
+      if (k && ((q.x < k.x1 && lx < k.x1) || (q.x > k.x2 && lx > k.x2) || (q.y < k.y1 && ly < k.y1) || (q.y > k.y2 && ly > k.y2))) up = true;
+      else { if (up) { c.moveTo(lx, ly); up = false; } c.lineTo(q.x, q.y); }
+      lx = q.x; ly = q.y;
+    }
+    if (closed && !k) c.closePath();
+    else if (closed) { if (up) c.moveTo(lx, ly); c.lineTo(pts[0].x, pts[0].y); }
+    return;
+  }
+  for (let i = 1; i < n; i++) c.lineTo(pts[i].x, pts[i].y);
+  if (closed) c.closePath();
+}
+const segs3 = (p, closed) => { const out = []; for (let i = 1; i < p.length; i++) out.push({ k: 's', a: p[i - 1], b: p[i] }); if (closed && p.length > 2) out.push({ k: 's', a: p[p.length - 1], b: p[0] }); return out; };
+const VSEL = new WeakMap(); // vértice que se edita en Propiedades
+const vsel = e => Math.min(VSEL.get(e) || 0, e.pts.length - 1);
+const vtxProp = (axis, label) => num(label, e => e.pts[vsel(e)][axis] ?? 0, (e, v) => {
+  const i = vsel(e), q = e.pts[i];
+  e.pts = e.pts.map((x, k) => (k === i ? p3(axis === 'x' ? { x: v, y: q.y } : axis === 'y' ? { x: q.x, y: v } : q, axis === 'z' ? v : q.z) : x));
+});
+TYPES.pline3d = {
+  name: 'Polilínea 3D',
+  prims: e => segs3(e.pts, e.closed),
+  bbox: e => bbPts(e.pts),
+  snaps: e => ({ end: e.pts, mid: segs3(e.pts, e.closed).map(s => mid3(s.a, s.b)) }),
+  grips: e => e.pts,
+  moveGrip(e, i, p) { e.pts = e.pts.map((q, k) => (k === i ? p3(p, p.z ?? q.z) : q)); },
+  xform(e, m) { e.pts = e.pts.map(q => p3(Mx.ap(m, q), q.z)); },
+  path(c, e, R) { simplePath(c, e.pts, R, e.closed && e.pts.length > 2); },
+  props: [
+    { label: 'Cerrada', type: 'bool', get: e => !!e.closed, set: (e, v) => { if (v) e.closed = true; else delete e.closed; } },
+    ro('Vértices', e => e.pts.length, 'int'),
+    num('Vértice', e => vsel(e) + 1, (e, v) => { VSEL.set(e, Math.max(0, Math.min(e.pts.length - 1, Math.round(v) - 1))); }),
+    // las coordenadas del vértice, reales (con el origen local)
+    num('Vértice X', e => e.pts[vsel(e)].x + org().x, (e, v) => vtxProp('x').set(e, v - org().x)),
+    num('Vértice Y', e => e.pts[vsel(e)].y + org().y, (e, v) => vtxProp('y').set(e, v - org().y)),
+    vtxProp('z', 'Vértice Z'),
+    ro('Longitud 3D', e => segs3(e.pts, e.closed).reduce((s, q) => s + len3(q.a, q.b), 0)),
+    ro('Longitud en planta', e => segs3(e.pts, e.closed).reduce((s, q) => s + G.dist(q.a, q.b), 0)),
+    ro('Z mínima', e => Math.min(...e.pts.map(q => q.z || 0))),
+    ro('Z máxima', e => Math.max(...e.pts.map(q => q.z || 0))),
+  ],
+};
+// Cara 3D: cuatro vértices (en un triángulo el cuarto repite el tercero) y aristas invisibles (hide[i]: la arista que sale
+// del vértice i)
+const faceSegs = e => closedSegs(e.pts).filter((s, i) => !e.hide?.[i] && !G.eqPt(s.a, s.b, 1e-12));
+TYPES.face3d = {
+  name: 'Cara 3D',
+  prims: faceSegs,
+  selPrims: e => closedSegs(e.pts),
+  bbox: e => bbPts(e.pts),
+  snaps: e => ({ end: e.pts, mid: faceSegs(e).map(s => mid3(s.a, s.b)) }),
+  grips: e => e.pts,
+  moveGrip(e, i, p) { e.pts = e.pts.map((q, k) => (k === i ? p3(p, p.z ?? q.z) : q)); },
+  xform(e, m) { e.pts = e.pts.map(q => p3(Mx.ap(m, q), q.z)); },
+  path(c, e) { for (const s of faceSegs(e)) { c.moveTo(s.a.x, s.a.y); c.lineTo(s.b.x, s.b.y); } },
+  props: [
+    ...[0, 1, 2, 3].flatMap(i => [
+      num(`Vértice ${i + 1} X`, e => e.pts[i].x + org().x, (e, v) => { e.pts = e.pts.map((q, k) => (k === i ? p3({ x: v - org().x, y: q.y }, q.z) : q)); }),
+      num(`Vértice ${i + 1} Y`, e => e.pts[i].y + org().y, (e, v) => { e.pts = e.pts.map((q, k) => (k === i ? p3({ x: q.x, y: v - org().y }, q.z) : q)); }),
+      num(`Vértice ${i + 1} Z`, e => e.pts[i].z || 0, (e, v) => { e.pts = e.pts.map((q, k) => (k === i ? p3(q, v) : q)); }),
+    ]),
+    ...[0, 1, 2, 3].map(i => ({ label: `Arista ${i + 1} visible`, type: 'bool', get: e => !e.hide?.[i], set: (e, v) => { const h = [0, 1, 2, 3].map(k => (k === i ? !v : !!e.hide?.[k])); if (h.some(Boolean)) e.hide = h; else delete e.hide; } })),
+    ro('Área', e => { // en el espacio: dos triángulos
+      const [a, b, c2, d] = e.pts, cr = (u, v, w) => { const x = [v.x - u.x, v.y - u.y, (v.z || 0) - (u.z || 0)], y = [w.x - u.x, w.y - u.y, (w.z || 0) - (u.z || 0)]; return Math.hypot(x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]) / 2; };
+      return cr(a, b, c2) + cr(a, c2, d);
+    }),
+  ],
+};
+
 // ---------- Línea múltiple ----------
 const mlStyle = e => mlStyleOf(D(), e.mlstyle);
 const mlcacheG = new WeakMap();
@@ -1608,8 +1697,8 @@ TYPES.vport = {
   props: [
     sel('Escala estándar', () => [...STD_SCALES.map(([l, v]) => [String(v), l]), ['custom', 'Personalizada']], e => (STD_SCALES.find(([, v]) => Math.abs(v - e.s) / v < 1e-6) ? String(STD_SCALES.find(([, v]) => Math.abs(v - e.s) / v < 1e-6)[1]) : 'custom'), (e, v) => { if (v !== 'custom') e.s = +v; }),
     num('Escala (papel/modelo)', e => e.s, (e, v) => { if (v > 0) e.s = v; }),
-    num('Centro modelo X', e => e.cx, (e, v) => { e.cx = v; }),
-    num('Centro modelo Y', e => e.cy, (e, v) => { e.cy = v; }),
+    num('Centro modelo X', e => e.cx + (D()?.origin?.x || 0), (e, v) => { e.cx = v - (D()?.origin?.x || 0); }),
+    num('Centro modelo Y', e => e.cy + (D()?.origin?.y || 0), (e, v) => { e.cy = v - (D()?.origin?.y || 0); }),
     // Giro de la vista del modelo (VIEWTWIST de la ventana): la dirección del modelo con este ángulo se ve horizontal
     angp('Giro', e => e.twist || 0, (e, v) => setTwist(e, v)),
     ro('Ancho', e => e.p2.x - e.p1.x), ro('Alto', e => e.p2.y - e.p1.y),
@@ -1668,7 +1757,15 @@ const ANNO_PROPS = [
   { label: 'Anotativo', type: 'bool', get: e => isAnno(e), set: (e, v) => setAnnotative(e, !!v) },
   ro('Escalas de anotación', e => (isAnno(e) ? e.anno.join(', ') : '—'), 'text'),
 ];
-export const propsOf = e => { const p = TYPES[e.type].props, list = typeof p === 'function' ? p(e) : p; return ANNO_TYPES.has(e.type) ? [...list, ...ANNO_PROPS] : list; };
+// Cota Z: elevación de los objetos planos y Z de los extremos de las líneas (las polilíneas 3D y las caras 3D, en sus vértices)
+export const ELEV_TYPES = new Set(['circle', 'arc', 'pline', 'ellipse', 'spline', 'point', 'text', 'mtext', 'attdef', 'insert', 'hatch', 'mline', 'region']);
+const zNum = (label, k) => num(label, e => e[k] || 0, (e, v) => { if (v) e[k] = v; else delete e[k]; });
+const Z_PROPS = { line: [zNum('Inicio Z', 'z1'), zNum('Fin Z', 'z2')], other: [zNum('Elevación', 'elev')] };
+export const propsOf = e => {
+  const p = TYPES[e.type].props, list = typeof p === 'function' ? p(e) : p;
+  const z = e.type === 'line' ? Z_PROPS.line : ELEV_TYPES.has(e.type) ? Z_PROPS.other : [];
+  return ANNO_TYPES.has(e.type) ? [...list, ...z, ...ANNO_PROPS] : [...list, ...z];
+};
 
 export function describe(e) {
   const T = TYPES[e.type], out = [`${T.name}  Capa: "${e.layer}"`];

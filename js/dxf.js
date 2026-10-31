@@ -150,7 +150,32 @@ function writeDXFi(doc, version) {
     if (!R12 && subclass) g(100, subclass);
     return h;
   };
-  const line = (e, a, b, ow) => { common('LINE', e, ow, 'AcDbLine'); xy(0, a); xy(1, b); };
+  const line = (e, a, b, ow) => {
+    common('LINE', e, ow, 'AcDbLine');
+    if (e.type !== 'line' || e.p1 !== a) { xy(0, a); xy(1, b); return; }
+    const z = zOff; // Z de cada extremo
+    zOff = z + (e.z1 || 0); xy(0, a);
+    zOff = z + (e.z2 || 0); xy(1, b);
+    zOff = z;
+  };
+  // Polilínea 3D: POLYLINE con el indicador 8 y vértices 3D (32)
+  const poly3d = (e, ow) => {
+    const h = common('POLYLINE', e, ow, 'AcDb3dPolyline');
+    g(66, 1); xy(0, P(0, 0)); g(70, 8 | (e.closed ? 1 : 0));
+    for (const q of e.pts) {
+      common('VERTEX', e, R12 ? ow : h, 'AcDbVertex');
+      if (!R12) g(100, 'AcDb3dPolylineVertex');
+      g(10, num(q.x)); g(20, num(q.y)); g(30, num((q.z || 0) + zOff)); g(70, 32);
+    }
+    common('SEQEND', e, R12 ? ow : h);
+  };
+  // Cara 3D: cuatro vértices y aristas invisibles (bits del código 70)
+  const face3d = (e, ow) => {
+    common('3DFACE', e, ow, 'AcDbFace');
+    e.pts.forEach((q, k) => { g(10 + k, num(q.x)); g(20 + k, num(q.y)); g(30 + k, num((q.z || 0) + zOff)); });
+    const f = (e.hide || []).reduce((s, h, k) => s | (h ? 1 << k : 0), 0);
+    if (f) g(70, f);
+  };
   const arc = (e, c, r, a1, a2, ow) => { common('ARC', e, ow, 'AcDbCircle'); xy(0, c); g(40, num(r)); if (!R12) g(100, 'AcDbArc'); g(50, num(G.deg(G.normAng(a1)))); g(51, num(G.deg(G.normAng(a2)))); };
   const poly = (e, pts, closed, bulges, ow) => {
     if (R12) {
@@ -160,6 +185,7 @@ function writeDXFi(doc, version) {
       return;
     }
     common('LWPOLYLINE', e, ow, 'AcDbPolyline'); g(90, pts.length); g(70, closed ? 1 : 0); g(43, 0);
+    if (zOff) g(38, num(zOff)); // elevación
     pts.forEach((p, i) => { g(10, num(p.x)); g(20, num(p.y)); if (bulges?.[i]) g(42, num(bulges[i])); });
   };
   // Parte común de TEXT, ATTDEF y ATTRIB (subclase AcDbText)
@@ -342,7 +368,7 @@ function writeDXFi(doc, version) {
     const d = dimParts(e), [bname] = dimBlocks.get(e), box = textBox(d.text), tm = G.mid(box[0], box[2]);
     const ang2 = e.kind === 'ang' && e.l1, type = e.kind === 'ang' ? (ang2 ? 2 : 5) : DIM_TYPE[e.kind];
     const dir = e.kind === 'rad' || e.kind === 'dia' ? G.norm(G.sub(e.p3, e.p1)) : null, r = dir ? G.dist(e.p1, e.p2) : 0;
-    const def = { lin: d.d2, ali: d.d2, rad: e.p1, dia: dir && G.sub(e.p1, G.mul(dir, r)), ord: P(0, 0), ang: ang2 ? e.l2[1] : e.p3 }[e.kind];
+    const def = { lin: d.d2, ali: d.d2, rad: e.p1, dia: dir && G.sub(e.p1, G.mul(dir, r)), ord: e.org || P(0, 0), ang: ang2 ? e.l2[1] : e.p3 }[e.kind];
     common('DIMENSION', e, ow, 'AcDbDimension');
     g(2, bname); xy(0, def || e.p3); xy(1, tm);
     g(70, type | 32 | 128 | (e.kind === 'ord' && (d.axis === 'x') ? 64 : 0));
@@ -480,8 +506,10 @@ function writeDXFi(doc, version) {
   const writeEnt = (e, ow) => {
     e = annoEff(e);
     const z0 = zOff;
-    zOff = e.z || 0;
+    zOff = (e.z || 0) + (e.elev || 0); // nivel de una matriz y elevación del objeto
     switch (e.type) {
+      case 'pline3d': poly3d(e, ow); break;
+      case 'face3d': face3d(e, ow); break;
       case 'mleader': if (V07 && (e.content !== 'block' || balloonBlk.size)) multileader(e, ow); else leader(e, ow); break;
       case 'table': if (tblBlocks.has(e)) acadTable(e, ow); else for (const x of explodeEntity(e)) writeEnt(x, ow); break;
       case 'mline': mline(e, ow); break;
@@ -874,6 +902,17 @@ function writeDXFi(doc, version) {
 }
 
 // ================= IMPORTAR =================
+// Cota Z al importar: Z de los extremos de las líneas (30, 31) y elevación de los objetos planos (30; 38 en LWPOLYLINE)
+const Z_IN = new Set(['circle', 'arc', 'pline', 'ellipse', 'point', 'text', 'mtext', 'attdef', 'insert', 'hatch']);
+function zIn(gr, e) {
+  if (e.type === 'line' && gr.type === 'LINE') {
+    const z1 = numv(gr, 30), z2 = numv(gr, 31);
+    return { ...(z1 ? { z1 } : {}), ...(z2 ? { z2 } : {}) };
+  }
+  if (!Z_IN.has(e.type) || 'elev' in e) return {};
+  const z = gr.type === 'LWPOLYLINE' ? numv(gr, 38) : ['CIRCLE', 'ARC', 'POINT', 'TEXT', 'ATTRIB', 'ATTDEF', 'MTEXT', 'INSERT', 'ELLIPSE', 'POLYLINE', 'HATCH'].includes(gr.type) ? numv(gr, 30) : 0;
+  return z && isFinite(z) ? { elev: z } : {};
+}
 function groups(pairs, from, to) {
   const out = [];
   let cur = null;
@@ -987,10 +1026,12 @@ function mtextPlain(s) {
   return s.replace(/\u0001/g, '\\').replace(/\u0002/g, '{').replace(/\u0003/g, '}');
 }
 
-export function readDXF(text) {
+// onProgress(fracción): avance de la lectura (lo usa el Web Worker de dxfworker.js para la barra de progreso)
+export function readDXF(text, onProgress = null) {
   const lines = text.split(/\r?\n/);
   const pairs = [];
   for (let i = 0; i + 1 < lines.length; i += 2) {
+    if (onProgress && !(i % 400000)) onProgress(0.5 * i / lines.length);
     const c = parseInt(lines[i].trim(), 10);
     if (Number.isNaN(c)) { i--; continue; }
     const v = lines[i + 1].replace(/\s+$/, '');
@@ -1062,6 +1103,7 @@ export function readDXF(text) {
   // ctx.attdef: conservar definiciones de atributo (dentro de bloques); ctx.paper: lista del espacio papel
   const convert = (list, M, depth, inheritLayer, out, ctx = {}) => {
     for (let i = 0; i < list.length; i++) {
+      if (onProgress && depth === 0 && !(i % 5000)) onProgress(0.5 + 0.5 * i / list.length);
       const gr = list[i];
       let layer = val(gr, 8, '0');
       if (layer === '0' && inheritLayer) layer = inheritLayer;
@@ -1071,7 +1113,7 @@ export function readDXF(text) {
       const lt = (val(gr, 6) || '').toUpperCase();
       const base = { layer, color, ltype: lt === 'BYBLOCK' ? 'BYBLOCK' : LTYPES[lt] ? lt : 'BYLAYER', lw: val(gr, 370) !== undefined ? lwFrom(val(gr, 370)) : 'BYLAYER' };
       const ap = p => G.Mx.ap(M, p), s = G.Mx.scaleOf(M), mir = G.Mx.det(M) < 0;
-      const push = e => out.push({ ...base, ...e, ...(depth === 0 && val(gr, 5) ? { _h: val(gr, 5) } : {}) });
+      const push = e => out.push({ ...base, ...e, ...zIn(gr, e), ...(depth === 0 && val(gr, 5) ? { _h: val(gr, 5) } : {}) });
       const pt = k => ap(P(numv(gr, 10 + k), numv(gr, 20 + k)));
       const addArc = (c, r, a1, a2) => {
         const q1 = ap(G.polar(c, a1, r)), q2 = ap(G.polar(c, a2, r)), cc = ap(c);
@@ -1099,12 +1141,45 @@ export function readDXF(text) {
           break;
         }
         case 'POLYLINE': {
-          const verts = [];
+          const vg = [];
           let j = i + 1;
-          for (; j < list.length && list[j].type === 'VERTEX'; j++) verts.push({ p: P(numv(list[j], 10), numv(list[j], 20)), b: numv(list[j], 42) });
+          for (; j < list.length && list[j].type === 'VERTEX'; j++) vg.push(list[j]);
           if (list[j]?.type === 'SEQEND') j++;
           i = j - 1;
-          addPoly(verts, (parseInt(val(gr, 70, '0'), 10) & 1) === 1);
+          const fl = parseInt(val(gr, 70, '0'), 10) || 0, vf = v => parseInt(val(v, 70, '0'), 10) || 0;
+          const v3 = v => { const q = ap(P(numv(v, 10), numv(v, 20))); return { x: q.x, y: q.y, z: numv(v, 30) }; };
+          if (fl & 64) { // malla policara (superficies TIN): vértices (64|128) y caras (128, índices 71-74; negativos = arista invisible)
+            const vs = vg.filter(v => vf(v) & 64).map(v3);
+            for (const f of vg.filter(v => (vf(v) & 192) === 128)) {
+              const ix = [71, 72, 73, 74].map(k => parseInt(val(f, k, '0'), 10) || 0).filter(Boolean);
+              if (ix.length < 3 || ix.some(k => !vs[Math.abs(k) - 1])) continue;
+              const q = ix.map(k => ({ ...vs[Math.abs(k) - 1] }));
+              if (q.length === 3) q.push({ ...q[2] });
+              const hide = ix.length === 3 ? [ix[0] < 0, ix[1] < 0, ix[2] < 0, false] : ix.map(k => k < 0);
+              push({ type: 'face3d', pts: q, ...(hide.some(Boolean) ? { hide } : {}) });
+            }
+            break;
+          }
+          if (fl & 16) { // malla poligonal M × N (cerrada en M con 1 y en N con 32)
+            const m = parseInt(val(gr, 71, '0'), 10) || 0, n = parseInt(val(gr, 72, '0'), 10) || 0, vs = vg.map(v3);
+            if (m < 2 || n < 2 || vs.length < m * n) { skipped++; break; }
+            const at = (a, b) => vs[(a % m) * n + (b % n)];
+            for (let a = 0; a < (fl & 1 ? m : m - 1); a++) for (let b = 0; b < (fl & 32 ? n : n - 1); b++)
+              push({ type: 'face3d', pts: [at(a, b), at(a + 1, b), at(a + 1, b + 1), at(a, b + 1)].map(q => ({ ...q })) });
+            break;
+          }
+          if (fl & 8) { // polilínea 3D (sin los vértices de control del ajuste spline, 16)
+            const pts = vg.filter(v => !(vf(v) & 16)).map(v3);
+            if (pts.length >= 2) push({ type: 'pline3d', pts, ...(fl & 1 ? { closed: true } : {}) });
+            break;
+          }
+          addPoly(vg.map(v => ({ p: P(numv(v, 10), numv(v, 20)), b: numv(v, 42) })), (fl & 1) === 1);
+          break;
+        }
+        case '3DFACE': {
+          const q = [0, 1, 2, 3].map(k => { const p = pt(k); return { x: p.x, y: p.y, z: numv(gr, 30 + k) }; });
+          const f = parseInt(val(gr, 70, '0'), 10) || 0, hide = [0, 1, 2, 3].map(k => !!(f & (1 << k)));
+          push({ type: 'face3d', pts: q, ...(f ? { hide } : {}) });
           break;
         }
         case 'SOLID': case 'TRACE': {
@@ -1423,7 +1498,7 @@ export function readDXF(text) {
         const far = (a, b) => (G.dist(a, X.p) > G.dist(b, X.p) ? a : b);
         return { ...base, kind: 'ang', c: X.p, p1: far(p13, p14), p2: far(p15, p10), p3: p16, l1: [p13, p14], l2: [p15, p10] };
       }
-      case 6: return p13 && p14 ? { ...base, kind: 'ord', p1: p13, p2: p13, p3: p14, axis: f & 64 ? 'x' : 'y' } : null;
+      case 6: return p13 && p14 ? { ...base, kind: 'ord', p1: p13, p2: p13, p3: p14, axis: f & 64 ? 'x' : 'y', ...(p10 && (p10.x || p10.y) ? { org: p10 } : {}) } : null;
     }
     return null;
   }

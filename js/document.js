@@ -22,15 +22,31 @@ export const DEFAULT_SETTINGS = {
   ucsvp: 1, ucsfollow: 0, vprotateassoc: 1, cannoscale: '1:1', annoAllVisible: 1, annoAutoScale: 0,
 };
 const newMlStyle = () => JSON.parse(JSON.stringify(DEFAULT_MLINESTYLE));
+// Diferencias entre dos estados completos (mensajes de la comprobación del deshacer)
+function diffStates(a, b) {
+  const A = JSON.parse(a), B = JSON.parse(b), out = [];
+  for (const k of Object.keys({ ...A, ...B })) {
+    if (k === 'model') {
+      const ma = new Map((A.model || []).map(e => [e.id, JSON.stringify(e)])), mb = new Map((B.model || []).map(e => [e.id, JSON.stringify(e)]));
+      const bad = [...new Set([...ma.keys(), ...mb.keys()])].filter(id => ma.get(id) !== mb.get(id));
+      if (bad.length) out.push(`modelo: ${bad.slice(0, 5).map(id => `${id} ${(ma.get(id) || '—').slice(0, 160)} ≠ ${(mb.get(id) || '—').slice(0, 160)}`).join('; ')}`);
+      else if (JSON.stringify(A.model.map(e => e.id)) !== JSON.stringify(B.model.map(e => e.id))) out.push('modelo: orden distinto');
+    } else if (JSON.stringify(A[k]) !== JSON.stringify(B[k])) out.push(k);
+  }
+  return out.join(' | ') || 'sin diferencias visibles';
+}
 export const PAPERS = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841], Carta: [279.4, 215.9], Oficio: [355.6, 215.9] };
 
 const newLayer = (name, color = '#ffffff') => ({ name, color, ltype: 'CONTINUOUS', lw: 'DEFAULT', on: true, lock: false });
 
+// Sustituye el contenido de una entidad por el de su JSON conservando el objeto (y su sitio en las listas y los índices)
+const setContent = (e, json) => { for (const k of Object.keys(e)) delete e[k]; Object.assign(e, JSON.parse(json)); };
+
 export class Doc {
-  constructor() { this.listeners = []; this.ver = 0; this.reset(); }
+  constructor() { this.listeners = []; this.ver = 0; this.log = []; this.quiet = false; this.reset(); }
 
   on(fn) { this.listeners.push(fn); }
-  emit(kind) { for (const f of this.listeners) f(kind); }
+  emit(kind, data) { if (!this.quiet) for (const f of this.listeners) f(kind, data); }
 
   reset() {
     this.layers = [newLayer('0')];
@@ -53,6 +69,7 @@ export class Doc {
     this.layerFilters = []; // filtros de capa por propiedades y por grupos (layertools.js)
     this.layIso = null;    // estado de las capas antes de LAYISO
     this.scales = defaultScales(); // lista de escalas (SCALELISTEDIT)
+    this.origin = { x: 0, y: 0 }; // origen local del modelo: coordenada real = coordenada interna + origen (origin.js)
     this.tiles = null;     // ventanas en mosaico leídas del archivo (la aplicación las restituye)
     this.space = 'model';
     this.textStyles = [{ name: 'Standard', font: 'Arial', width: 1, oblique: 0 }];
@@ -69,7 +86,7 @@ export class Doc {
     this.activeVp = null;     // ventana gráfica por la que se trabaja (MSPACE): sus capas inutilizadas no se ven
     this.dirty = false;
     this.name = 'Dibujo1';
-    this.ver++;
+    this.markFull();
     this.emit('reset');
   }
 
@@ -81,7 +98,12 @@ export class Doc {
   *allEnts() { yield* this.model; for (const l of this.layouts) yield* l.ents; if (this.bedit) yield* this.bedit.ents; }
   layout() { return this.space === 'model' || this.space === 'bedit' ? null : this.layouts[this.space]; }
 
-  // ----- Deshacer / rehacer por instantáneas -----
+  // ----- Deshacer / rehacer -----
+  // Cada transacción guarda entero el estado de lo que no son entidades del modelo (capas, estilos, bloques, presentaciones
+  // con sus objetos, editor de bloques, SCP…) y, del modelo, sólo un diario de cambios: objetos añadidos y suprimidos con
+  // su posición y el estado anterior de los modificados. Así una orden no copia el dibujo entero (con 100 000 objetos,
+  // decenas de MB por paso). Las entidades del modelo se cambian con add, remove y modify, o avisando antes con before(e).
+  // state() es el estado completo (lo usa la comprobación del deshacer).
   state() {
     return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso, scales: this.scales });
   }
@@ -93,33 +115,215 @@ export class Doc {
     else if (this.space !== 'model' && this.space !== 'bedit' && !this.layouts[this.space]) this.space = 'model';
     this.reindex();
   }
-  reindex() { this.byId = new Map([...this.allEnts()].map(e => [e.id, e])); this.ver++; }
-  begin() { if (this.tx) { this.tx.depth++; return; } this.tx = { snap: this.state(), depth: 1 }; }
+  reindex() { this.byId = new Map([...this.allEnts()].map(e => [e.id, e])); this.markFull(); }
+  // Estado salvo las entidades del modelo: «geo» afecta al aspecto y al tamaño de los objetos (capas, bloques, estilos,
+  // escalas); «rest», lo demás (presentaciones con sus objetos, editor de bloques, SCP, vistas, grupos…)
+  geoState() {
+    return JSON.stringify({ layers: this.layers, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, patterns: this.patterns, scales: this.scales, origin: this.origin });
+  }
+  restState() {
+    return JSON.stringify({ layouts: this.layouts, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso });
+  }
+  *paperEnts() { for (const l of this.layouts) yield* l.ents; if (this.bedit) yield* this.bedit.ents; }
+  loadMeta(geo, rest) {
+    if (geo) {
+      const g = JSON.parse(geo), o0 = this.origin;
+      Object.assign(this, { layers: g.layers, blocks: g.blocks, textStyles: g.textStyles, dimStyles: g.dimStyles, mleaderStyles: g.mleaderStyles, tableStyles: g.tableStyles, mlineStyles: g.mlineStyles?.length ? g.mlineStyles : [newMlStyle()], patterns: g.patterns || {}, scales: g.scales?.length ? g.scales : defaultScales(), origin: g.origin || { x: 0, y: 0 } });
+      this.markFull();
+      const o1 = this.origin; // el origen local cambió: la aplicación desplaza sus vistas (origin.js)
+      if (o0 && (o0.x !== o1.x || o0.y !== o1.y)) this.emit('origin', { dx: o0.x - o1.x, dy: o0.y - o1.y });
+    }
+    if (rest) {
+      const o = JSON.parse(rest);
+      for (const e of this.paperEnts()) this.byId.delete(e.id);
+      Object.assign(this, { layouts: o.layouts, nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], plotStyles: o.plotStyles || {}, ucs: o.ucs || null, ucsList: o.ucsList || [], views: o.views || [], vportConfigs: o.vportConfigs || [], selFilters: o.selFilters || [], layerFilters: o.layerFilters || [], layIso: o.layIso || null });
+      if (this.bedit) this.space = 'bedit';
+      else if (this.space === 'bedit') this.space = 'model';
+      else if (this.space !== 'model' && !this.layouts[this.space]) this.space = 'model';
+      for (const e of this.paperEnts()) this.byId.set(e.id, e);
+      this.ver++; this.log.push({ ver: this.ver, kind: 'meta' });
+    }
+  }
+  // full: la transacción guarda el estado completo (AUDIT, que repara la estructura del dibujo, incluso identificadores)
+  begin(full = false) {
+    if (this.tx) { this.tx.depth++; return; }
+    this.tx = { depth: 1, geo: this.geoState(), rest: this.restState(), j: [], seen: new Set(), ...(full ? { snap: this.state() } : {}) };
+    if (this.verifyUndo && !full) this.tx.full = this.state();
+  }
+  // ¿La entidad está en el espacio modelo? (las demás listas, pequeñas, se guardan enteras en cada transacción)
+  inModel(e) { return this.byId.get(e.id) === e && !this.layouts.some(l => l.ents.includes(e)) && !this.bedit?.ents.includes(e); }
+  // Registra el estado de una entidad del modelo antes de cambiarla (modify lo hace solo)
+  before(e) {
+    const t = this.tx;
+    if (!t || !e || t.seen.has(e) || !this.inModel(e)) return;
+    t.seen.add(e);
+    t.j.push({ k: 'mod', e, json: JSON.stringify(e) });
+  }
   commit() {
     if (!this.tx || --this.tx.depth > 0) return;
     this.syncConstraints();
     this.syncAssoc();
     cleanGroups(this);
-    const s = this.tx.snap;
+    const t = this.tx;
     this.tx = null;
-    if (s !== this.state()) {
-      this.undoS.push(s);
-      if (this.undoS.length > 200) this.undoS.shift();
+    if (t.snap) { // estado completo
+      const s = this.state();
+      if (s === t.snap) return;
+      this.pushUndo({ full: [t.snap, s] });
+      this.redoS = []; this.dirty = true; this.emit('commit');
+      return;
+    }
+    const geo = this.geoState(), rest = this.restState();
+    const j = t.j.filter(o => o.k !== 'mod' || o.json !== JSON.stringify(o.e)); // las modificaciones sin efecto no cuentan
+    if (j.length || geo !== t.geo || rest !== t.rest) {
+      const rec = { j, geo: geo !== t.geo ? [t.geo, geo] : null, rest: rest !== t.rest ? [t.rest, rest] : null };
+      if (t.full) this.verifyRec(rec, t.full);
+      this.pushUndo(rec);
       this.redoS = [];
       this.dirty = true;
       this.emit('commit');
     }
   }
+  // Pila de deshacer: hasta 200 pasos y unos 100 millones de caracteres guardados (con 100 000 objetos, desplazarlos
+  // todos guarda cada uno; los pasos más antiguos se descartan)
+  pushUndo(rec) {
+    const size = r => r.size ??= (r.full ? r.full[0].length + r.full[1].length : (r.geo ? r.geo[0].length + r.geo[1].length : 0) + (r.rest ? r.rest[0].length + r.rest[1].length : 0) + r.j.reduce((s, o) => s + (o.json?.length || 0) + (o.items ? o.items.reduce((a, x) => a + x.json.length, 0) : 0), 0));
+    this.undoS.push(rec);
+    let total = this.undoS.reduce((s, r) => s + size(r), 0);
+    while (this.undoS.length > 1 && (this.undoS.length > 200 || total > 1e8)) total -= size(this.undoS.shift());
+  }
+  // Deshace los cambios del diario j (del último al primero) y devuelve el diario que los rehace
+  revert(j) {
+    const inv = [], m = this.model, q = this.quiet;
+    let mid = false; // se reinsertaron objetos entre otros: el índice espacial se reconstruye (orden de dibujo)
+    this.quiet = true;
+    try {
+      for (let i = j.length - 1; i >= 0; i--) {
+        const o = j[i], e = o.e;
+        if (o.k === 'ins') {
+          const at = m[o.idx] === e ? o.idx : m.indexOf(e);
+          if (at >= 0) m.splice(at, 1);
+          this.byId.delete(e.id);
+          inv.push({ k: 'rem', e, idx: at < 0 ? m.length : at, json: JSON.stringify(e) });
+          this.logEnt('del', e, m);
+        } else if (o.k === 'rem') {
+          setContent(e, o.json);
+          const at = Math.min(o.idx, m.length);
+          m.splice(at, 0, e);
+          this.byId.set(e.id, e);
+          inv.push({ k: 'ins', e, idx: at });
+          if (at < m.length - 1) mid = true;
+          this.logEnt('add', e, m);
+        } else if (o.k === 'mod') {
+          inv.push({ k: 'mod', e, json: JSON.stringify(e) });
+          setContent(e, o.json);
+          this.logEnt('mod', e);
+        } else if (o.k === 'remN') { // supresión de muchos (removeMany): se reinsertan en sus posiciones de una pasada
+          const out = [], it = o.items;
+          let p = 0, q = 0;
+          for (let pos = 0, n = m.length + it.length; pos < n; pos++) {
+            if (q < it.length && it[q].idx === pos) { const x = it[q++]; setContent(x.e, x.json); this.byId.set(x.e.id, x.e); out.push(x.e); this.logEnt('add', x.e, m); }
+            else if (p < m.length) out.push(m[p++]);
+          }
+          while (q < it.length) { const x = it[q++]; setContent(x.e, x.json); this.byId.set(x.e.id, x.e); out.push(x.e); this.logEnt('add', x.e, m); }
+          m.length = 0;
+          for (const x of out) m.push(x);
+          inv.push({ k: 'insN', es: it.map(x => x.e) });
+          mid = true;
+        } else if (o.k === 'insN') {
+          const set = new Set(o.es), items = [];
+          let k = 0;
+          for (let i = 0; i < m.length; i++) {
+            const e = m[i];
+            if (!set.has(e)) { m[k++] = e; continue; }
+            items.push({ e, idx: i, json: JSON.stringify(e) });
+            this.byId.delete(e.id);
+            this.logEnt('del', e, m);
+          }
+          m.length = k;
+          inv.push({ k: 'remN', items });
+        } else if (o.k === 'order') {
+          inv.push({ k: 'order', ids: m.map(x => x.id) });
+          const byId = new Map(m.map(x => [x.id, x])), list = o.ids.map(id => byId.get(id)).filter(Boolean);
+          m.length = 0;
+          for (const x of list) m.push(x);
+          mid = true;
+        }
+      }
+    } finally { this.quiet = q; }
+    if (mid) this.markFull();
+    return inv;
+  }
   undo() {
     if (!this.undoS.length) return false;
-    this.redoS.push(this.state()); this.loadState(this.undoS.pop()); this.touched.clear();
+    if (this.undoS[this.undoS.length - 1].full) { const r = this.undoS.pop(); this.loadState(r.full[0]); this.redoS.push(r); this.touched.clear(); this.dirty = true; this.emit('change'); return true; }
+    const r = this.undoS.pop(), j = this.revert(r.j);
+    if (r.geo || r.rest) this.loadMeta(r.geo?.[0], r.rest?.[0]);
+    this.redoS.push({ ...r, j, size: undefined });
+    this.touched.clear();
     this.dirty = true; this.emit('change'); return true;
   }
   redo() {
     if (!this.redoS.length) return false;
-    this.undoS.push(this.state()); this.loadState(this.redoS.pop()); this.touched.clear();
+    if (this.redoS[this.redoS.length - 1].full) { const r = this.redoS.pop(); this.loadState(r.full[1]); this.undoS.push(r); this.touched.clear(); this.dirty = true; this.emit('change'); return true; }
+    const r = this.redoS.pop(), j = this.revert(r.j);
+    if (r.geo || r.rest) this.loadMeta(r.geo?.[1], r.rest?.[1]);
+    this.undoS.push({ ...r, j, size: undefined });
+    this.touched.clear();
     this.dirty = true; this.emit('change'); return true;
   }
+  // Punto de restauración dentro de una transacción (opción desHacer de RECORTA, ALARGA y LONGITUD)
+  savepoint() {
+    const t = this.tx;
+    if (!t) return null;
+    t.seen = new Set();
+    return { n: t.j.length, geo: this.geoState(), rest: this.restState() };
+  }
+  rollback(sp) {
+    const t = this.tx;
+    if (!t || !sp) return;
+    this.revert(t.j.splice(sp.n));
+    const geo = this.geoState(), rest = this.restState();
+    if (geo !== sp.geo || rest !== sp.rest) this.loadMeta(geo !== sp.geo ? sp.geo : null, rest !== sp.rest ? sp.rest : null);
+    t.seen = new Set();
+    this.dirty = true; this.emit('change');
+  }
+  // Comprobación del deshacer (doc.verifyUndo, para las pruebas): deshacer y rehacer el registro tiene que devolver
+  // exactamente el estado completo de antes y el de después
+  verifyRec(rec, before) {
+    const after = this.state(), q = this.quiet, tx = this.tx;
+    // los objetos que no son del modelo se recrean al cargar su estado: al terminar se vuelven a poner los mismos
+    const META = ['layers', 'blocks', 'textStyles', 'dimStyles', 'mleaderStyles', 'tableStyles', 'mlineStyles', 'patterns', 'scales', 'origin', 'layouts', 'nextId', 'cur', 'bedit', 'constraints', 'params', 'groups', 'layerStates', 'plotStyles', 'ucs', 'ucsList', 'views', 'vportConfigs', 'selFilters', 'layerFilters', 'layIso', 'space'];
+    const keep = Object.fromEntries(META.map(k => [k, this[k]]));
+    this.quiet = true; this.tx = null;
+    try {
+      const inv = this.revert(rec.j);
+      if (rec.geo || rec.rest) this.loadMeta(rec.geo?.[0], rec.rest?.[0]);
+      const s0 = this.state();
+      this.revert(inv);
+      if (rec.geo || rec.rest) this.loadMeta(rec.geo?.[1], rec.rest?.[1]);
+      const s1 = this.state();
+      if (s0 !== before) console.error(`DESHACER INCOMPLETO (${this.curCmd || '?'}): ${diffStates(before, s0)}`);
+      if (s1 !== after) console.error(`REHACER INCOMPLETO (${this.curCmd || '?'}): ${diffStates(after, s1)}`);
+    } finally {
+      for (const e of this.paperEnts()) this.byId.delete(e.id);
+      Object.assign(this, keep);
+      for (const e of this.paperEnts()) this.byId.set(e.id, e);
+      this.quiet = q; this.tx = tx;
+    }
+  }
+
+  // ----- Diario de cambios (índice espacial incremental y dibujo por teselas) -----
+  // Cada versión del documento tiene una entrada: un objeto añadido, suprimido o modificado (con su lista) o un cambio
+  // general («full»: capas, estilos, orden de dibujo…), que obliga a reconstruir los índices.
+  logEnt(kind, e, arr = null) {
+    this.ver++;
+    this.log.push({ ver: this.ver, kind, e, arr });
+    if (this.log.length > 400000) this.markFull();
+    this.dirty = true;
+    this.emit('change');
+  }
+  markFull() { this.ver++; this.log = [{ ver: this.ver, full: true }]; }
 
   // ----- Entidades -----
   add(e, target = this.ents) {
@@ -131,8 +335,9 @@ export class Doc {
     if (!this.layers.some(l => l.name === e.layer)) e.layer = '0';
     if (e.type === 'mtext' || e.type === 'attdef') e.style ??= this.cur.textStyle;
     target.push(e); this.byId.set(e.id, e);
+    if (this.tx && target === this.model) { this.tx.j.push({ k: 'ins', e, idx: target.length - 1 }); this.tx.seen.add(e); }
     this.touched.add(e.id);
-    this.changed();
+    this.logEnt('add', e, target);
     return e;
   }
   get(id) { return this.byId.get(id); }
@@ -141,13 +346,51 @@ export class Doc {
     if (!e) return;
     for (const arr of this.lists()) {
       const i = arr.indexOf(e);
-      if (i >= 0) { arr.splice(i, 1); break; }
+      if (i < 0) continue;
+      if (this.tx && arr === this.model) this.tx.j.push({ k: 'rem', e, idx: i, json: JSON.stringify(e) });
+      arr.splice(i, 1);
+      this.byId.delete(id);
+      this.touched.add(id);
+      this.logEnt('del', e, arr);
+      return;
     }
     this.byId.delete(id);
     this.touched.add(id);
     this.changed();
   }
-  modify(id, fn) { const e = this.byId.get(id); if (e) { fn(e); this.touched.add(id); this.changed(); } return e; }
+  // Suprime muchos objetos de una vez (recorre cada lista una sola vez)
+  removeMany(ids) {
+    const set = new Set();
+    for (const id of ids) { const e = this.byId.get(id); if (e) set.add(e); }
+    if (set.size < 64) { for (const e of set) this.remove(e.id); return; }
+    const q = this.quiet;
+    this.quiet = true;
+    try {
+      for (const arr of this.lists()) {
+        const items = this.tx && arr === this.model ? [] : null; // una sola entrada del diario: {e, idx (posición antes), json}
+        let k = 0;
+        for (let i = 0; i < arr.length; i++) {
+          const e = arr[i];
+          if (!set.has(e)) { arr[k++] = e; continue; }
+          items?.push({ e, idx: i, json: JSON.stringify(e) });
+          this.byId.delete(e.id);
+          this.touched.add(e.id);
+          this.logEnt('del', e, arr);
+        }
+        arr.length = k;
+        if (items?.length) this.tx.j.push({ k: 'remN', items });
+      }
+    } finally { this.quiet = q; }
+    this.emit('change');
+  }
+  modify(id, fn) { const e = this.byId.get(id); if (e) { this.before(e); fn(e); this.touched.add(id); this.logEnt('mod', e); } return e; }
+  // Cambia el orden de dibujo de una lista de entidades (DRAWORDER)
+  setOrder(arr, list) {
+    if (this.tx && arr === this.model) this.tx.j.push({ k: 'order', ids: arr.map(e => e.id) });
+    arr.length = 0;
+    for (const e of list) arr.push(e);
+    this.changed();
+  }
 
   // Listas de entidades editables: modelo, presentaciones y, si está abierto, el editor de bloques
   lists() { return [this.model, ...this.layouts.map(l => l.ents), ...(this.bedit ? [this.bedit.ents] : [])]; }
@@ -160,11 +403,13 @@ export class Doc {
     if (!t.size) return;
     const get = id => this.byId.get(id);
     const drop = h => { delete h.assoc; delete h.seed; };
+    const hit = id => t.has(id) || !get(id);
     for (const arr of this.lists()) {
       for (const h of arr) {
         const moved = h._xf;
-        if (moved) delete h._xf;
+        if (moved) { this.before(h); delete h._xf; }
         if (h.type === 'array' && h.pathId != null) { // matriz a lo largo de un recorrido: sigue al objeto del recorrido
+          if (hit(h.pathId) || moved) this.before(h);
           const src = get(h.pathId);
           if (!src || !pathable(src)) delete h.pathId;
           else if (t.has(h.pathId)) h.path = localPath(h, src);
@@ -172,6 +417,7 @@ export class Doc {
           continue;
         }
         if (!h.assoc) continue;
+        if ((h.type === 'dim' ? dimRefIds(h) : h.type === 'center' ? centerRefs(h) : h.type === 'hatch' ? h.assoc : []).some(hit)) this.before(h); // va a cambiar
         if (h.type === 'dim') {
           dropMissing(h, get);
           const ids = dimRefIds(h);
@@ -231,7 +477,7 @@ export class Doc {
     }
     return out;
   }
-  changed() { this.ver++; this.dirty = true; this.emit('change'); }
+  changed() { this.markFull(); this.dirty = true; this.emit('change'); }
 
   // ----- Capas, estilos y bloques -----
   layer(name) { return this.layers.find(l => l.name === name) || this.layers[0]; }
@@ -322,9 +568,10 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 12, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      app: 'TrazoCAD', version: 13, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
       textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, cur: this.cur, settings: this.settings, nextId: this.nextId,
       ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso, scales: this.scales,
+      ...(this.origin.x || this.origin.y ? { origin: this.origin } : {}),
       ...(this.viewState ? { tiles: this.viewState() } : {}),
     };
   }
@@ -354,6 +601,7 @@ export class Doc {
     this.layerFilters = o.layerFilters || [];
     this.layIso = o.layIso || null;
     this.scales = o.scales?.length ? o.scales : defaultScales();
+    this.origin = o.origin ? { x: +o.origin.x || 0, y: +o.origin.y || 0 } : { x: 0, y: 0 };
     this.tiles = o.tiles || null;
     if (o.mleaderStyles?.length) this.mleaderStyles = o.mleaderStyles;
     if (o.tableStyles?.length) this.tableStyles = o.tableStyles;

@@ -44,6 +44,7 @@ const RIBBON = [
   { tab: 'Inicio', groups: [
     { name: 'Dibujo', items: [['LINE', 'Línea', 'line'], ['PLINE', 'Polilínea', 'pline'], ['CIRCLE', 'Círculo', 'circle'], ['ARC', 'Arco', 'arc'], ['RECTANG', 'Rectángulo', 'rect'], ['POLYGON', 'Polígono', 'polygon'], ['ELLIPSE', 'Elipse', 'ellipse'], ['SPLINE', 'Spline', 'spline'], ['HATCH', 'Sombreado', 'hatch'], ['DIVIDE', 'Dividir', 'divide'], ['MEASURE', 'Graduar', 'measure'], ['MLINE', 'Línea múlt.', 'mline'], ['MLSTYLE', 'Estilo LM', 'mlstyle'], ['MLEDIT', 'Editar LM', 'mledit'], ['REVCLOUD', 'Nube', 'revcloud'], ['REVCLOUDEDIT', 'Editar nube', 'revcloudedit'], ['WIPEOUT', 'Cobertura', 'wipeout'], ['WIPEOUTFRAME', 'Marco', 'woframe']] },
     { name: 'Modificar', items: [['MOVE', 'Desplazar', 'move'], ['COPY', 'Copiar', 'copy'], ['ROTATE', 'Girar', 'rotate'], ['SCALE', 'Escala', 'scale'], ['MIRROR', 'Simetría', 'mirror'], ['OFFSET', 'Desfase', 'offset'], ['TRIM', 'Recortar', 'trim'], ['EXTEND', 'Alargar', 'extend'], ['FILLET', 'Empalme', 'fillet'], ['CHAMFER', 'Chaflán', 'chamfer'], ['BREAK', 'Partir', 'break'], ['LENGTHEN', 'Longitud', 'lengthen'], ['STRETCH', 'Estirar', 'stretch'], ['ARRAYRECT', 'Matriz', 'arrayrect'], ['ARRAYPOLAR', 'M. polar', 'arraypolar'], ['ARRAYPATH', 'M. recorrido', 'arraypath'], ['ARRAYEDIT', 'Editar matriz', 'arrayedit'], ['EXPLODE', 'Descomp.', 'explode'], ['JOIN', 'Unir', 'join'], ['DRAWORDER', 'Orden', 'draworder'], ['ERASE', 'Borrar', 'erase']] },
+    { name: 'Cota Z', items: [['3DPOLY', 'Polil. 3D', 'poly3d'], ['3DFACE', 'Cara 3D', 'face3d'], ['ELEV', 'Elevación', 'elev'], ['FLATTEN', 'Aplanar', 'flatten']] },
     { name: 'Regiones', items: [['REGION', 'Región', 'region'], ['BOUNDARY', 'Contorno', 'boundary'], ['UNION', 'Unión', 'union'], ['SUBTRACT', 'Diferencia', 'subtract'], ['INTERSECT', 'Intersección', 'intersect']] },
     { name: 'Anotación', items: [['MTEXT', 'Texto', 'mtext'], ['DIMLINEAR', 'Lineal', 'dimlin'], ['DIMALIGNED', 'Alineada', 'dimali'], ['DIMANGULAR', 'Angular', 'dimang'], ['DIMRADIUS', 'Radio', 'dimrad'], ['MLEADER', 'Directriz', 'mleader'], ['TABLE', 'Tabla', 'table']] },
     { name: 'Bloque', items: [['BLOCK', 'Crear', 'block'], ['INSERT', 'Insertar', 'insert'], ['BEDIT', 'Editar', 'bedit'], ['ATTDEF', 'Atributo', 'attdef']] },
@@ -76,7 +77,7 @@ const RIBBON = [
   ] },
   { tab: 'Vista', groups: [
     { name: 'Navegar', items: [['!zoomext', 'Extensión', 'zoomext'], ['!zoomwin', 'Ventana', 'zoomwin'], ['!zoomprev', 'Previo', 'zoomprev'], ['PAN', 'Encuadre', 'pan'], ['REGEN', 'Regenerar', 'regen']] },
-    { name: 'Coordenadas', items: [['UCS', 'SCP', 'ucs'], ['!ucsworld', 'Universal', 'ucsworld'], ['!ucsprev', 'Previo', 'ucsprev'], ['!ucsobj', 'Objeto', 'ucsobj'], ['!ucs3p', '3 puntos', 'ucs3p'], ['UCSMAN', 'Admin. SCP', 'ucsman'], ['UCSICON', 'Icono', 'ucsicon']] },
+    { name: 'Coordenadas', items: [['UCS', 'SCP', 'ucs'], ['!ucsworld', 'Universal', 'ucsworld'], ['!ucsprev', 'Previo', 'ucsprev'], ['!ucsobj', 'Objeto', 'ucsobj'], ['!ucs3p', '3 puntos', 'ucs3p'], ['UCSMAN', 'Admin. SCP', 'ucsman'], ['UCSICON', 'Icono', 'ucsicon'], ['LOCALORIGIN', 'Origen local', 'origin']] },
     { name: 'Vista girada', items: [['PLAN', 'Planta del SCP', 'plan'], ['!planworld', 'Sin giro', 'planworld'], ['DVIEW', 'Girar vista', 'twist']] },
     { name: 'Vistas y ventanas', items: [['VIEW', 'Vistas', 'view'], ['VPORTS', 'Ventanas', 'vports'], ['!vpjoin', 'Unir', 'vpjoin'], ['!vpsingle', 'Única', 'vpsingle']] },
     { name: 'Dibujo', items: [['ISODRAFT', 'Isométrico', 'iso'], ['DSETTINGS', 'Parámetros', 'settings']] },
@@ -335,7 +336,8 @@ export class UI {
     this.tabsEl.replaceChildren(...items);
   }
   // Coordenadas del cursor en el SCP actual
-  updateCoords(p) { const d = this.app.doc.settings.coordDec, q = toUcs(ucsOf(this.app.doc), p); this.coordsEl.textContent = `${fmt(q.x, d)}, ${fmt(q.y, d)}, 0.0000`; }
+  // Coordenadas del cursor (reales, con el origen local) y Z: la del punto de referencia 3D o la elevación actual
+  updateCoords(p) { const S = this.app.doc.settings, d = S.coordDec, q = toUcs(ucsOf(this.app.doc), p); this.coordsEl.textContent = `${fmt(q.x, d)}, ${fmt(q.y, d)}, ${fmt(p.z ?? S.elevation ?? 0, d)}`; }
 
   // ---------- Paleta lateral ----------
   buildPalette() {
@@ -711,7 +713,7 @@ export class UI {
             const n = await this.prompt('Renombrar capa', 'Nuevo nombre', l.name);
             if (!n || n === l.name) return;
             if (doc.layers.some(x => x.name.toLowerCase() === n.toLowerCase())) return app.print(`La capa "${n}" ya existe.`);
-            tx(() => { for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (e.layer === l.name) e.layer = n; if (doc.cur.layer === l.name) doc.cur.layer = n; renameLayerInStates(doc, l.name, n); l.name = n; });
+            tx(() => { for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (e.layer === l.name) { doc.before(e); e.layer = n; } if (doc.cur.layer === l.name) doc.cur.layer = n; renameLayerInStates(doc, l.name, n); l.name = n; });
           } }, l.name),
         h('button', { class: 'ib' + (l.on ? '' : ' off'), title: l.on ? 'Desactivar' : 'Activar', html: icon(l.on ? 'eye' : 'eyeoff', 16), onclick: ev => { ev.stopPropagation(); tx(() => { l.on = !l.on; }); } }),
         h('button', { class: 'ib' + (l.lock ? ' off' : ''), title: l.lock ? 'Desbloquear' : 'Bloquear', html: icon(l.lock ? 'lock' : 'unlock', 16), onclick: ev => { ev.stopPropagation(); tx(() => { l.lock = !l.lock; }); } }),
@@ -880,6 +882,17 @@ export class UI {
     const p = this.modal('Cargar aplicaciones (APPLOAD)', box, [{ label: 'Cerrar', value: null }, { label: 'Cargar archivo…', value: () => ({ action: 'load', startup: startup.checked }), primary: true }]);
     this.closeModalWith = v => { const b = document.querySelector('#modal-root .modal'); if (b) { this._appPick = v; b.querySelector('.modal-head .ib').click(); } };
     return p.then(v => { const x = this._appPick; this._appPick = null; this.closeModalWith = null; return x || v; });
+  }
+  // Barra de progreso (apertura de DXF grandes en segundo plano): set(fracción), done()
+  progress(title) {
+    const bar = h('div', { class: 'prog-fill' }), pct = h('span', {}, '0 %');
+    const box = h('div', { class: 'prog', role: 'progressbar' }, h('div', { class: 'prog-title' }, title, ' ', pct), h('div', { class: 'prog-bar' }, bar));
+    let shown = false;
+    const show = setTimeout(() => { document.body.appendChild(box); shown = true; }, 150); // los archivos pequeños no la muestran
+    return {
+      set: f => { const p = Math.max(0, Math.min(100, Math.round(f * 100))); bar.style.width = `${p}%`; pct.textContent = `${p} %`; },
+      done: () => { clearTimeout(show); if (shown) box.remove(); },
+    };
   }
   confirm(msg, okLabel = 'Aceptar') {
     return this.modal('TrazoCAD', h('p', {}, msg), [{ label: 'Cancelar', value: false }, { label: okLabel, value: true, primary: true }]).then(v => !!v);
@@ -1403,7 +1416,7 @@ export class UI {
     doc.cur[curKey] = current;
     // Las referencias a estilos eliminados pasan al estilo base
     const refs = { textStyles: [['text', 'mtext', 'attdef', 'mleader', 'table'], 'style'], dimStyles: [['dim'], 'style'], mleaderStyles: [['mleader'], 'mstyle'], tableStyles: [['table'], 'tstyle'], mlineStyles: [['mline'], 'mlstyle'] }[listKey];
-    for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (refs[0].includes(e.type) && e[refs[1]] != null && !names.has(e[refs[1]])) e[refs[1]] = work[0].name;
+    for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (refs[0].includes(e.type) && e[refs[1]] != null && !names.has(e[refs[1]])) { doc.before(e); e[refs[1]] = work[0].name; }
     if (listKey === 'textStyles') for (const d of [...doc.dimStyles, ...doc.mleaderStyles, ...doc.tableStyles]) if (!names.has(d.textStyle)) d.textStyle = work[0].name;
     for (const b of Object.values(doc.blocks)) b.ver = (b.ver || 0) + 1;
     doc.changed();
@@ -2018,6 +2031,14 @@ export class UI {
         <li>Pestañas <b>Modelo / Presentación</b> abajo a la izquierda; <b>+</b> crea una presentación con marco, cajetín y una ventana gráfica a escala estándar.</li>
         <li>Doble clic dentro de una ventana gráfica: trabaja en el modelo a través de ella (zoom y encuadre cambian su vista). Doble clic fuera: vuelve al papel.</li>
         <li>La escala de la ventana se cambia en la paleta de Propiedades. Imprimir, SVG y PNG de una presentación salen a escala real en milímetros.</li>
+      </ul>
+      <h4>Novedades de la v0.13</h4>
+      <ul>
+        <li><b>Cota Z</b>: los puntos se pueden escribir como <code>x,y,z</code> (también <code>@dx,dy,dz</code>); las líneas guardan la Z de cada extremo y los demás objetos planos su <b>Elevación</b> (Propiedades, LIST). <code>ELEV</code> fija la cota de los objetos nuevos y de los puntos designados sin Z; la barra de estado y <code>ID</code> la muestran. <code>FLATTEN</code> (APLANAR) lleva los objetos designados a cota 0 o a la indicada.</li>
+        <li><b>Polilíneas 3D</b> (<code>3DPOLY</code>, 3P) con una Z por vértice (opción <i>Elevación</i> para los puntos que se designan con el ratón) y <b>caras 3D</b> (<code>3DFACE</code>, 3F) de tres o cuatro vértices con aristas invisibles; en Propiedades se edita cada vértice (X, Y, Z) y se ven la longitud 3D, la de planta y las Z mínima y máxima. Las referencias a sus vértices llevan la Z.</li>
+        <li><b>DXF</b>: Z de las líneas, elevación de polilíneas, círculos, arcos, textos y bloques, POLYLINE 3D, 3DFACE y, al importar, <b>mallas policara</b> (superficies TIN) y mallas M×N como caras 3D.</li>
+        <li><b>Coordenadas grandes</b>: al abrir un DXF con coordenadas de proyección el dibujo toma un <b>origen local</b> (<code>LOCALORIGIN</code>, ORIGENLOCAL, también a mano) y guarda las coordenadas relativas a él; se ven, se escriben y se exportan siempre las reales. Sin temblores al ampliar: el dibujo en pantalla resta el centro de la vista antes de pasar las coordenadas al canvas.</li>
+        <li><b>Más de 100 000 objetos</b>: deshacer incremental (cada paso guarda sólo lo que cambia), índice espacial incremental, imagen del modelo en caché (al encuadrar sólo se dibujan las franjas nuevas y al editar sólo lo que cambia; tras un zoom se completa en varios fotogramas), curvas de nivel simplificadas según el zoom, designaciones grandes sin retardo y apertura de DXF grandes en segundo plano con barra de progreso. Los dibujos grandes se autoguardan en IndexedDB.</li>
       </ul>
       <h4>Novedades de la v0.12</h4>
       <ul>

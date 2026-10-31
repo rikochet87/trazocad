@@ -16,6 +16,48 @@ const SNAP_COLOR = '#d4e157';
 const TRACK_COLOR = '#58d68d';
 export const ISO_AXES = { top: [30, 150], left: [90, 150], right: [30, 90] };
 
+// Contexto de dibujo con el origen desplazado. El canvas guarda las coordenadas y la transformación en coma flotante de
+// 32 bits (unos 7 dígitos): con coordenadas grandes o mucho zoom, los trazos tiemblan y se descolocan. Tras setWorld, las
+// coordenadas del dibujo se pasan al canvas restándoles el centro de la vista (rx, ry), calculado en doble precisión; en
+// coordenadas de pantalla (después de setTransform) pasan tal cual.
+const PASS_PROPS = ['strokeStyle', 'fillStyle', 'lineWidth', 'lineCap', 'lineJoin', 'miterLimit', 'lineDashOffset', 'font', 'textAlign', 'textBaseline', 'direction', 'globalAlpha', 'globalCompositeOperation', 'shadowBlur', 'shadowColor', 'shadowOffsetX', 'shadowOffsetY', 'imageSmoothingEnabled', 'imageSmoothingQuality', 'filter'];
+const PASS_FNS = ['beginPath', 'closePath', 'stroke', 'fill', 'clip', 'setLineDash', 'getLineDash', 'measureText', 'createPattern', 'putImageData', 'getImageData', 'createImageData', 'isPointInPath', 'isPointInStroke', 'resetTransform', 'getTransform'];
+export class ShiftCtx {
+  constructor(c) { this.c = c; this.rx = 0; this.ry = 0; this.world = false; this.stack = []; }
+  get canvas() { return this.c.canvas; }
+  save() { this.stack.push(this.world); this.c.save(); }
+  restore() { if (this.stack.length) this.world = this.stack.pop(); this.c.restore(); }
+  setTransform(...a) { this.world = false; this.c.setTransform(...a); }
+  // Pasar a un sistema local: con translate, el nuevo origen es el punto del dibujo (x, y); con giros o escalas sin
+  // traslación previa, el origen del dibujo
+  translate(x, y) { if (this.world) { this.world = false; this.c.translate(x - this.rx, y - this.ry); } else this.c.translate(x, y); }
+  leave() { if (this.world) { this.world = false; this.c.translate(-this.rx, -this.ry); } }
+  rotate(a) { this.leave(); this.c.rotate(a); }
+  scale(x, y) { this.leave(); this.c.scale(x, y); }
+  transform(...a) { this.leave(); this.c.transform(...a); }
+  moveTo(x, y) { if (this.world) this.c.moveTo(x - this.rx, y - this.ry); else this.c.moveTo(x, y); }
+  lineTo(x, y) { if (this.world) this.c.lineTo(x - this.rx, y - this.ry); else this.c.lineTo(x, y); }
+  arc(x, y, ...a) { if (this.world) this.c.arc(x - this.rx, y - this.ry, ...a); else this.c.arc(x, y, ...a); }
+  ellipse(x, y, ...a) { if (this.world) this.c.ellipse(x - this.rx, y - this.ry, ...a); else this.c.ellipse(x, y, ...a); }
+  arcTo(x1, y1, x2, y2, r) { const { rx, ry } = this.world ? this : { rx: 0, ry: 0 }; this.c.arcTo(x1 - rx, y1 - ry, x2 - rx, y2 - ry, r); }
+  quadraticCurveTo(a, b, x, y) { const { rx, ry } = this.world ? this : { rx: 0, ry: 0 }; this.c.quadraticCurveTo(a - rx, b - ry, x - rx, y - ry); }
+  bezierCurveTo(a, b, e, f, x, y) { const { rx, ry } = this.world ? this : { rx: 0, ry: 0 }; this.c.bezierCurveTo(a - rx, b - ry, e - rx, f - ry, x - rx, y - ry); }
+  rect(x, y, w, h) { if (this.world) this.c.rect(x - this.rx, y - this.ry, w, h); else this.c.rect(x, y, w, h); }
+  fillRect(x, y, w, h) { if (this.world) this.c.fillRect(x - this.rx, y - this.ry, w, h); else this.c.fillRect(x, y, w, h); }
+  strokeRect(x, y, w, h) { if (this.world) this.c.strokeRect(x - this.rx, y - this.ry, w, h); else this.c.strokeRect(x, y, w, h); }
+  clearRect(x, y, w, h) { if (this.world) this.c.clearRect(x - this.rx, y - this.ry, w, h); else this.c.clearRect(x, y, w, h); }
+  fillText(t, x, y, ...a) { if (this.world) this.c.fillText(t, x - this.rx, y - this.ry, ...a); else this.c.fillText(t, x, y, ...a); }
+  strokeText(t, x, y, ...a) { if (this.world) this.c.strokeText(t, x - this.rx, y - this.ry, ...a); else this.c.strokeText(t, x, y, ...a); }
+  drawImage(img, ...a) {
+    if (this.world) { const k = a.length === 8 ? 4 : 0; a[k] -= this.rx; a[k + 1] -= this.ry; }
+    this.c.drawImage(img, ...a);
+  }
+  createLinearGradient(x0, y0, x1, y1) { const { rx, ry } = this.world ? this : { rx: 0, ry: 0 }; return this.c.createLinearGradient(x0 - rx, y0 - ry, x1 - rx, y1 - ry); }
+  createRadialGradient(x0, y0, r0, x1, y1, r1) { const { rx, ry } = this.world ? this : { rx: 0, ry: 0 }; return this.c.createRadialGradient(x0 - rx, y0 - ry, r0, x1 - rx, y1 - ry, r1); }
+}
+for (const k of PASS_PROPS) Object.defineProperty(ShiftCtx.prototype, k, { get() { return this.c[k]; }, set(v) { this.c[k] = v; } });
+for (const k of PASS_FNS) ShiftCtx.prototype[k] = function (...a) { return this.c[k](...a); };
+
 // rot: giro de la vista (la dirección del dibujo con ese ángulo se ve horizontal)
 export function makeRV(cx, cy, scale, w, h, dpr, ox = 0, oy = 0, rot = 0) {
   return { scale, dpr, w, h, cx, cy, ox, oy, rot, toScreen: p => { const [u, v] = toFrame(rot, p.x - cx, p.y - cy); return { x: u * scale + ox + w / 2, y: oy + h / 2 - v * scale }; } };
@@ -23,8 +65,30 @@ export function makeRV(cx, cy, scale, w, h, dpr, ox = 0, oy = 0, rot = 0) {
 export const makeR = (view, dpr) => makeRV(view.cx, view.cy, view.scale, view.w, view.h, dpr, view.ox || 0, view.oy || 0, view.rot || 0);
 export function setWorld(c, R) {
   const s = R.scale, d = R.dpr, r = R.rot || 0, co = Math.cos(r), sn = Math.sin(r);
+  if (c instanceof ShiftCtx) { // el centro de la vista pasa a ser el origen de las coordenadas que recibe el canvas
+    c.setTransform(d * s * co, d * s * sn, d * s * sn, -d * s * co, d * ((R.ox || 0) + R.w / 2), d * ((R.oy || 0) + R.h / 2));
+    c.rx = R.cx; c.ry = R.cy; c.world = true;
+    return;
+  }
   const ex = (R.ox || 0) + R.w / 2 - s * (co * R.cx + sn * R.cy), fy = (R.oy || 0) + R.h / 2 - s * (sn * R.cx - co * R.cy);
   c.setTransform(d * s * co, d * s * sn, d * s * sn, -d * s * co, d * ex, d * fy);
+}
+// Dibujo en caché del espacio modelo con muchos objetos: una imagen de la vista con un margen alrededor, alineada con los
+// ejes y la escala de la vista. Al encuadrar se desplaza y sólo se dibujan las franjas nuevas; al cambiar objetos, sólo
+// los rectángulos que tocan (antes y después, del índice espacial). Cambiar la escala, el giro, las capas o los estilos
+// la invalida. Lo pendiente se reparte entre fotogramas (budget, en ms) con la imagen anterior escalada como vista previa.
+const CACHE_MIN = 3000, CACHE_MARGIN = 128, BAND = 256;
+export const TILES = { min: CACHE_MIN, on: true, budget: 70 }; // budget 0: dibujarlo todo de una vez
+// Rectángulo a menos rectángulo b: hasta cuatro rectángulos
+function rectMinus(a, b) {
+  if (b.x2 <= a.x1 || b.x1 >= a.x2 || b.y2 <= a.y1 || b.y1 >= a.y2) return [a];
+  const out = [];
+  if (b.y1 > a.y1) out.push({ x1: a.x1, y1: a.y1, x2: a.x2, y2: b.y1 });
+  if (b.y2 < a.y2) out.push({ x1: a.x1, y1: b.y2, x2: a.x2, y2: a.y2 });
+  const y1 = Math.max(a.y1, b.y1), y2 = Math.min(a.y2, b.y2);
+  if (b.x1 > a.x1) out.push({ x1: a.x1, y1, x2: b.x1, y2 });
+  if (b.x2 < a.x2) out.push({ x1: b.x2, y1, x2: a.x2, y2 });
+  return out;
 }
 // Vista del modelo dentro de una ventana gráfica (con su giro), a partir de la vista del papel
 export function vpR(R, vp) {
@@ -75,7 +139,10 @@ export function paintEntity(c, e, R, st, sty, vis) {
 export class Renderer {
   constructor(app, base, over) {
     this.app = app; this.base = base; this.over = over;
-    this.cb = base.getContext('2d'); this.co = over.getContext('2d');
+    this.cb = new ShiftCtx(base.getContext('2d')); this.co = new ShiftCtx(over.getContext('2d'));
+    this.tc = {}; // imagen en caché del modelo (drawModelTiles)
+    ENV.onImageLoad = () => this.flushTiles(); // una imagen o una fuente cargada cambia el aspecto
+    document.fonts?.addEventListener?.('loadingdone', () => { this.flushTiles(); this.invalidate(); });
     this.dpr = 1; this.baseDirty = true; this.overDirty = true;
     const tick = () => {
       if (this.baseDirty) { this.baseDirty = false; this.drawBase(); }
@@ -106,7 +173,7 @@ export class Renderer {
   drawModel(c, R, rect, sty, vis) {
     const doc = this.app.doc;
     setWorld(c, R);
-    this.paintList(c, R, this.app.spatial.of(doc.model, doc.ver).query(rect, true), sty, vis);
+    this.paintList(c, R, this.app.spatial.of(doc.model, doc).query(rect, true), sty, vis);
   }
   drawViewport(c, R, vp, sty) {
     c.save();
@@ -188,9 +255,103 @@ export class Renderer {
       return;
     }
     if (app.T.grid) this.drawGrid(c, R);
-    this.drawModel(c, R, app.view.rect(), sty);
+    if (TILES.on && app.doc.model.length >= TILES.min) this.drawModelTiles(c, sty);
+    else this.drawModel(c, R, app.view.rect(), sty);
     this.drawConstraints(c, R);
     this.drawUCS(c);
+  }
+
+  // ---------- Dibujo en caché ----------
+  flushTiles() { const t = this.tc; t.key = null; t.prev = null; this.invalidate(); }
+  drawModelTiles(c, sty) {
+    const app = this.app, doc = app.doc, v = app.view, d = this.dpr, tree = app.spatial.of(doc.model, doc);
+    const sd = v.scale * d, rot = v.rot || 0, M = CACHE_MARGIN;
+    const rest = [rot, d, app.T.lwt, doc.activeVp, JSON.stringify(doc.layers), JSON.stringify(doc.settings)].join('|'), key = `${v.scale}|${rest}`;
+    const fr = p => { const [u, w] = toFrame(rot, p.x, p.y); return [u * sd, -w * sd]; }; // píxeles de la vista (sin centrar)
+    const [fcx, fcy] = fr({ x: v.cx, y: v.cy }), x0 = (v.ox + v.w / 2) * d - fcx, y0 = (v.oy + v.h / 2) * d - fcy;
+    // Zona visible en píxeles de la vista
+    const vis = { x1: v.ox * d - x0, y1: v.oy * d - y0, x2: (v.ox + v.w) * d - x0, y2: (v.oy + v.h) * d - y0 };
+    let t = this.tc;
+    const fresh = () => { // imagen nueva que cubre la vista con margen; toda pendiente de dibujar
+      const W = Math.ceil(v.w * d) + 2 * M, H = Math.ceil(v.h * d) + 2 * M;
+      const cv = t.cv?.width === W && t.cv?.height === H && !t.prev ? t.cv : Object.assign(document.createElement('canvas'), { width: W, height: H });
+      return { cv, W, H, ax: Math.floor(vis.x1) - M, ay: Math.floor(vis.y1) - M };
+    };
+    if (key !== t.key || tree !== t.tree) {
+      // Sólo cambió la escala (zoom): la imagen anterior, escalada, sirve de vista previa de lo que falta por dibujar
+      const prev = tree === t.tree && rest === t.rest && t.cv ? { cv: t.cv, ax: t.ax, ay: t.ay, fx: t.fx, fy: t.fy, sd: t.sd, part: !!t.pending?.length } : null;
+      const keepOld = prev?.part && t.prev; // zoom seguido sin haber terminado: se conserva la vista previa anterior
+      t = this.tc = { key, rest, tree, sd, fx: x0 - Math.floor(x0), fy: y0 - Math.floor(y0), prev: keepOld ? t.prev : prev, ...(keepOld ? {} : { cv: null }) };
+      Object.assign(t, fresh());
+      t.pending = [{ x1: 0, y1: 0, x2: t.W, y2: t.H }];
+      tree.dirt = [];
+    }
+    const X0 = Math.round(x0 - t.fx), Y0 = Math.round(y0 - t.fy);
+    // Píxel de la imagen (a, b) = píxel de la vista (ax + a − fx, ay + b − fy)
+    const toCache = f => ({ x1: f.x1 - t.ax + t.fx, y1: f.y1 - t.ay + t.fy, x2: f.x2 - t.ax + t.fx, y2: f.y2 - t.ay + t.fy });
+    // Encuadre fuera de la imagen: nueva imagen desplazada con lo ya dibujado; sólo quedan pendientes las franjas nuevas
+    const need = toCache(vis);
+    if (need.x1 < 0 || need.y1 < 0 || need.x2 > t.W || need.y2 > t.H || t.W !== Math.ceil(v.w * d) + 2 * M || t.H !== Math.ceil(v.h * d) + 2 * M) {
+      const old = { cv: t.cv, ax: t.ax, ay: t.ay, W: t.W, H: t.H, pending: t.pending };
+      Object.assign(t, fresh());
+      if (t.cv === old.cv) t.cv = Object.assign(document.createElement('canvas'), { width: t.W, height: t.H });
+      const dx = old.ax - t.ax, dy = old.ay - t.ay, g = t.cv.getContext('2d');
+      g.drawImage(old.cv, dx, dy);
+      const kept = { x1: Math.max(0, dx), y1: Math.max(0, dy), x2: Math.min(t.W, dx + old.W), y2: Math.min(t.H, dy + old.H) };
+      t.pending = [...rectMinus({ x1: 0, y1: 0, x2: t.W, y2: t.H }, kept), ...old.pending.map(r => ({ x1: r.x1 + dx, y1: r.y1 + dy, x2: r.x2 + dx, y2: r.y2 + dy }))];
+    }
+    // Objetos cambiados (rectángulos del índice espacial, antes y después, con margen para grosores, puntos y textos)
+    if (tree.dirt === null) t.pending = [{ x1: 0, y1: 0, x2: t.W, y2: t.H }];
+    else for (const b of tree.dirt) {
+      if (!isFinite(b.x1)) continue;
+      const cs = [[b.x1, b.y1], [b.x2, b.y1], [b.x2, b.y2], [b.x1, b.y2]].map(([x, y]) => fr({ x, y })), m = 24 * d;
+      t.pending.push(toCache({ x1: Math.min(...cs.map(q => q[0])) - m, y1: Math.min(...cs.map(q => q[1])) - m, x2: Math.max(...cs.map(q => q[0])) + m, y2: Math.max(...cs.map(q => q[1])) + m }));
+    }
+    tree.dirt = [];
+    // Pendientes: recortados a la imagen, en franjas (para repartirlos entre fotogramas) y primero los visibles
+    let list = [];
+    for (const r of t.pending) {
+      const q = { x1: Math.max(0, Math.floor(r.x1)), y1: Math.max(0, Math.floor(r.y1)), x2: Math.min(t.W, Math.ceil(r.x2)), y2: Math.min(t.H, Math.ceil(r.y2)) };
+      if (q.x2 <= q.x1 || q.y2 <= q.y1) continue;
+      for (let y = q.y1; y < q.y2; y += BAND) list.push({ ...q, y1: y, y2: Math.min(q.y2, y + BAND) });
+    }
+    if (list.length > 64) { const u = list.reduce((a, r) => bbUnion(a, r), null); list = []; for (let y = u.y1; y < u.y2; y += BAND) list.push({ ...u, y1: y, y2: Math.min(u.y2, y + BAND) }); }
+    const seen = r => r.x2 > need.x1 && r.x1 < need.x2 && r.y2 > need.y1 && r.y1 < need.y2;
+    list.sort((a, b) => seen(b) - seen(a));
+    const until = performance.now() + TILES.budget, left = [];
+    for (const r of list) {
+      if (TILES.budget && performance.now() > until && left.length + 1 < list.length) { left.push(r); continue; }
+      this.renderTile(t, r, sty, tree, v, d);
+    }
+    t.pending = left;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    const vl = left.filter(seen);
+    if (vl.length && t.prev && t.prev.sd) { // vista previa escalada debajo de lo que falta
+      const p = t.prev, s = sd / p.sd;
+      c.save(); c.beginPath();
+      for (const r of vl) c.rect(X0 + t.ax + r.x1, Y0 + t.ay + r.y1, r.x2 - r.x1, r.y2 - r.y1);
+      c.clip();
+      c.drawImage(p.cv, x0 + (p.ax - p.fx) * s, y0 + (p.ay - p.fy) * s, p.cv.width * s, p.cv.height * s);
+      c.restore();
+    }
+    c.drawImage(t.cv, X0 + t.ax, Y0 + t.ay);
+    if (left.length) setTimeout(() => this.invalidate(), 0);
+    else t.prev = null;
+  }
+  // Dibuja una zona r (en píxeles de la imagen en caché): la borra y vuelve a dibujar los objetos que la tocan
+  renderTile(t, r, sty, tree, v, d) {
+    const sd = v.scale * d, rot = v.rot || 0, raw = t.cv.getContext('2d'), c = new ShiftCtx(raw);
+    raw.save();
+    raw.setTransform(1, 0, 0, 1, 0, 0); raw.clearRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
+    raw.beginPath(); raw.rect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1); raw.clip();
+    const w = (a, b) => fromFrame(rot, (t.ax + a - t.fx) / sd, -(t.ay + b - t.fy) / sd); // píxel de la imagen → dibujo
+    const [cx, cy] = w(t.W / 2, t.H / 2), R = makeRV(cx, cy, v.scale, t.W / d, t.H / d, d, 0, 0, rot), m = 24 / v.scale;
+    const q = [w(r.x1, r.y1), w(r.x2, r.y1), w(r.x2, r.y2), w(r.x1, r.y2)];
+    const rect = { x1: Math.min(...q.map(p => p[0])) - m, y1: Math.min(...q.map(p => p[1])) - m, x2: Math.max(...q.map(p => p[0])) + m, y2: Math.max(...q.map(p => p[1])) + m };
+    R.clip = rect; // las polilíneas largas sólo dibujan lo que cae en la zona (simplePath)
+    setWorld(c, R);
+    this.paintList(c, R, tree.query(rect, true), sty);
+    raw.restore();
   }
 
   // Restricciones: símbolos junto a la geometría (pantalla) y cotas de restricción con nombre=expresión (dibujo)
@@ -376,8 +537,12 @@ export class Renderer {
       const v = app.view;
       c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.beginPath(); c.rect(v.ox * d, v.oy * d, v.w * d, v.h * d); c.clip();
     }
+    if (hl.size > 1500 && !tiles) this.drawBigSelection(c, hl, R); // muchos objetos designados: en caché
+    else {
+      setWorld(c, R);
+      for (const id of hl) { const e = doc.get(id); if (e && doc.visible(e)) this.highlight(c, e, R, true); }
+    }
     setWorld(c, R);
-    for (const id of hl) { const e = doc.get(id); if (e && doc.visible(e)) this.highlight(c, e, R, true); }
     // Grupos designados enteros: recuadro discontinuo alrededor del grupo
     if (doc.groups.length && hl.size > 1) {
       c.save(); c.setTransform(d, 0, 0, d, 0, 0); c.strokeStyle = 'rgba(156,203,255,0.8)'; c.lineWidth = 1; c.setLineDash([5, 4]);
@@ -458,6 +623,22 @@ export class Renderer {
 
     if (m.inside && !app.touchMode && (!tiles || app.view.contains({ x: m.sx, y: m.sy }))) this.drawCursor(c, req);
     if (tiles) c.restore();
+  }
+
+  // Resaltado de una designación muy grande: sólo lo visible y dibujado una vez por vista, versión y designación
+  drawBigSelection(c, hl, R) {
+    const app = this.app, doc = app.doc, v = app.view, key = [v.cx, v.cy, v.scale, v.rot, this.dpr, doc.ver, hl.size, app.selStamp || 0].join('|');
+    let k = this.selCache;
+    if (!k || k.key !== key || k.cv.width !== this.over.width || k.cv.height !== this.over.height) {
+      const cv = k?.cv && k.cv.width === this.over.width && k.cv.height === this.over.height ? k.cv : Object.assign(document.createElement('canvas'), { width: this.over.width, height: this.over.height });
+      const raw = cv.getContext('2d'), sc = new ShiftCtx(raw);
+      raw.setTransform(1, 0, 0, 1, 0, 0); raw.clearRect(0, 0, cv.width, cv.height);
+      setWorld(sc, R);
+      for (const e of app.idx().query(v.rect(), true)) if (hl.has(e.id) && doc.visible(e)) this.highlight(sc, e, R, true);
+      k = this.selCache = { key, cv };
+    }
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.drawImage(k.cv, 0, 0);
   }
 
   drawGrips(c, req) {

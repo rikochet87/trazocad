@@ -4,6 +4,7 @@
 import * as G from './geom.js';
 import { CMDS, findCmd } from './commands.js';
 import { gripsOf, primsOf, TYPES } from './entities.js';
+import { toReal, fromReal, inModelSpace } from './origin.js';
 
 const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
 
@@ -65,7 +66,8 @@ export async function runScript(app, text, name = 'guion') {
 // para lo designado con el ratón, las coordenadas universales (*x,y) o un punto sobre cada objeto designado.
 export const REC = { on: false, lines: [], name: '' };
 const nf = v => String(+(+v).toFixed(8));
-const wpt = p => `*${nf(p.x)},${nf(p.y)}`;
+// Coordenadas universales reales (con el origen local del modelo, origin.js)
+const wpt = (doc, p) => { const q = inModelSpace(doc) ? toReal(doc, p) : p; return `*${nf(q.x)},${nf(q.y)}`; };
 // Punto sobre el objeto (para volver a designarlo escribiendo el punto)
 export function pointOn(e) {
   const q = primsOf(e).find(Boolean);
@@ -80,16 +82,16 @@ export function recCommand(d, arg) {
 export function recAnswer(app, r, v, typed) {
   if (!REC.on || (app.cmd && (app.cmd.name === 'ACTRECORD' || app.cmd.name === 'ACTSTOP'))) return;
   if (r.kind === 'select') { // lo designado (con el ratón o escribiendo), como un punto sobre cada objeto
-    for (const id of v || []) { const e = app.doc.get(id), p = e && pointOn(e); if (p) REC.lines.push(wpt(p)); }
+    for (const id of v || []) { const e = app.doc.get(id), p = e && pointOn(e); if (p) REC.lines.push(wpt(app.doc, p)); }
     REC.lines.push('');
     return;
   }
   if (typed !== undefined) { REC.lines.push(typed); return; }
   switch (r.kind) {
-    case 'point': if (v && typeof v === 'object') REC.lines.push(wpt(v)); else if (v != null) REC.lines.push(String(v)); else REC.lines.push(''); break;
+    case 'point': if (v && typeof v === 'object') REC.lines.push(wpt(app.doc, v)); else if (v != null) REC.lines.push(String(v)); else REC.lines.push(''); break;
     case 'distance': REC.lines.push(v == null ? '' : nf(v)); break;
     case 'angle': REC.lines.push(v == null ? '' : nf(G.deg(v))); break;
-    case 'entity': REC.lines.push(v?.pt ? wpt(v.pt) : ''); break;
+    case 'entity': REC.lines.push(v?.pt ? wpt(app.doc, v.pt) : ''); break;
     default: REC.lines.push(v == null ? '' : String(v));
   }
 }
@@ -107,7 +109,7 @@ async function feed(app, name, answers) {
     if (!app.req) break;
     const r = app.req;
     if (Array.isArray(a) && r.kind === 'select') { for (const id of a) r.set.add(id); app.submit(''); continue; }
-    if (a && typeof a === 'object' && 'pick' in a && r.kind === 'entity') { const e = app.doc.get(a.pick); r.resolve({ e, pt: a.at ? pt(a.at) : pointOn(e) }); continue; }
+    if (a && typeof a === 'object' && 'pick' in a && r.kind === 'entity') { const e = app.doc.get(a.pick); r.resolve({ e, pt: a.at ? (inModelSpace(app.doc) ? fromReal(app.doc, pt(a.at)) : pt(a.at)) : pointOn(e) }); continue; }
     if (a && typeof a === 'object' && 'x' in a) { app.submit(`*${a.x},${a.y}`); continue; }
     app.submit(String(a));
   }
@@ -126,23 +128,32 @@ export function makeApi(app) {
     try { return fn(d); } finally { if (own) { d.commit(); app.renderer.invalidate(); app.ui.refresh(); } }
   };
   const add = (e, props = {}) => tx(d => d.add(app.annoNew({ ...BASE(), ...e, ...props })).id);
+  // Los puntos de la API son coordenadas reales: con origen local se pasan a las internas del modelo
+  const ip = p => { const q = pt(p), d = doc(); return inModelSpace(d) ? fromReal(d, q) : q; };
+  const ip3 = p => ({ ...ip(p), z: +(Array.isArray(p) ? p[2] : p.z) || 0 });
   const api = {
-    version: '0.12',
+    version: '0.13',
     get app() { return app; },
     get doc() { return doc(); },
     G, P: G.P,
+    // Origen local (origin.js): los objetos que devuelven get y all tienen las coordenadas internas; real e internal convierten
+    get origin() { return { ...doc().origin }; },
+    real: p => (inModelSpace(doc()) ? toReal(doc(), pt(p)) : pt(p)),
+    internal: p => ip(p),
     // Altas: devuelven el identificador del objeto
     add: e => add(e),
-    line: (a, b, props) => add({ type: 'line', p1: pt(a), p2: pt(b) }, props),
-    circle: (c, r, props) => add({ type: 'circle', c: pt(c), r: +r }, props),
-    arc: (c, r, a1, a2, props) => add({ type: 'arc', c: pt(c), r: +r, a1: G.rad(a1), a2: G.rad(a2) }, props),
-    pline: (pts, closed = false, props) => add({ type: 'pline', pts: pts.map(pt), closed: !!closed }, props),
-    point: (p, props) => add({ type: 'point', p: pt(p) }, props),
-    text: (p, h, text, { rot = 0, ...props } = {}) => add({ type: 'text', p: pt(p), h: +h, rot: G.rad(rot), text: String(text), align: 'l' }, props), // rot en grados
-    mtext: (p, h, text, props) => add({ type: 'mtext', p: pt(p), h: +h, w: 0, rot: 0, attach: 'tl', text: String(text) }, props),
+    line: (a, b, props) => add({ type: 'line', p1: ip(a), p2: ip(b), ...(+(a[2] ?? a.z) ? { z1: +(a[2] ?? a.z) } : {}), ...(+(b[2] ?? b.z) ? { z2: +(b[2] ?? b.z) } : {}) }, props),
+    circle: (c, r, props) => add({ type: 'circle', c: ip(c), r: +r }, props),
+    arc: (c, r, a1, a2, props) => add({ type: 'arc', c: ip(c), r: +r, a1: G.rad(a1), a2: G.rad(a2) }, props),
+    pline: (pts, closed = false, props) => add({ type: 'pline', pts: pts.map(ip), closed: !!closed }, props),
+    pline3d: (pts, closed = false, props) => add({ type: 'pline3d', pts: pts.map(ip3), ...(closed ? { closed: true } : {}) }, props), // vértices [x, y, z]
+    face3d: (pts, props) => add({ type: 'face3d', pts: [...pts, ...pts.slice(-1)].slice(0, 4).map(ip3) }, props),
+    point: (p, props) => add({ type: 'point', p: ip(p) }, props),
+    text: (p, h, text, { rot = 0, ...props } = {}) => add({ type: 'text', p: ip(p), h: +h, rot: G.rad(rot), text: String(text), align: 'l' }, props), // rot en grados
+    mtext: (p, h, text, props) => add({ type: 'mtext', p: ip(p), h: +h, w: 0, rot: 0, attach: 'tl', text: String(text) }, props),
     insert: (name, p, props) => {
       if (!doc().blocks[name]) throw new Error(`No existe el bloque "${name}".`);
-      return add({ type: 'insert', name, p: pt(p), sx: 1, sy: 1, rot: 0 }, props);
+      return add({ type: 'insert', name, p: ip(p), sx: 1, sy: 1, rot: 0 }, props);
     },
     // Consultas
     get: id => doc().get(id) || null,

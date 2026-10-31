@@ -46,9 +46,9 @@ export function layUniso(doc) {
 export function layMerge(doc, from, to) {
   const src = new Set(from.filter(n => n !== to && n !== '0'));
   let n = 0;
-  for (const e of everyEnt(doc)) if (src.has(e.layer)) { e.layer = to; n++; }
+  for (const e of everyEnt(doc)) if (src.has(e.layer)) { doc.before(e); e.layer = to; n++; }
   for (const e of doc.allEnts()) {
-    if (e.type === 'vport' && e.frozen) { const f = [...new Set(e.frozen.map(x => (src.has(x) ? to : x)))]; if (f.length) e.frozen = f; else delete e.frozen; }
+    if (e.type === 'vport' && e.frozen) { const f = [...new Set(e.frozen.map(x => (src.has(x) ? to : x)))]; doc.before(e); if (f.length) e.frozen = f; else delete e.frozen; }
   }
   for (const s of doc.layerStates) for (const k of src) delete s.layers[k];
   for (const f of doc.layerFilters) if (f.layers) f.layers = [...new Set(f.layers.map(x => (src.has(x) ? to : x)))];

@@ -1,4 +1,4 @@
-# TrazoCAD — v0.12
+# TrazoCAD — v0.13
 
 Software de dibujo técnico 2D inspirado en AutoCAD, hecho desde cero como **PWA** (aplicación web instalable y sin conexión). JavaScript puro con módulos ES: sin dependencias ni compilación.
 
@@ -11,6 +11,19 @@ node serve.mjs          # http://localhost:8080
 ```
 
 Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta tal cual a cualquier hosting estático con HTTPS (GitHub Pages, Netlify, Hostinger…). En Chrome/Edge aparece el botón **Instalar**.
+
+## Novedades de la v0.13
+
+![Planta de un tramo de ruta abierta desde un DXF en coordenadas Gauss-Krüger (X = 5 655 500, Y = 6 123 930): curvas de nivel como polilíneas 3D con las maestras cada 5 m, superficie TIN de 2400 caras 3D a lo largo del eje y el eje como polilínea 3D designado; la paleta Propiedades muestra el vértice 101 con sus coordenadas reales y su cota, y la barra de estado las coordenadas reales con la Z](docs/v13.png)
+
+| Función | Detalle |
+|---|---|
+| **Cota Z** (`ELEV`, `FLATTEN`) | Los puntos se escriben como `x,y,z` (y `@dx,dy,dz`). Las **líneas** guardan la Z de cada extremo (*Inicio Z*, *Fin Z*) y los objetos planos (polilíneas, círculos, arcos, elipses, splines, puntos, textos, bloques, sombreados…) su **Elevación**, en Propiedades y en LIST, también con varios objetos a la vez. `ELEV` fija la cota de los objetos nuevos y de los puntos que se designan sin Z; las referencias a los extremos de las líneas y a los vértices 3D llevan su Z, y la barra de estado e `ID` la muestran. `FLATTEN` (APLANAR) lleva lo designado a cota 0 o a la indicada (las polilíneas 3D pasan a polilíneas con esa elevación) |
+| **Polilíneas 3D** (`3DPOLY`) y **caras 3D** (`3DFACE`) | `3DPOLY` (3P) dibuja una polilínea con una Z por vértice, con la opción *Elevación* para los puntos que se designan con el ratón (digitalizar una curva de nivel), *desHacer* y *Cerrar*. `3DFACE` (3F) crea caras de tres o cuatro vértices con **aristas invisibles** (opción *Invisible* antes del punto) y las encadena como AutoCAD. En Propiedades se recorre y edita cada vértice (X, Y, Z) y se ven la longitud 3D, la de planta, las Z mínima y máxima y el área de la cara. Se dibujan en planta y se desplazan, copian, giran y escalan conservando la Z |
+| **DXF con Z** | LINE con los códigos 30/31, elevación de LWPOLYLINE (38), POLYLINE, círculos, arcos, textos, bloques y sombreados; **POLYLINE 3D** (indicador 8) y **3DFACE** en DXF 2007, 2000 y R12. Al importar, las **mallas policara** (superficies TIN de los programas de topografía) y las mallas poligonales M×N se convierten en caras 3D |
+| **Coordenadas grandes** (`LOCALORIGIN`) | El dibujo tiene un **origen local**: el modelo guarda las coordenadas relativas a él, de modo que las intersecciones, las áreas y el dibujo en pantalla trabajan con números pequeños, y el usuario ve, escribe y exporta siempre las **reales** (barra de estado, entrada de coordenadas con y sin `*`, `ID`, Propiedades, LIST, cotas de coordenadas, API, guiones grabados y DXF). Al abrir un DXF con coordenadas de proyección (6 o 7 cifras) el origen se elige solo (centro redondeado del dibujo); `LOCALORIGIN` (ORIGENLOCAL) lo cambia (*Automático*, *Punto*, *Restablecer*) sin mover nada ni hacer saltar la vista, con deshacer. **Sin temblores al ampliar**: el canvas guarda las coordenadas en coma flotante de 32 bits, así que el dibujo en pantalla resta antes el centro de la vista (en doble precisión) |
+| **Más de 100 000 objetos** | **Deshacer incremental**: cada paso guarda sólo los objetos añadidos, suprimidos y modificados (antes, una copia de todo el dibujo: 50 MB por paso con 100 000 objetos); una orden pasa de 270 ms a 2 ms y deshacer un borrado de 60 000 objetos tarda 0,1 s. **Índice espacial incremental**, sin reconstruirlo en cada cambio. **Imagen del modelo en caché**: al encuadrar sólo se dibujan las franjas nuevas y al editar sólo los rectángulos que cambian; tras un zoom se completa en varios fotogramas sobre la imagen anterior escalada. **Curvas de nivel simplificadas** según el zoom (en pantalla, no al imprimir ni exportar), designaciones grandes resaltadas en caché, supresión de muchos objetos de una pasada y apertura de **DXF grandes en segundo plano** (Web Worker) con **barra de progreso**. Los dibujos grandes se autoguardan en IndexedDB |
+| **Otros** | Grupo *Cota Z* en la pestaña Inicio y *Origen local* en Vista › Coordenadas; la API añade `tc.pline3d`, `tc.face3d`, `tc.origin`, `tc.real` y `tc.internal` y trabaja con coordenadas reales. Archivos `.tcad` versión 13 (con el origen local; los anteriores se siguen abriendo); la ayuda (F1) recoge las novedades |
 
 ## Novedades de la v0.12
 
@@ -195,13 +208,15 @@ js/geom.js       Vectores, matrices, intersecciones, curvaturas
 js/colors.js     Colores ACI ↔ RGB
 js/spline.js     B-splines: De Boor, interpolación, teselado, inserción de nudos, tramos y uniones
 js/richtext.js   Códigos de formato de MTEXT: análisis y escritura
-js/entities.js   Tipos de entidad (línea … spline, texto con formato, directriz, tabla, atributo, sombreado, bloque, línea múltiple, región, matriz, ventana, cobertura, imagen)
+js/entities.js   Tipos de entidad (línea … spline, texto con formato, directriz, tabla, atributo, sombreado, bloque, línea múltiple, región, matriz, ventana, cobertura, imagen, polilínea 3D, cara 3D), cota Z y simplificación de polilíneas según el zoom
 js/mline.js      Líneas múltiples: estilos, ingletes, remates, relleno y edición MLEDIT
 js/region.js     Regiones: contornos con arcos, operaciones booleanas, cadenas de líneas y arcos, contornos exactos de CONTORNO
 js/arrays.js     Matrices asociativas: rectangular (con niveles y ángulo de filas), polar y a lo largo de un recorrido; origen, reemplazo, elementos, pinzamientos y propiedades
 js/xclip.js      Delimitación de referencias (XCLIP): recorte de primitivas con el contorno
 js/assoc.js      Cotas asociativas y marcas/líneas de centro: referencias a la geometría y recálculo
-js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, grupos, estados de capa, patrones, deshacer, asociatividad (también matriz–recorrido)
+js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, grupos, estados de capa, patrones, deshacer incremental (diario de cambios del modelo), diario para el índice espacial, asociatividad (también matriz–recorrido)
+js/origin.js     Origen local del dibujo: coordenadas reales ↔ internas, cambio de origen, origen automático y copia con las coordenadas reales para el DXF
+js/dxfworker.js  Lectura de DXF en segundo plano (Web Worker) con avisos de progreso
 js/xref.js       Referencias externas: lectura, prefijos, recarga, desenlace, unión y archivos recordados (IndexedDB)
 js/plotstyles.js Tablas de estilos de trazado .ctb/.stb: predefinidas, aplicación al imprimir y lectura/escritura de archivos de AutoCAD
 js/ucs.js        Sistemas de coordenadas personales: conversión, SCP con nombre y previos, tres puntos y alineación con objetos
@@ -221,13 +236,13 @@ js/layerstates.js Estados de capa: guardar, restaurar, comparar, renombrar y arc
 js/pdf.js        Exportación a PDF vectorial (con los estilos de trazado de la presentación)
 js/patterns.js   Patrones de sombreado (predefinidos, personalizados .pat y de usuario), degradados y recorte de líneas de patrón
 js/hatch.js      Detección de contornos (grafo plano, caras e islas, con las primitivas de origen) y recálculo asociativo
-js/spatial.js    Índice espacial
+js/spatial.js    Índice espacial (árbol R) incremental, con los rectángulos que cambian para la caché de dibujo
 js/view.js       Vista del modelo/papel con giro (VIEWTWIST) y su rectángulo dentro de la zona de dibujo, y vista a través de una ventana gráfica girada
-js/render.js     Dibujado en canvas
+js/render.js     Dibujado en canvas: contexto con el origen en el centro de la vista (precisión), imagen del modelo en caché y resaltado de designaciones grandes
 js/snap.js       Referencias, rastreo, polar, orto (en el SCP), isométrico
 js/ops.js        Recortar, alargar, partir, longitud, desfase, empalme, chaflán, unir, recorrido por longitud (GRADUA, DIVIDE)…
 js/commands.js   Comandos y alias
-js/dxf.js        DXF 2007 (MULTILEADER, ACAD_TABLE, ARC_DIMENSION, imágenes, DIMBREAK, matrices y degradados de varios colores) / 2000 (ambos con presentaciones y su tabla de estilos de trazado, grupos, MLINE con cortes, IMAGE, XCLIP, XREF, tolerancias y modificaciones de cota, y estados de capa) / R12
+js/dxf.js        DXF con cota Z (POLYLINE 3D, 3DFACE, mallas policara y M×N al importar) en 2007 (MULTILEADER, ACAD_TABLE, ARC_DIMENSION, imágenes, DIMBREAK, matrices y degradados de varios colores) / 2000 (ambos con presentaciones y su tabla de estilos de trazado, grupos, MLINE con cortes, IMAGE, XCLIP, XREF, tolerancias y modificaciones de cota, y estados de capa) / R12
 js/io.js         Abrir, guardar, exportar SVG/PNG (con imágenes), imprimir
 js/ui.js         Cinta, paletas, barra de estado, diálogos (incluido el de MLEDIT)
 js/app.js        Núcleo: entrada, motor de comandos, presentaciones
@@ -276,9 +291,16 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 - Las paletas de herramientas y las aplicaciones que se cargan al iniciar se guardan en el navegador, no en el dibujo, y todavía no se pueden exportar a un archivo.
 - Los bloques de la biblioteca vial son genéricos (forma, colores y medidas típicas): no siguen una norma concreta de señalización ni de obras de arte, que cada proyecto debe comprobar con la suya. La sección del caño admite cinco diámetros (estados de visibilidad); la de cajón, cualquier luz y altura. DesignCenter lee `.tcad` y `.dxf` (no DWG) elegidos con el selector de archivos.
 
-## Hoja de ruta (v0.13+)
+- La cota Z no tiene vistas 3D: todo se dibuja y se edita en planta (la Z es un dato de los objetos). Las intersecciones, recortes, alargamientos y desfases se calculan en planta; RECORTA, ALARGA, DESFASE, PARTE y UNIR no trabajan con polilíneas 3D ni caras 3D, y ESCALA no cambia las Z. Las caras 3D se dibujan con sus aristas, sin relleno. Las referencias a objetos llevan la Z en los extremos de las líneas y en los vértices de polilíneas 3D y caras 3D; en los demás objetos, los puntos designados toman la elevación actual.
+- Las mallas policara y M×N de un DXF se importan como caras 3D sueltas y se exportan así (no como mallas). El espesor (*thickness*, código 39) de los objetos no se importa.
+- El origen local sólo afecta al espacio modelo (el papel y los bloques tienen sus propias coordenadas). Los objetos que devuelven `tc.get` y `tc.all` tienen las coordenadas internas (`tc.real` las pasa a reales), y un cambio hecho directamente en ellos, sin `tc.modify`, no se puede deshacer. Las líneas de los patrones de sombreado pasan por el origen interno, de modo que con un origen local quedan desplazadas respecto a las de AutoCAD (el sombreado es el mismo).
+- La imagen en caché del modelo se usa en la vista única del modelo con 3000 objetos o más; las ventanas en mosaico, las presentaciones y el editor de bloques se dibujan enteros en cada fotograma. Cambiar la escala, el giro, las capas o un estilo vuelve a dibujarlo todo (en varios fotogramas). La apertura en segundo plano necesita Web Workers de módulo (navegadores actuales); si no, el DXF se lee en el hilo principal.
 
-**Base para la ingeniería vial** (v0.13): **cota Z** en los objetos (propiedad *Elevación* de líneas, polilíneas, bloques y textos, y Z de cada vértice), **polilíneas 3D** (3DPOLY) y **caras 3D** (3DFACE), con su paso por DXF (POLYLINE 3D, 3DFACE y códigos 30); **coordenadas grandes sin pérdida de precisión** con un origen local del dibujo, para trabajar con coordenadas de proyección (6 o 7 cifras) sin temblores al ampliar ni errores en las intersecciones, y en el DXF las coordenadas reales; y **rendimiento con más de 100 000 objetos**: índice espacial incremental (sin reconstruirlo en cada cambio), dibujo por teselas en caché con regeneración sólo de lo que cambia, simplificación de las curvas de nivel según el zoom, y apertura de DXF grandes en segundo plano (Web Worker) con barra de progreso.
+## Hoja de ruta (v0.14+)
+
+**SIG 1: georreferenciación y mapa base** (v0.14): **motor de proyecciones** propio (transversa de Mercator y UTM, Gauss-Krüger con el orden de ejes configurable, cónica conforme de Lambert, Mercator y Web Mercator, estereográficas) con **datums** y transformaciones de Helmert de 3 y 7 parámetros, definiciones WKT/PROJ/`.prj` y un catálogo EPSG incorporado con los sistemas más usados; **georreferenciación del dibujo** (`GEOGRAPHICLOCATION`): sistema de coordenadas, punto de referencia, unidades y norte, guardados en el `.tcad` y relacionados con el origen local de la v0.13; **coordenadas geográficas** (latitud y longitud, en grados sexagesimales o decimales) en la barra de estado e `ID`, y entrada de puntos en geográficas; **mapa base** bajo el dibujo con teselas XYZ, WMS y WMTS configurables (OpenStreetMap por defecto), reproyectado al sistema del dibujo, con transparencia, caché sin conexión y exportación a PNG/PDF; y **posición GPS** del dispositivo sobre el plano (Geolocation API) con su precisión y seguimiento.
+
+**Pendientes de la v0.13**: desfase, recorte, alargamiento, unión y partición de polilíneas 3D; referencias a objetos con la Z interpolada a lo largo de cualquier objeto; caras 3D con relleno según la cota; exportar mallas policara; la caché de dibujo en las ventanas en mosaico y gráficas.
 
 **Pendientes de la v0.12**: posiciones propias de cada escala en los objetos anotativos (ANNORESET) y escalas anotativas en el DXF; ventanas gráficas poligonales y a partir de un objeto (MVIEW › Objeto) para los marcos de vista a lo largo del eje; exportar e importar paletas de herramientas y guiones de aplicaciones; SCP por ventana en el DXF.
 
@@ -301,7 +323,7 @@ El objetivo final es un programa con las capacidades de AutoCAD, orientado a la 
 | **v0.10** | CAD | Terminada: imágenes a escala real y con varios contornos, tolerancias y DIMOVERRIDE, islas y degradados de varios colores, XREF recordadas y en DXF, tablas CTB/STB, LTSCALE por ventana y Propiedades de varios objetos |
 | **v0.11** | CAD | Terminada: SCP (UCS) con nombre, por objeto y por tres puntos, vistas con nombre, ventanas en mosaico del modelo, QSELECT, FILTER, FIND, OVERKILL, AUDIT y herramientas de capas (aislar, recorrer, fusionar, filtros) |
 | **v0.12** | CAD | Terminada: vistas y ventanas gráficas giradas (PLAN, DVIEW, Giro, VPROTATEASSOC, UCSVP), escalas anotativas, guiones `.scr` con grabación de acciones, API en JavaScript, paletas de herramientas, biblioteca de bloques viales y DesignCenter |
-| **v0.13** | Base | Cota Z en los objetos, polilíneas y caras 3D, **coordenadas grandes** sin pérdida de precisión (origen local de dibujo) y rendimiento con más de 100 000 objetos (índice espacial, dibujo por teselas) |
+| **v0.13** | Base | Terminada: cota Z en los objetos, polilíneas y caras 3D (con mallas TIN de DXF), **coordenadas grandes** sin pérdida de precisión (origen local de dibujo) y rendimiento con más de 100 000 objetos (deshacer e índice espacial incrementales, dibujo en caché, DXF en segundo plano) |
 | **v0.14** | SIG 1 | Motor de proyecciones y datums, georreferenciación del dibujo (sistema de coordenadas, punto de referencia, norte), coordenadas geográficas en la barra de estado, **mapa base** sobre el dibujo (teselas XYZ, WMS y WMTS configurables, con OpenStreetMap por defecto y caché sin conexión) y posición GPS del dispositivo |
 | **v0.15** | SIG 2 | Importar y exportar GeoJSON, Shapefile (`.shp` + `.dbf` + `.prj`), KML/KMZ y GeoTIFF con reproyección al vuelo; **tabla de atributos** por objeto, simbología temática y etiquetas por atributo; datos catastrales (parcelas, titulares, nomenclatura) |
 | **v0.16** | SIG 3 | Geoprocesos vectoriales: área de influencia, intersección, recorte, unión, diferencia, disolución, unión espacial, consultas por atributo y por ubicación; sobre modelos digitales de terreno, pendientes, orientaciones y sombreado |

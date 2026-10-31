@@ -232,7 +232,7 @@ export function solve(doc, keep = new Set()) {
   const changed = new Set();
   if (ok) for (const [id, e] of ents) {
     const o = off.get(id), len = VARS[e.type](e).length, v = x.slice(o, o + len);
-    if (v.some((a, k) => Math.abs(a - x0[o + k]) > 1e-12)) { WRITE[e.type](e, v); changed.add(id); }
+    if (v.some((a, k) => Math.abs(a - x0[o + k]) > 1e-12)) { doc.before?.(e); WRITE[e.type](e, v); changed.add(id); }
   }
   return { ok, changed, residual };
 }

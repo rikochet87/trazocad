@@ -1,6 +1,6 @@
 // Comandos estilo AutoCAD. Cada comando es una función asíncrona que pide datos con el contexto `c`.
 import * as G from './geom.js';
-import { TYPES, cloneEnt, xformEnt, setTwist, crosses, bboxOf, bbPts, describe, fmt, dimParts, plArea, plLength, plPieces, pieceAt, plPolygon, hatchArea, blockAttdefs, mlEff, fieldText, FIELD_PROPS, DATE_FORMATS, insertMatrix, LTYPES, primsOf, ellPts, imageClipLoops, DIM_VARS, dimStyleOf, DEFAULT_DIMSTYLE } from './entities.js';
+import { ELEV_TYPES, TYPES, cloneEnt, xformEnt, setTwist, crosses, bboxOf, bbPts, describe, fmt, dimParts, plArea, plLength, plPieces, pieceAt, plPolygon, hatchArea, blockAttdefs, mlEff, fieldText, FIELD_PROPS, DATE_FORMATS, insertMatrix, LTYPES, primsOf, ellPts, imageClipLoops, DIM_VARS, dimStyleOf, DEFAULT_DIMSTYLE } from './entities.js';
 import { entityLoop, chainLoops, booleanLoops, nestLoops, regionArea, regionPerimeter } from './region.js';
 import { srcCenter, toLocal, itemCount, pathFit, localPath, pathable, ARRAY_KINDS, arrayInv, arrayM, invertM, itemWorld, itemMatrices, rectLevels } from './arrays.js';
 import { rectClip } from './xclip.js';
@@ -17,7 +17,8 @@ import { solve, evalParams, parseExpr, nearestPointRef, lineRefAt, refGeom, cons
 import { makeGroup, removeGroup, findGroup, groupsOf, copyGroups, validGroupName, isAnonGroup, groupsWithin, nextAnonGroup } from './groups.js';
 import { saveLayerState, restoreLayerState, findLayerState, validStateName, renameLayerState, deleteLayerState, LS_ALL } from './layerstates.js';
 import { linsOf, rotsOf, lookupCols } from './dynblock.js';
-import { WORLD, ucsOf, toUcs, setUcs, prevUcs, findUcs, saveUcs, deleteUcs, renameUcs, validUcsName, ucs3P, ucsFromObject } from './ucs.js';
+import { WORLD, ucsOf, wcsOf, isWorld, toUcs, setUcs, prevUcs, findUcs, saveUcs, deleteUcs, renameUcs, validUcsName, ucs3P, ucsFromObject } from './ucs.js';
+import * as ORG from './origin.js';
 import { toFrame, fromFrame } from './view.js';
 import * as AN from './annoscale.js';
 import * as SC from './scripting.js';
@@ -95,7 +96,7 @@ function stretchIn(e, W, d) {
 }
 const deg = r => fmt(G.deg(G.normAng(r)), 2) + '°';
 const setPoly = (c, id, src) => c.doc.modify(id, e => { e.pts = src.pts; e.closed = src.closed; if (src.bulges?.some(b => b)) e.bulges = src.bulges; else delete e.bulges; });
-const sendToBack = (c, e) => { const arr = c.doc.ents, i = arr.indexOf(e); if (i > 0) { arr.splice(i, 1); arr.unshift(e); c.doc.changed(); } };
+const sendToBack = (c, e) => { const arr = c.doc.ents, i = arr.indexOf(e); if (i > 0) c.doc.setOrder(arr, [e, ...arr.slice(0, i), ...arr.slice(i + 1)]); };
 
 // ================= DIBUJO =================
 def('LINE', ['L', 'LINEA'], 'Dibuja segmentos de línea rectos', async c => {
@@ -1013,7 +1014,8 @@ def('DIMANGULAR', ['DAN', 'COTAANGULAR', 'ACOANGULO'], 'Cota angular entre dos l
 def('DIMORDINATE', ['DOR', 'COTACOORD', 'ACOCOORDENADA'], 'Cota de la coordenada X o Y de un punto', async c => {
   const f = await c.getPoint('Precise ubicación de punto'), rf = c.ref();
   let axis = null, text = '';
-  const mk = q => ({ type: 'dim', kind: 'ord', p1: f, p2: f, p3: q, ...(axis ? { axis } : {}), text, style: c.doc.cur.dimStyle });
+  const o = wcsOf(c.doc).o, org = o.x || o.y ? { org: P(o.x, o.y) } : {}; // con origen local, las coordenadas reales
+  const mk = q => ({ type: 'dim', kind: 'ord', p1: f, p2: f, p3: q, ...(axis ? { axis } : {}), ...org, text, style: c.doc.cur.dimStyle });
   for (;;) {
     const q = await c.getPoint('Precise punto final de directriz', { base: f, options: ['Xdato', 'Ydato', 'Texto'], preview: p => [mk(p)], rubber: false });
     if (q === 'Xdato') { axis = 'x'; continue; }
@@ -1818,7 +1820,7 @@ def('BLOOKUPTABLE', ['BLT', 'TABLACONSULTA'], 'Tabla de consulta del bloque din�
 // ================= MODIFICAR =================
 def('ERASE', ['E', 'BORRA', 'BORRAR'], 'Borra objetos', async c => {
   const ids = await c.getSelection();
-  for (const id of ids) c.doc.remove(id);
+  c.doc.removeMany(ids);
   if (ids.length) c.print(`${ids.length} objeto(s) borrado(s).`);
 }, { group: 'Modificar', sel: true });
 
@@ -1830,8 +1832,7 @@ def('DRAWORDER', ['ORDENDIBUJO', 'ORDEN', 'DRAWORDER'], 'Cambia el orden de dibu
   if (!sel.length) return c.print('Los objetos designados no pertenecen al espacio activo.');
   const rest = arr.filter(e => !set.has(e.id));
   c.doc.begin();
-  arr.splice(0, arr.length, ...(op === 'Frente' ? [...rest, ...sel] : [...sel, ...rest]));
-  c.doc.changed();
+  c.doc.setOrder(arr, op === 'Frente' ? [...rest, ...sel] : [...sel, ...rest]);
   c.doc.commit();
   c.print(`${sel.length} objeto(s) enviado(s) ${op === 'Frente' ? 'al frente' : 'al fondo'}.`);
 }, { group: 'Modificar', sel: true });
@@ -1927,12 +1928,12 @@ async function trimExtend(c, extend) {
     const r = await c.getEntity(extend ? 'Designe objeto que desea alargar o mayús+designar para recortar' : 'Designe objeto que desea recortar o mayús+designar para alargar', { options: ['desHacer'], allowEnter: true });
     if (!r) break;
     if (r === 'desHacer') {
-      if (steps.length) { c.doc.loadState(steps.pop()); c.doc.changed(); } else c.print('Nada que deshacer.');
+      if (steps.length) c.doc.rollback(steps.pop()); else c.print('Nada que deshacer.');
       continue;
     }
     const others = c.doc.ents.filter(e => c.doc.visible(e));
     const doExtend = extend !== r.shift;
-    const before = c.doc.state();
+    const before = c.doc.savepoint();
     if (doExtend) {
       const n = OPS.extendEntity(r.e, r.pt, others);
       if (!n) { c.print('El objeto no interseca ningún contorno.'); continue; }
@@ -2049,7 +2050,7 @@ def('LENGTHEN', ['LEN', 'LONGITUD'], 'Cambia la longitud de líneas y arcos', as
   for (;;) {
     const o = await c.getEntity('Designe objeto para cambiarlo', { options: ['desHacer'], filter: e => e.type === 'line' || e.type === 'arc', allowEnter: true });
     if (!o) break;
-    if (o === 'desHacer') { if (steps.length) { c.doc.loadState(steps.pop()); c.doc.changed(); } continue; }
+    if (o === 'desHacer') { if (steps.length) c.doc.rollback(steps.pop()); continue; }
     const e = o.e;
     let n;
     if (mode === 'dynamic') {
@@ -2065,7 +2066,7 @@ def('LENGTHEN', ['LEN', 'LONGITUD'], 'Cambia la longitud de líneas y arcos', as
       n = calc(p);
     } else n = OPS.lengthenEntity(e, o.pt, mode, val);
     if (!n) { c.print('La longitud resultante no es válida.'); continue; }
-    steps.push(c.doc.state());
+    steps.push(c.doc.savepoint());
     c.doc.modify(e.id, x => Object.assign(x, n));
   }
 }, { group: 'Modificar' });
@@ -2435,8 +2436,120 @@ def('AREA', ['AA'], 'Calcula área y perímetro', async c => {
 }, { group: 'Utilidades' });
 
 def('ID', ['IDPUNTO'], 'Muestra las coordenadas de un punto', async c => {
-  const p = await c.getPoint('Precise punto'), u = ucsOf(c.doc), q = toUcs(u, p);
-  c.print(`X = ${fmt(q.x, 4)}     Y = ${fmt(q.y, 4)}     Z = 0.0000${u === WORLD ? '' : `   (universal: ${fmt(p.x, 4)}, ${fmt(p.y, 4)})`}`);
+  const p = await c.getPoint('Precise punto'), u = ucsOf(c.doc), q = toUcs(u, p), w = toUcs(wcsOf(c.doc), p);
+  const z = p.z ?? c.settings.elevation ?? 0; // la Z del punto designado (referencia a un vértice 3D o escrita) o la elevación actual
+  c.print(`X = ${fmt(q.x, 4)}     Y = ${fmt(q.y, 4)}     Z = ${fmt(z, 4)}${isWorld(u) ? '' : `   (universal: ${fmt(w.x, 4)}, ${fmt(w.y, 4)})`}`);
+}, { group: 'Utilidades' });
+
+// ================= COTA Z Y COORDENADAS GRANDES =================
+// Z de un punto designado: la escrita (x,y,z), la del vértice 3D al que se hizo referencia o la cota actual
+const zOf = (p, z0) => (p && p.z != null ? +p.z : z0);
+const pz = (p, z0) => ({ x: p.x, y: p.y, z: zOf(p, z0) });
+
+def('3DPOLY', ['3P', 'POL3D', 'POLILINEA3D'], 'Dibuja una polilínea 3D: cada vértice con su cota Z (x,y,z, referencias a vértices 3D o la cota indicada)', async c => {
+  let z0 = c.settings.elevation || 0;
+  const first = await c.getPoint(`Precise punto inicial de la polilínea (x,y,z; cota de los puntos sin Z = ${fmt(z0, 3)})`, { options: ['Elevación'] });
+  let p = first;
+  while (p === 'Elevación') { z0 = await c.getNumber('Indique la cota Z de los puntos que se designen', { def: z0 }); p = await c.getPoint('Precise punto inicial de la polilínea', { options: ['Elevación'] }); }
+  const pts = [pz(p, z0)];
+  let ent = null;
+  const sync = () => {
+    if (pts.length < 2) { if (ent) { c.doc.remove(ent.id); ent = null; } return; }
+    if (ent) c.doc.modify(ent.id, e => { e.pts = pts.map(q => ({ ...q })); });
+    else ent = c.add({ type: 'pline3d', pts: pts.map(q => ({ ...q })) });
+  };
+  for (;;) {
+    const opts = ['Elevación'];
+    if (pts.length >= 3) opts.push('Cerrar');
+    if (pts.length >= 2) opts.push('desHacer');
+    const last = pts[pts.length - 1];
+    const r = await c.getPoint(`Precise punto final de la línea (cota ${fmt(z0, 3)})`, { base: last, options: opts, allowEnter: true });
+    if (r === null) break;
+    if (r === 'Elevación') { z0 = await c.getNumber('Indique la cota Z de los puntos que se designen', { def: z0 }); continue; }
+    if (r === 'Cerrar') { c.doc.modify(ent.id, e => { e.closed = true; }); break; }
+    if (r === 'desHacer') { pts.pop(); sync(); c.setLast(pts[pts.length - 1]); continue; }
+    pts.push(pz(r, z0)); sync();
+  }
+  if (ent) c.print(`Polilínea 3D de ${pts.length} vértices (Z de ${fmt(Math.min(...pts.map(q => q.z)), 3)} a ${fmt(Math.max(...pts.map(q => q.z)), 3)}).`);
+}, { group: 'Dibujo' });
+
+def('3DFACE', ['3F', 'CARA3D'], 'Dibuja caras 3D de tres o cuatro vértices (con aristas invisibles); cada cara sigue desde los dos últimos vértices de la anterior', async c => {
+  let z0 = c.settings.elevation || 0, n = 0;
+  // Pide un vértice; «Invisible» antes del punto hace invisible la arista que sale de él
+  const ask = async (msg, opts = {}) => {
+    let hide = false;
+    for (;;) {
+      const r = await c.getPoint(msg, { options: ['Invisible', 'Elevación'], ...opts });
+      if (r === 'Invisible') { hide = true; continue; }
+      if (r === 'Elevación') { z0 = await c.getNumber('Indique la cota Z de los puntos que se designen', { def: z0 }); continue; }
+      return r === null ? null : { p: pz(r, z0), hide };
+    }
+  };
+  let a = await ask('Precise primer punto');
+  let b = await ask('Precise segundo punto', { base: a.p });
+  for (;;) {
+    const v3 = await ask(n ? 'Precise tercer punto <salir>' : 'Precise tercer punto', { base: b.p, allowEnter: n > 0 });
+    if (!v3) break;
+    const v4 = await ask('Precise cuarto punto <crear cara triangular>', { base: v3.p, allowEnter: true });
+    const d = v4 || { p: { ...v3.p }, hide: false };
+    const hide = [a.hide, b.hide, v3.hide, d.hide];
+    c.add({ type: 'face3d', pts: [a.p, b.p, v3.p, d.p].map(q => ({ ...q })), ...(hide.some(Boolean) ? { hide } : {}) });
+    n++;
+    a = v3; b = d; // la cara siguiente empieza en el tercer y el cuarto vértice
+  }
+  c.print(`${n} cara(s) 3D creada(s).`);
+}, { group: 'Dibujo' });
+
+def('ELEV', ['ELEVACION', 'ELEVATION', 'COTAZ'], 'Cota Z (elevación) de los objetos nuevos y de los puntos que se designan sin Z', async c => {
+  const v = await c.getNumber('Indique la elevación nueva', { def: c.settings.elevation || 0 });
+  c.settings.elevation = v;
+  c.doc.changed();
+  c.print(`Elevación actual: ${fmt(v, 4)}.`);
+}, { group: 'Utilidades', keepSel: true });
+
+// Lleva a una cota (0 por defecto) los objetos designados: las polilíneas 3D pasan a polilíneas con esa elevación y las
+// caras 3D quedan planas
+def('FLATTEN', ['APLANAR', 'APLANA'], 'Aplana los objetos designados: les quita la cota Z (o los lleva a la cota indicada)', async c => {
+  const ids = await c.getSelection('Designe objetos para aplanar');
+  if (!ids.length) return;
+  const z = await c.getNumber('Indique la cota a la que se llevan', { def: 0 });
+  let n = 0;
+  for (const id of ids) {
+    const e = c.doc.get(id);
+    if (!e) continue;
+    if (e.type === 'pline3d') {
+      const pts = e.pts.filter((q, i) => !i || !G.eqPt(q, e.pts[i - 1], 1e-12)).map(q => P(q.x, q.y));
+      if (pts.length < 2) continue;
+      const { id: _i, type: _t, pts: _p, closed, ...rest } = e;
+      c.doc.remove(id);
+      c.doc.add({ ...rest, type: 'pline', pts, ...(closed ? { closed: true } : {}), ...(z ? { elev: z } : {}) });
+    } else c.doc.modify(id, x => {
+      if (x.type === 'line') { if (z) { x.z1 = z; x.z2 = z; } else { delete x.z1; delete x.z2; } }
+      else if (x.type === 'face3d') x.pts = x.pts.map(q => ({ x: q.x, y: q.y, z }));
+      else if (TYPES[x.type] && ELEV_TYPES.has(x.type)) { if (z) x.elev = z; else delete x.elev; }
+    });
+    n++;
+  }
+  c.print(`${n} objeto(s) llevado(s) a la cota ${fmt(z, 4)}.`);
+}, { group: 'Modificar', sel: true });
+
+// Origen local del dibujo (origin.js): las coordenadas internas son relativas a él y el usuario ve las reales
+def('LOCALORIGIN', ['ORIGENLOCAL', 'ORIGENDIBUJO'], 'Origen local del dibujo para trabajar con coordenadas grandes (de proyección) sin perder precisión', async c => {
+  const doc = c.doc, o = doc.origin || P(0, 0);
+  c.print(`Origen local actual: ${fmt(o.x, 3)}, ${fmt(o.y, 3)}. Las coordenadas que se ven y se escriben son siempre las reales.`);
+  const k = await c.getKeyword('Indique opción', ['Automático', 'Punto', 'Restablecer'], 'Automático');
+  let n = null;
+  if (k === 'Automático') {
+    const b = doc.extents(doc.model);
+    if (!b) return c.print('El modelo está vacío.');
+    n = ORG.roundOrigin({ x1: b.x1 + o.x, y1: b.y1 + o.y, x2: b.x2 + o.x, y2: b.y2 + o.y });
+  } else if (k === 'Punto') {
+    const p = await c.getPoint('Precise el punto que será el origen local (en coordenadas reales)');
+    const r = ORG.toReal(doc, p);
+    n = P(r.x, r.y);
+  } else n = P(0, 0);
+  if (!ORG.setOrigin(doc, n)) return c.print('El origen local no cambia.');
+  c.print(`Origen local: ${fmt(n.x, 3)}, ${fmt(n.y, 3)}.`);
 }, { group: 'Utilidades' });
 
 def('LIST', ['LI', 'LS', 'LISTA'], 'Muestra la información de los objetos', async c => {
@@ -2631,7 +2744,7 @@ function setAnnoScale(c, s) {
   else doc.settings.cannoscale = s.name;
   if (doc.settings.annoAutoScale) {
     let n = 0;
-    for (const e of doc.model) if (AN.isAnno(e) && doc.layer(e.layer).on && !doc.locked(e)) n += AN.addScales(e, [s.name]) ? 1 : 0;
+    for (const e of doc.model) if (AN.isAnno(e) && doc.layer(e.layer).on && !doc.locked(e) && !e.anno.includes(s.name)) { doc.before(e); n += AN.addScales(e, [s.name]) ? 1 : 0; }
     if (n) c.print(`ANNOAUTOSCALE: escala ${s.name} añadida a ${n} objeto(s) anotativo(s).`);
   }
   doc.changed();
@@ -3030,7 +3143,7 @@ def('AUDIT', ['REVISAR', 'AUDITAR', 'COMPROBAR'], 'Comprueba la integridad del d
   c.print(r.errors.length ? `${r.errors.length} error(es) encontrado(s), ${r.fixed} corregido(s).` : 'No se han encontrado errores.');
   if (r.errors.length) c.app.ui.showHistory(true);
   if (fix && r.fixed) c.app.afterUndo();
-}, { group: 'Utilidades' });
+}, { group: 'Utilidades', fullUndo: true });
 
 // ================= PRESENTACIONES =================
 def('LAYOUT', ['LO', 'PRESENTACION'], 'Crea, renombra, elimina o activa presentaciones', async (c, arg) => {

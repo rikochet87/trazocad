@@ -1,5 +1,5 @@
 // Service worker: precarga la aplicación para uso sin conexión (cache-first con actualización en segundo plano).
-const CACHE = 'trazocad-v12';
+const CACHE = 'trazocad-v13';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './js/app.js', './js/commands.js', './js/document.js', './js/dxf.js', './js/entities.js', './js/geom.js', './js/hatch.js', './js/patterns.js', './js/spatial.js',
@@ -7,7 +7,7 @@ const ASSETS = [
   './js/assoc.js', './js/colors.js', './js/richtext.js', './js/xref.js', './js/pdf.js', './js/dynblock.js', './js/constraints.js',
   './js/groups.js', './js/layerstates.js', './js/mline.js', './js/region.js', './js/arrays.js', './js/xclip.js', './js/plotstyles.js',
   './js/ucs.js', './js/views.js', './js/select.js', './js/find.js', './js/cleanup.js', './js/layertools.js',
-  './js/annoscale.js', './js/scripting.js', './js/library.js', './js/toolpalettes.js',
+  './js/annoscale.js', './js/scripting.js', './js/library.js', './js/toolpalettes.js', './js/origin.js', './js/dxfworker.js',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png',
 ];
 

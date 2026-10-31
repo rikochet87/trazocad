@@ -192,6 +192,11 @@ const I = {
   laymrg: '<path d="M3 6h6l3 6-3 6H3"/><path d="M3 12h9"/><path d="M14 12h7M18 9l3 3-3 3"/>',
   layfilter: '<path d="M10 4 2 8.5l8 4.5 8-4.5Z"/><path d="m2 13 8 4.5"/><path d="M13 14h9l-3.5 4v3l-2 1v-4Z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+  poly3d: '<path d="M3 15 9 7l5 4 7-7"/><path d="M3 15v5M9 7v13M14 11v9M21 4v16" stroke-dasharray="1.5 2" opacity=".6"/><path d="M2 20h20"/>',
+  face3d: '<path d="M4 16 9 5l11 4-5 11Z" fill="currentColor" fill-opacity=".2"/><path d="M9 5l6 15" stroke-dasharray="2 2"/>',
+  elev: '<path d="M3 21h18"/><path d="M12 18V4M8 8l4-4 4 4"/><path d="M17 14h4" opacity=".6"/>',
+  flatten: '<path d="M3 21h18"/><path d="M12 3v12M8 11l4 4 4-4"/><path d="M5 18h14" opacity=".6"/>',
+  origin: '<path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="3"/><path d="M16 5h5M18.5 2.5v5"/>',
 };
 
 export function icon(name, size = 20) {

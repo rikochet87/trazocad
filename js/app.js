@@ -5,7 +5,7 @@ import { View, VpView, toFrame, fromFrame } from './view.js';
 import { SpatialIndex } from './spatial.js';
 import { Renderer } from './render.js';
 import { Snapper } from './snap.js';
-import { ENV, hitDist, inWindowRot, crossesRot, gripsOf, STD_SCALES, scaleLabel, blockAttdefs, tableCellAt, bbPts } from './entities.js';
+import { ENV, hitDist, inWindowRot, crossesRot, gripsOf, STD_SCALES, scaleLabel, blockAttdefs, tableCellAt, bbPts, ELEV_TYPES } from './entities.js';
 import { findCmd, suggest } from './commands.js';
 import { UI } from './ui.js';
 import { IO } from './io.js';
@@ -15,7 +15,7 @@ import { parseExpr, evalParams } from './constraints.js';
 import { PAT_ENV } from './patterns.js';
 import { expandGroups } from './groups.js';
 import { plotStyler } from './plotstyles.js';
-import { ucsOf, fromUcs, vecFromUcs, WORLD } from './ucs.js';
+import { ucsOf, fromUcs, vecFromUcs, wcsOf } from './ucs.js';
 import { ANNO, vpScale, PAPER_SCALE, ANNO_TYPES } from './annoscale.js';
 import { makeApi, recCommand, recAnswer, loadStartupApps } from './scripting.js';
 
@@ -29,6 +29,7 @@ const TOGGLE_NAMES = { grid: 'Rejilla', snap: 'Forzcursor', ortho: 'Orto', polar
 class App {
   constructor() {
     this.doc = new Doc();
+    this.doc.verifyUndo = !!window.TC_VERIFY_UNDO; // comprobación del deshacer en las pruebas (tools/run.mjs)
     ENV.doc = this.doc;
     PAT_ENV.doc = this.doc;
     ANNO.doc = this.doc;
@@ -59,7 +60,7 @@ class App {
     this.ui = new UI(this);
     this.io = new IO(this);
     this.ui.build();
-    this.doc.on(kind => this.onDocChange(kind));
+    this.doc.on((kind, data) => this.onDocChange(kind, data));
     this.doc.viewState = () => this.tilesState(); // las ventanas en mosaico se guardan con el dibujo
     this.api = makeApi(this); // API en JavaScript para el usuario (consola, APPLOAD): también window.tc
     window.tc = this.api;
@@ -86,10 +87,13 @@ class App {
   }
 
   // ---------- Estado ----------
-  onDocChange(kind) {
+  onDocChange(kind, data) {
+    if (kind === 'origin') { this.shiftViews(data.dx, data.dy); return; }
     if (kind === 'reset') { this.sel.clear(); this.beditView = null; this.tiles = [{ r: FULL, view: this.modelView }]; this.layoutTiles(); if (this.tab !== 'model' || this.vpActive || this.view !== this.modelView) { this.tab = 'model'; this.vpActive = null; this.doc.activeVp = null; this.view = this.modelView; } }
     if (kind === 'constraint-fail') this.print('Aviso: las restricciones no se pueden cumplir con esta modificación (están en conflicto o la geometría no lo permite).', 'err');
-    for (const id of this.sel) if (!this.doc.get(id)) this.sel.delete(id);
+    // Los objetos designados que ya no existen se quitan de la designación una vez por tanda de cambios (con muchos
+    // objetos, recorrerla en cada cambio sería cuadrático)
+    if (this.sel.size && !this.selCheck) { this.selCheck = true; queueMicrotask(() => { this.selCheck = false; for (const id of this.sel) if (!this.doc.get(id)) this.sel.delete(id); }); }
     this.renderer.invalidate();
     this.ui.refresh();
   }
@@ -106,7 +110,7 @@ class App {
     const px = this.T.lwt ? Math.max(1, st.lw * (paper ? this.paperView.scale : 4)) : 1;
     return { color, px, pat: st.pat, ltscale: this.doc.settings.ltscale, paper };
   }
-  idx() { return this.spatial.of(this.doc.ents, this.doc.ver); }
+  idx() { return this.spatial.of(this.doc.ents, this.doc); }
   layoutShown() { return this.tab === 'model' ? null : this.doc.layouts[this.tab] || null; }
   get paperView() {
     const lay = this.layoutShown();
@@ -140,6 +144,34 @@ class App {
     const st = e.type === 'dim' ? d.dimStyle(e.style ?? c.dimStyle) : e.type === 'mleader' ? d.mleaderStyle(e.mstyle ?? c.mleaderStyle) : e.type === 'text' || e.type === 'mtext' || e.type === 'attdef' ? d.textStyle(e.style ?? c.textStyle) : e.type === 'insert' ? d.blocks[e.name] : null;
     if (st?.annotative || (e.type === 'hatch' && d.settings.hatchAnno)) e.anno = [(this.annoContext() || { name: d.settings.cannoscale || '1:1' }).name];
     return e;
+  }
+
+  // ---------- Cota Z ----------
+  // Objetos nuevos de las órdenes: la Z de los puntos designados (escrita como x,y,z o de una referencia a un vértice 3D) o
+  // la elevación actual (ELEV) pasa a la elevación del objeto o a la Z de los extremos de las líneas
+  zNew(e) {
+    const z0 = this.doc.settings.elevation || 0, flat = p => (p && 'z' in p ? { x: p.x, y: p.y } : p);
+    if (e.type === 'line') {
+      const z1 = e.z1 ?? e.p1?.z ?? z0, z2 = e.z2 ?? e.p2?.z ?? z0;
+      e.p1 = flat(e.p1); e.p2 = flat(e.p2); delete e.z1; delete e.z2;
+      if (z1) e.z1 = z1;
+      if (z2) e.z2 = z2;
+      return e;
+    }
+    if (!ELEV_TYPES.has(e.type) || 'elev' in e) return e;
+    const k = ['p', 'c'].find(k => e[k] && typeof e[k] === 'object'), z = (k && e[k].z) ?? e.pts?.[0]?.z ?? z0;
+    if (k) e[k] = flat(e[k]);
+    if (e.type === 'pline' && e.pts?.some(p => 'z' in p)) e.pts = e.pts.map(flat);
+    if (z) e.elev = z;
+    return e;
+  }
+  // Cambio del origen local (origin.js): las vistas abiertas se desplazan con el dibujo para que no salte
+  shiftViews(dx, dy) {
+    const views = new Set([this.modelView, ...this.tiles.map(t => t.view)]);
+    for (const v of views) { v.cx += dx; v.cy += dy; for (const s of v.stack) { s.cx += dx; s.cy += dy; } }
+    for (const t of this.tiles) if (t.ucs) t.ucs = { ...t.ucs, o: { x: t.ucs.o.x + dx, y: t.ucs.o.y + dy } };
+    this.lastPt = G.P(this.lastPt.x + dx, this.lastPt.y + dy);
+    this.acquired = [];
   }
 
   // ---------- Ventanas en mosaico del espacio modelo ----------
@@ -337,7 +369,7 @@ class App {
   }
   curStyle() { const c = this.doc.cur; return this.styleFor({ layer: c.layer, color: c.color, ltype: c.ltype, lw: c.lw }); }
   print(msg, cls) { this.ui.print(msg, cls); }
-  selChanged() { this.renderer.invalidate(false); this.ui.refresh(); }
+  selChanged() { this.selStamp = (this.selStamp || 0) + 1; this.renderer.invalidate(false); this.ui.refresh(); }
   clearSel() { this.sel.clear(); this.selChanged(); }
   selectAll() {
     const set = this.req?.kind === 'select' ? this.req.set : this.req ? null : this.sel;
@@ -819,7 +851,7 @@ class App {
       getEntity: (p, o = {}) => app.ask('entity', p, o),
       getSelection: (p = 'Designe objetos', o = {}) => app.getSelection(p, o),
       print: m => app.print(m),
-      add: e => app.doc.add(app.annoNew(e)),
+      add: e => app.doc.add(app.zNew(app.annoNew(e))),
       // Referencia a objetos del último punto designado con el ratón (para cotas asociativas)
       ref: () => (app.doc.settings.dimAssoc ? app.lastRef : null),
       setLast: p => { app.lastPt = p; },
@@ -839,7 +871,7 @@ class App {
   parsePoint(text, base) {
     let t = text.replace(/\s+/g, ''), rel = false;
     if (t.startsWith('@')) { rel = true; t = t.slice(1); } else if (t.startsWith('#')) t = t.slice(1);
-    const wcs = t.startsWith('*'), u = wcs ? WORLD : ucsOf(this.doc);
+    const wcs = t.startsWith('*'), u = wcs ? wcsOf(this.doc) : ucsOf(this.doc);
     if (wcs) t = t.slice(1);
     const from = base || this.lastPt;
     if (rel && t === '') return { ...from };
@@ -851,9 +883,11 @@ class App {
     }
     m = t.match(/^([^,]+),([^,]+)(,[^,]+)?$/);
     if (m) {
-      const x = this.parseNum(m[1]), y = this.parseNum(m[2]);
-      if (x === null || y === null) return null;
-      return rel ? G.add(from, vecFromUcs(u, G.P(x, y))) : fromUcs(u, G.P(x, y));
+      const x = this.parseNum(m[1]), y = this.parseNum(m[2]), z = m[3] ? this.parseNum(m[3].slice(1)) : null;
+      if (x === null || y === null || (m[3] && z === null)) return null;
+      const p = rel ? G.add(from, vecFromUcs(u, G.P(x, y))) : fromUcs(u, G.P(x, y));
+      if (m[3]) p.z = rel ? (from.z || 0) + z : z; // cota Z escrita (x,y,z): la usan 3DPOLY, 3DFACE, LINE y POINT
+      return p;
     }
     const d = this.parseNum(t);
     if (d !== null && base) {
@@ -960,11 +994,12 @@ class App {
     if (!d.hidden) this.print(`Comando: ${d.name}`, 'cmd');
     recCommand(d, arg); // grabación de acciones (ACTRECORD)
     this.cmd = d;
+    this.doc.curCmd = d.name;
     this.pickfirst = d.sel && this.sel.size ? [...this.sel] : null;
     if (d.sel || (!d.keepSel && !d.noTx)) { this.sel.clear(); this.hoverGrip = null; }
     this.selChanged();
     if (!d.hidden) this.lastCmd = d.name;
-    if (!d.noTx) this.doc.begin();
+    if (!d.noTx) this.doc.begin(!!d.fullUndo);
     const p = (async () => {
       try { await d.fn(this.makeCtx(), arg); }
       catch (err) {
