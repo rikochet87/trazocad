@@ -1,4 +1,12 @@
 // Líneas múltiples (MLINE): estilos y geometría de los elementos paralelos, con uniones a inglete, remates y relleno.
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** Geometría de una multilínea (mlineGeom): elementos (con sus tramos visibles), líneas y arcos de los remates,
+ * contornos del relleno, ingletes de los vértices.
+ * @typedef {{elems: {pts: Point[], runs: {pts: Point[], closed: boolean}[], start: boolean, end: boolean, color: string, ltype: string, off: number}[],
+ *   lines: [Point, Point][], arcs: [Point, number, number, number][], fill: Point[][], frames: {dir: Point, miter: Point, k: number}[], closed: boolean}} MlGeom */
+// @ts-check
 // Estilo: {name, desc, elems: [{off, color, ltype}], caps: {sLine, eLine, sOuter, eOuter, sInner, eInner}, joints, fill}
 //   off: desfase del elemento (a la izquierda del sentido de dibujo, multiplicado por la escala de la línea);
 //   color y ltype: 'BYLAYER', 'BYBLOCK' o un valor propio; fill: color de relleno o null.
@@ -6,23 +14,29 @@
 import * as G from './geom.js';
 const { P } = G;
 
+/** @type {import('./types').MLineStyle} */
 export const DEFAULT_MLINESTYLE = {
   name: 'STANDARD', desc: '', elems: [{ off: 0.5, color: 'BYLAYER', ltype: 'BYLAYER' }, { off: -0.5, color: 'BYLAYER', ltype: 'BYLAYER' }],
   caps: { sLine: false, eLine: false, sOuter: false, eOuter: false, sInner: false, eInner: false }, joints: false, fill: null,
 };
+/** @type {[import('./types').MLine['just'], string][]} */
 export const ML_JUST = [['top', 'Superior'], ['zero', 'Cero'], ['bottom', 'Inferior']];
+/** @type {Record<string, string>} */
 export const CAP_KEYS = { sLine: 'Línea al inicio', eLine: 'Línea al final', sOuter: 'Arco exterior al inicio', eOuter: 'Arco exterior al final', sInner: 'Arcos interiores al inicio', eInner: 'Arcos interiores al final' };
 
 // Elementos ordenados del desfase mayor al menor (como los lista AutoCAD)
+/** Elementos de arriba abajo (desfase decreciente). @param {import('./types').MLineStyle} st */
 export const sortedElems = st => [...(st.elems?.length ? st.elems : DEFAULT_MLINESTYLE.elems)].sort((a, b) => b.off - a.off);
 
 // Desplazamiento de la justificación: la línea dibujada coincide con el elemento superior, con el desfase 0 o con el inferior
+/** Desplazamiento de la justificación. @param {import('./types').MLineStyle} st @param {string} just @returns {number} */
 export function justShift(st, just) {
   const offs = sortedElems(st).map(x => x.off);
   return just === 'top' ? -Math.max(...offs) : just === 'bottom' ? -Math.min(...offs) : 0;
 }
 
 // Direcciones de los tramos y vectores de inglete de cada vértice ({dir, miter, k}: k = 1 / seno entre inglete y tramo)
+/** @param {Point[]} pts @param {boolean} closed @returns {{dir: Point, miter: Point, k: number}[]} */
 export function mlineFrames(pts, closed) {
   const n = pts.length, cl = closed && n > 2, out = [];
   const segDir = i => G.norm(G.sub(pts[(i + 1) % n], pts[i]));
@@ -74,6 +88,7 @@ function elemRuns(axis, closed, el, cuts) {
 }
 
 // Geometría: {elems: [{pts, runs, color, ltype, off}], lines: [[a, b]] (remates e ingletes), arcs: [[c, r, a1, a2]], fill: [[puntos]] , frames}
+/** @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} e @param {import('./types').MLineStyle} st @returns {MlGeom} */
 export function mlineGeom(e, st) {
   const pts = e.pts, n = pts.length, closed = !!e.closed && n > 2, s = e.scale ?? 1, sh = justShift(st, e.just || 'top');
   const frames = mlineFrames(pts, closed), list = sortedElems(st);
@@ -136,6 +151,7 @@ export function mlineGeom(e, st) {
 const runSegs = el => el.runs.flatMap(r => { const p = r.pts, m = r.closed ? p.length : p.length - 1; return Array.from({ length: m }, (_, i) => [p[i], p[(i + 1) % p.length]]); });
 
 // Segmentos y arcos (primitivas) de la geometría
+/** @param {MlGeom} g @returns {import('./types').Prim[]} */
 export function mlinePrims(g) {
   const out = [];
   for (const el of g.elems) for (const [a, b] of runSegs(el)) out.push({ k: 's', a, b });
@@ -145,6 +161,7 @@ export function mlinePrims(g) {
 }
 
 // Polilíneas, líneas y arcos sueltos en que se descompone (EXPLODE, DXF R12): [{type, …, color, ltype}]
+/** Líneas y arcos sueltos en que se descompone (sin capa: los completa quien los añade). @param {MlGeom} g */
 export function mlineParts(g) {
   const out = [];
   for (const el of g.elems) for (const [a, b] of runSegs(el)) out.push({ type: 'line', p1: a, p2: b, color: el.color, ltype: el.ltype });
@@ -154,6 +171,7 @@ export function mlineParts(g) {
 }
 
 // ---------- Edición de líneas múltiples (MLEDIT) ----------
+/** @type {Record<string, string>} */
 export const MLEDIT_TOOLS = {
   CC: 'Cruz cerrada', OC: 'Cruz abierta', MC: 'Cruz combinada', CT: 'T cerrada', OT: 'T abierta', MT: 'T combinada',
   CJ: 'Unión en esquina', AV: 'Añadir vértice', DV: 'Suprimir vértice', CS: 'Cortar uno', CA: 'Cortar todo', WA: 'Soldar todo',
@@ -161,6 +179,7 @@ export const MLEDIT_TOOLS = {
 const FAR = 1e9; // corte hasta el final del tramo
 const isClosed = e => !!e.closed && e.pts.length > 2;
 // Desfases reales de los elementos (a la izquierda del sentido de dibujo, en unidades del dibujo), en el orden de sortedElems
+/** Desfase real de cada elemento. @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} e @param {import('./types').MLineStyle} st @returns {number[]} */
 export const elemOffsets = (e, st) => { const sh = justShift(st, e.just || 'top'), s = e.scale ?? 1; return sortedElems(st).map(x => (x.off + sh) * s); };
 function segOf(e, i) {
   const A = e.pts[i], B = e.pts[(i + 1) % e.pts.length], d = G.sub(B, A), len = G.len(d) || 1e-12, dir = G.mul(d, 1 / len);
@@ -168,12 +187,14 @@ function segOf(e, i) {
 }
 const param = (g, p) => G.dot(G.sub(p, g.A), g.dir);
 // Tramo del eje más próximo a un punto
+/** Tramo más próximo al punto. @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} e @param {Point} p @returns {number} */
 export function nearestSeg(e, p) {
   let best = 0, bd = Infinity;
   for (let i = 0; i < segCount(e.pts.length, isClosed(e)); i++) { const g = segOf(e, i), d = G.dist(p, G.nearSeg(p, g.A, g.B).p); if (d < bd) { bd = d; best = i; } }
   return best;
 }
 // Elemento más próximo a un punto (índice en el orden de sortedElems)
+/** Elemento más próximo al punto (índice de sortedElems). @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} e @param {import('./types').MLineStyle} st @param {Point} p @returns {number} */
 export function nearestElem(e, st, p) {
   const g = segOf(e, nearestSeg(e, p)), o = elemOffsets(e, st), d = G.dot(G.sub(p, g.A), g.nrm);
   return o.reduce((bi, x, i) => (Math.abs(x - d) < Math.abs(o[bi] - d) ? i : bi), 0);
@@ -190,6 +211,7 @@ function normCuts(e) {
   e.cuts = [...by].flatMap(([key, iv]) => { const [s, k] = key.split(',').map(Number); return mergeIv(iv).map(([a, b]) => ({ s, k, a, b })); });
   if (!e.cuts.length) delete e.cuts;
 }
+/** Hueco del elemento k en el tramo s entre las distancias a y b. @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} e @param {number} s @param {number} k @param {number} a @param {number} b */
 export function addCut(e, s, k, a, b) { (e.cuts ||= []).push({ s, k, a: Math.min(a, b), b: Math.max(a, b) }); normCuts(e); }
 // Quita los cortes de los elementos ks en el intervalo [a, b] del tramo s
 function weldRange(e, s, a, b, ks) {
@@ -200,6 +222,7 @@ function weldRange(e, s, a, b, ks) {
   normCuts(e);
 }
 // Cortes tras invertir el sentido de la línea (simetría): el tramo s pasa a ser el n−2−s (el de cierre sigue siendo el último)
+/** @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} e */
 export function reverseCuts(e) {
   if (!e.cuts) return;
   const n = e.pts.length, cl = isClosed(e);
@@ -233,6 +256,7 @@ const outerIdx = o => [...new Set([o.indexOf(Math.max(...o)), o.indexOf(Math.min
 // Cruces entre A (primera designada) y B, en los tramos más próximos a los puntos designados.
 // CC: todos los elementos de A se cortan entre los exteriores de B; OC: además los exteriores de B se cortan entre los de A;
 // MC: sólo se cortan los exteriores de ambas (los interiores se cruzan).
+/** Cruce de dos multilíneas (MLEDIT). Devuelve un mensaje de error o null. @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} A @param {import('./types').MLineStyle} stA @param {Point} pA @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} B @param {import('./types').MLineStyle} stB @param {Point} pB @param {string} kind @returns {string | null} */
 export function mlCross(A, stA, pA, B, stB, pB, kind) {
   const sa = nearestSeg(A, pA), sb = nearestSeg(B, pB), ga = segOf(A, sa), gb = segOf(B, sb), X = crossAt(ga, 0, gb, 0);
   if (!X) return 'Las líneas múltiples son paralelas.';
@@ -253,6 +277,7 @@ export function mlCross(A, stA, pA, B, stB, pB, kind) {
 // Uniones en T: A (el pie) se recorta o alarga hasta B (la barra); se conserva la parte de A en la que se designó.
 // CT: hasta el elemento de B más próximo; OT: además ese elemento de B se abre entre los exteriores de A;
 // MT: como OT, pero los elementos interiores de A llegan hasta el eje de B.
+/** Unión en T (A es el pie). @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} A @param {import('./types').MLineStyle} stA @param {Point} pA @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} B @param {import('./types').MLineStyle} stB @param {Point} pB @param {string} kind @returns {string | null} */
 export function mlTee(A, stA, pA, B, stB, pB, kind) {
   if (isClosed(A)) return 'La línea múltiple del pie de la T no puede ser cerrada.';
   const sa = nearestSeg(A, pA), sb = nearestSeg(B, pB), ga = segOf(A, sa), gb = segOf(B, sb), X = crossAt(ga, 0, gb, 0);
@@ -271,6 +296,7 @@ export function mlTee(A, stA, pA, B, stB, pB, kind) {
 
 // Unión en esquina: las dos líneas se recortan o alargan hasta su intersección, cada elemento hasta el que le corresponde
 // de la otra (el que tiene el mismo desfase en el recorrido A → esquina → B), como el inglete de una polilínea.
+/** Unión en esquina. @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} A @param {import('./types').MLineStyle} stA @param {Point} pA @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} B @param {import('./types').MLineStyle} stB @param {Point} pB @returns {string | null} */
 export function mlCorner(A, stA, pA, B, stB, pB) {
   if (isClosed(A) || isClosed(B)) return 'Las líneas múltiples cerradas no admiten uniones en esquina.';
   const sa = nearestSeg(A, pA), sb = nearestSeg(B, pB), ga = segOf(A, sa), gb = segOf(B, sb), X = crossAt(ga, 0, gb, 0);
@@ -284,6 +310,7 @@ export function mlCorner(A, stA, pA, B, stB, pB) {
 }
 
 // Añade un vértice en el punto del eje más próximo a p
+/** @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} e @param {Point} p @returns {boolean} */
 export function mlAddVertex(e, p) {
   const s = nearestSeg(e, p), g = segOf(e, s), t = param(g, p);
   if (t < 1e-9 || t > g.len - 1e-9) return false;
@@ -295,6 +322,7 @@ export function mlAddVertex(e, p) {
 }
 // Suprime el vértice más próximo a p. Los cortes de los dos tramos que se unen pasan al tramo nuevo (los del segundo, a
 // continuación de la longitud del primero); en un extremo abierto se pierden los del tramo que desaparece.
+/** @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} e @param {Point} p @returns {boolean} */
 export function mlDelVertex(e, p) {
   const n = e.pts.length, cl = isClosed(e);
   if (n <= (cl ? 3 : 2)) return false;
@@ -313,6 +341,7 @@ export function mlDelVertex(e, p) {
   return true;
 }
 // Corta (o suelda) los elementos ks entre dos puntos, aunque estén en tramos distintos
+/** Corta (o, con weld, suelda) los elementos ks entre p1 y p2. @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} e @param {Point} p1 @param {Point} p2 @param {number[]} ks @param {boolean} [weld] */
 export function mlCutRange(e, p1, p2, ks, weld = false) {
   const pos = p => { const s = nearestSeg(e, p); return { s, t: param(segOf(e, s), p) }; };
   let a = pos(p1), b = pos(p2);
@@ -324,6 +353,7 @@ export function mlCutRange(e, p1, p2, ks, weld = false) {
   normCuts(e);
 }
 // Huecos de cada elemento en cada vértice para el DXF: distancias a lo largo del tramo desde el inicio del elemento
+/** Intervalos visibles del elemento k en el tramo i. @param {Pick<import('./types').MLine, 'pts' | 'closed' | 'just' | 'scale' | 'cuts'>} e @param {MlGeom} g @param {number} i @param {number} k @returns {[number, number][]} */
 export function cutParams(e, g, i, k) {
   const n = e.pts.length;
   if (i >= segCount(n, g.closed)) return [];
@@ -333,7 +363,10 @@ export function cutParams(e, g, i, k) {
 }
 
 const withSrc = list => list.flatMap(e => (e.type === 'array' ? [e, ...withSrc(e.src)] : [e]));
+/** Multilíneas que usan el estilo. @param {import('./document.js').Doc} doc @param {string} name @returns {import('./types').MLine[]} */
 export const mlineStyleRefs = (doc, name) => withSrc([...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]).filter(e => e.type === 'mline' && (e.mlstyle || 'STANDARD') === name).length;
+/** @param {import('./types').Document | null} doc @param {string} [name] @returns {import('./types').MLineStyle} */
 export const mlStyleOf = (doc, name) => doc?.mlineStyles?.find(s => s.name === name) || doc?.mlineStyles?.[0] || DEFAULT_MLINESTYLE;
 // Vértice de inicio cualquiera (para centrar el ejemplo del administrador de estilos)
+/** Recorrido de muestra para las vistas previas. @param {number} w @returns {Point[]} */
 export const samplePts = w => [P(0, 0), P(w * 0.45, 0), P(w * 0.7, w * 0.25), P(w, w * 0.25)];

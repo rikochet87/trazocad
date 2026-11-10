@@ -1,4 +1,8 @@
 // Texto con formato de MTEXT: análisis y escritura de los códigos de AutoCAD.
+/** Formato de un trozo de texto: fuente, negrita, cursiva, subrayado, sobrerrayado, tachado, altura, color, anchura, oblicuidad.
+ * @typedef {{font: string | null, b: boolean, i: boolean, u: boolean, o: boolean, k: boolean, h: number, color: string | null, w: number, q: number}} Fmt */
+/** Pieza: texto, salto de línea o fracción apilada (k: ^, / o #). @typedef {{t: 's', s: string, f: Fmt} | {t: 'nl'} | {t: 'stk', a: string, b: string, k: string, f: Fmt}} Piece */
+// @ts-check
 // Formato interno: los códigos de AutoCAD tal cual, salvo los saltos de línea, que se guardan como "\n" en lugar de \P.
 // Códigos admitidos: {…} grupos, \f fuente|b|i, \H altura (absoluta o x relativa), \C color ACI, \c color verdadero,
 // \W anchura, \Q oblicuidad, \L \l subrayado, \O \o sobrerrayado, \K \k tachado, \S fracciones apiladas (/ ^ #), \~ espacio duro.
@@ -6,11 +10,13 @@
 import { aciToHex, exactAci } from './colors.js';
 
 // Formato base de un texto: {font, b, i, u, o, k, h, color, w, q}; font/color null = los del estilo/entidad
+/** @param {number} h @returns {Fmt} */
 export const baseFmt = h => ({ font: null, b: false, i: false, u: false, o: false, k: false, h, color: null, w: 1, q: 0 });
 
 const unesc = s => s.replace(/\\([\\{}#^/])/g, '$1');
 
 // Lista de piezas: {t:'s', s, f} texto · {t:'nl'} salto de línea · {t:'stk', a, b, k, f} fracción apilada
+/** Texto con los códigos de formato de MTEXT → piezas. @param {string} str @param {number} h @returns {Piece[]} */
 export function parseRich(str, h) {
   const out = [], stack = [];
   let f = baseFmt(h), buf = '';
@@ -62,9 +68,11 @@ export function parseRich(str, h) {
 }
 
 // ¿Contiene el texto algún código de formato? (para decidir si un MTEXT importado es con formato)
+/** @param {unknown} s @returns {boolean} */
 export const hasCodes = s => /\\[fFHCcWQLOKSTAp]|[{}]/.test(String(s).replace(/\\\\/g, ''));
 
 // Texto sin formato (fracciones como a/b)
+/** @param {string} s @param {number} [h] @returns {string} */
 export const richPlain = (s, h = 1) => parseRich(s, h).map(t => (t.t === 'nl' ? '\n' : t.t === 'stk' ? `${t.a}/${t.b}` : t.s)).join('');
 
 const escText = s => String(s).replace(/[\\{}]/g, m => '\\' + m).replace(/ /g, '\\~');
@@ -87,6 +95,7 @@ function codes(f, base, styleFont) {
 const sameFmt = (a, b) => ['font', 'b', 'i', 'u', 'o', 'k', 'color', 'w', 'q'].every(k => a[k] === b[k]) && Math.abs(a.h - b.h) < 1e-9;
 
 // Escribe piezas como texto con códigos. Devuelve {text, rich}; sin formato, el texto es plano y rich = false.
+/** Piezas → texto (con códigos de formato si hacen falta). @param {Piece[]} pieces @param {number} h @param {string} [styleFont] @returns {{text: string, rich: boolean}} */
 export function buildRich(pieces, h, styleFont = 'Arial') {
   const base = baseFmt(h), merged = [];
   for (const p of pieces) {
@@ -105,4 +114,5 @@ export function buildRich(pieces, h, styleFont = 'Arial') {
   return { text, rich: true };
 }
 // Texto plano → texto con códigos (escapa \ { })
+/** @param {string} s @returns {string} */
 export const plainToRich = s => String(s).split('\n').map(escText).join('\n');

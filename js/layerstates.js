@@ -1,17 +1,26 @@
 // Estados de capa (LAYERSTATE): la configuración de las capas guardada con un nombre, que se restaura de una vez.
+/** @typedef {import('./document.js').Doc} Doc */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').LayerState} LayerState */
+// @ts-check
 // doc.layerStates = [{name, desc, cur: capa actual, layers: {capa: {on, lock, color, ltype, lw}}, saved: fecha ISO}]
 import { aciToHex, hexToAci } from './colors.js';
 
 // Propiedades que guarda un estado y que se pueden restaurar por separado
+/** @type {Record<string, string>} */
 export const LS_PROPS = { on: 'Activada / desactivada', lock: 'Bloqueada', color: 'Color', ltype: 'Tipo de línea', lw: 'Grosor de línea' };
 export const LS_ALL = Object.keys(LS_PROPS);
 
+/** @param {Doc} doc @param {string} name @returns {LayerState | null} */
 export const findLayerState = (doc, name) => doc.layerStates.find(s => s.name.toLowerCase() === String(name).trim().toLowerCase()) || null;
+/** @param {string} name @returns {boolean} */
 export const validStateName = name => !!name && !/[<>/\\":;?*|=`]/.test(name) && name.length <= 255;
 
 const snapshot = doc => Object.fromEntries(doc.layers.map(l => [l.name, Object.fromEntries(LS_ALL.map(k => [k, l[k]]))]));
 
 // Guarda (o actualiza) un estado con la configuración actual de las capas. Devuelve el estado
+/** @param {Doc} doc @param {string} name @param {string} [desc] @returns {LayerState} */
 export function saveLayerState(doc, name, desc) {
   let s = findLayerState(doc, name);
   if (!s) { s = { name: name.trim(), desc: '' }; doc.layerStates.push(s); }
@@ -23,6 +32,7 @@ export function saveLayerState(doc, name, desc) {
 
 // Restaura un estado. o.props: propiedades que se restauran (todas por defecto); o.offMissing: desactiva las capas que no
 // estaban en el estado (las creadas después). Devuelve {changed: capas modificadas, missing: capas del estado que ya no existen}
+/** @param {Doc} doc @param {LayerState} s @param {{props?: string[], offMissing?: boolean}} [o] @returns {{changed: number, missing: number}} */
 export function restoreLayerState(doc, s, o = {}) {
   const props = o.props || LS_ALL, out = { changed: 0, missing: 0 };
   const known = new Set(Object.keys(s.layers));
@@ -40,14 +50,18 @@ export function restoreLayerState(doc, s, o = {}) {
 }
 
 // ¿La configuración actual coincide con el estado? (para marcarlo en el administrador)
+/** ¿Las capas están como en el estado? @param {Doc} doc @param {LayerState} s @returns {boolean} */
 export function layerStateMatches(doc, s) {
   const now = snapshot(doc);
   return Object.entries(s.layers).every(([n, v]) => !now[n] || LS_ALL.every(k => now[n][k] === v[k]));
 }
 
+/** @param {Doc} doc @param {LayerState} s @param {string} name */
 export function renameLayerState(doc, s, name) { s.name = name.trim(); doc.changed(); }
+/** @param {Doc} doc @param {LayerState} s */
 export function deleteLayerState(doc, s) { doc.layerStates = doc.layerStates.filter(x => x !== s); doc.changed(); }
 // Al renombrar una capa, los estados que la guardan se actualizan
+/** @param {Doc} doc @param {string} from @param {string} to */
 export function renameLayerInStates(doc, from, to) {
   for (const s of doc.layerStates) {
     if (s.layers[from]) { s.layers[to] = s.layers[from]; delete s.layers[from]; }
@@ -64,6 +78,7 @@ const lwOut = lw => (lw === 'BYLAYER' ? -1 : lw === 'BYBLOCK' ? -2 : lw === 'DEF
 const lwIn = v => { const n = parseInt(v, 10); return n < 0 || Number.isNaN(n) ? 'DEFAULT' : (LW_CODES.includes(n) ? n : 25) / 100; };
 const ltOut = lt => (!lt || lt === 'CONTINUOUS' ? 'Continuous' : lt);
 
+/** Archivo .las de AutoCAD. @param {Doc} doc @param {LayerState[]} states @returns {string} */
 export function writeLas(doc, states) {
   const o = [], g = (c, v) => o.push(String(c).padStart(3, ' '), String(v));
   g(0, 'LAYERSTATEDICT');
@@ -80,6 +95,7 @@ export function writeLas(doc, states) {
 }
 
 // Estados de capa de un archivo .las: [{name, desc, cur, layers, saved}]
+/** @param {string} text @param {Record<string, unknown>} [known] @returns {LayerState[]} */
 export function readLas(text, known = {}) {
   const lines = text.split(/\r?\n/), pairs = [];
   for (let i = 0; i + 1 < lines.length; i += 2) {

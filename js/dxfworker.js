@@ -1,4 +1,5 @@
 // Lectura de DXF en segundo plano (Web Worker de módulo): decodifica el archivo, lo interpreta con readDXF y devuelve el
+// @ts-check
 // resultado (datos simples) con avisos de avance para la barra de progreso. Así un DXF de decenas de MB no bloquea la
 // interfaz.
 import { readDXF } from './dxf.js';

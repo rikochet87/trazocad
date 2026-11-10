@@ -1,4 +1,28 @@
 // Documento: capas, espacio modelo, presentaciones, bloques, estilos, grupos, estados de capa, patrones,
+// @ts-check
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').NewEntity} NewEntity */
+/** @typedef {import('./types').Layer} Layer */
+/** @typedef {import('./types').Layout} Layout */
+/** @typedef {import('./types').Block} Block */
+/** @typedef {import('./types').Color} Color */
+/** @typedef {import('./types').DocEvent} DocEvent */
+/** @typedef {import('./types').Settings} Settings */
+/** @typedef {import('./types').Space} Space */
+/** @typedef {import('./types').Ucs} Ucs */
+/** @typedef {import('./types').Document} DocumentT */
+// Diario de deshacer de las entidades del modelo: añadida (ins), suprimida (rem, con su JSON), modificada (mod, con el JSON
+// anterior), muchas suprimidas o reinsertadas de una vez (remN, insN) y cambio de orden de dibujo (order)
+/** @typedef {{k: 'ins', e: Entity, idx: number} | {k: 'rem', e: Entity, idx: number, json: string} | {k: 'mod', e: Entity, json: string}
+ *   | {k: 'remN', e?: undefined, items: {e: Entity, idx: number, json: string}[]} | {k: 'insN', e?: undefined, es: Entity[]}
+ *   | {k: 'order', e?: undefined, ids: number[]}} JournalOp */
+/** Paso de deshacer: diario del modelo y, si cambiaron, el estado «geo» y «rest» de antes y de después (o el estado completo).
+ * @typedef {{j?: JournalOp[], geo?: [string, string] | null, rest?: [string, string] | null, full?: [string, string], size?: number}} UndoRec */
+/** @typedef {{depth: number, geo: string, rest: string, j: JournalOp[], seen: Set<Entity>, snap?: string, full?: string}} Transaction */
+/** Entrada del diario de cambios que leen el índice espacial y el dibujo por teselas.
+ * @typedef {{ver: number, full?: boolean, kind?: 'add' | 'del' | 'mod', e?: Entity, arr?: Entity[] | null}} LogEntry */
 // deshacer/rehacer, sombreados asociativos y serialización.
 import { bboxOf, bbUnion, cloneEnt, LTYPES, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, DEFAULT_TBLSTYLE } from './entities.js';
 import { assocLoops } from './hatch.js';
@@ -12,6 +36,7 @@ import { DEFAULT_MLINESTYLE } from './mline.js';
 import { annoHidden, defaultScales } from './annoscale.js';
 import { localPath, pathable } from './arrays.js';
 
+/** @type {Settings} */
 export const DEFAULT_SETTINGS = {
   gridX: 10, snapX: 10, polarInc: 15, ltscale: 1, coordDec: 4,
   textH: 2.5, filletR: 0, chamferA: 0, chamferB: 0, offsetD: 10, lastRadius: 10, polySides: 4,
@@ -23,6 +48,7 @@ export const DEFAULT_SETTINGS = {
 };
 const newMlStyle = () => JSON.parse(JSON.stringify(DEFAULT_MLINESTYLE));
 // Diferencias entre dos estados completos (mensajes de la comprobación del deshacer)
+/** @param {string} a @param {string} b @returns {string} */
 function diffStates(a, b) {
   const A = JSON.parse(a), B = JSON.parse(b), out = [];
   for (const k of Object.keys({ ...A, ...B })) {
@@ -35,54 +61,97 @@ function diffStates(a, b) {
   }
   return out.join(' | ') || 'sin diferencias visibles';
 }
+/** Tamaños de papel en mm [ancho, alto]. @type {Record<string, [number, number]>} */
 export const PAPERS = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841], Carta: [279.4, 215.9], Oficio: [355.6, 215.9] };
 
+/** @param {string} name @param {Color} [color] @returns {Layer} */
 const newLayer = (name, color = '#ffffff') => ({ name, color, ltype: 'CONTINUOUS', lw: 'DEFAULT', on: true, lock: false });
 
 // Sustituye el contenido de una entidad por el de su JSON conservando el objeto (y su sitio en las listas y los índices)
+/** @param {Entity} e @param {string} json */
 const setContent = (e, json) => { for (const k of Object.keys(e)) delete e[k]; Object.assign(e, JSON.parse(json)); };
 
+/** @implements {DocumentT} */
 export class Doc {
+  // Campos que pone la aplicación (app.js)
+  /** @type {boolean | undefined} comprobación del deshacer en las pruebas */ verifyUndo;
+  /** @type {string | undefined} orden en curso (mensajes de la comprobación del deshacer) */ curCmd;
+  /** @type {(() => import('./types').TilesState | undefined) | undefined} ventanas en mosaico que se guardan con el dibujo */ viewState;
+  /** @type {boolean | undefined} un parámetro de usuario cambió: hay que volver a resolver las restricciones */ consDirty;
   constructor() { this.listeners = []; this.ver = 0; this.log = []; this.quiet = false; this.reset(); }
 
+  /** @param {(kind: DocEvent, data?: unknown) => void} fn */
   on(fn) { this.listeners.push(fn); }
+  /** @param {DocEvent} kind @param {unknown} [data] */
   emit(kind, data) { if (!this.quiet) for (const f of this.listeners) f(kind, data); }
 
   reset() {
+    /** @type {Layer[]} */
     this.layers = [newLayer('0')];
+    /** @type {Entity[]} */
     this.model = [];
+    /** @type {Layout[]} */
     this.layouts = [];
+    /** @type {Record<string, Block>} */
     this.blocks = {};
+    /** @type {import('./types').BlockEditor | null} */
     this.bedit = null; // editor de bloques abierto: {name, base, ents}
+    /** @type {import('./types').Constraint[]} */
     this.constraints = []; // restricciones paramétricas (constraints.js)
+    /** @type {{name: string, expr: string}[]} */
     this.params = [];      // parámetros de usuario {name, expr}
+    /** @type {import('./types').Group[]} */
     this.groups = [];      // grupos (groups.js)
+    /** @type {import('./types').LayerState[]} */
     this.layerStates = []; // estados de capa (layerstates.js)
+    /** @type {import('./types').Document['patterns']} */
     this.patterns = {};    // patrones de sombreado personalizados {NOMBRE: {desc, fam}} (patterns.js)
+    /** @type {Record<string, import('./types').PlotTable>} */
     this.plotStyles = {};  // tablas de estilos de trazado propias {nombre.ctb|nombre.stb: tabla} (plotstyles.js)
+    /** @type {Ucs | null} */
     this.ucs = null;       // SCP actual del espacio modelo {o, ang, name?} (ucs.js); null = universal
+    /** @type {Ucs[]} */
     this.ucsList = [];     // SCP con nombre
+    /** @type {(Ucs | null)[]} */
     this.ucsPrev = [];     // SCP anteriores (UCS › Previo); no se guardan
+    /** @type {import('./types').NamedView[]} */
     this.views = [];       // vistas con nombre (views.js)
+    /** @type {import('./types').VportConfig[]} */
     this.vportConfigs = []; // configuraciones de ventanas en mosaico del modelo con nombre
+    /** @type {import('./types').SelFilter[]} */
     this.selFilters = [];  // filtros de selección con nombre (FILTER, select.js)
+    /** @type {import('./types').LayerFilter[]} */
     this.layerFilters = []; // filtros de capa por propiedades y por grupos (layertools.js)
+    /** @type {import('./types').LayIsoState | null} */
     this.layIso = null;    // estado de las capas antes de LAYISO
     this.scales = defaultScales(); // lista de escalas (SCALELISTEDIT)
+    /** @type {Point} */
     this.origin = { x: 0, y: 0 }; // origen local del modelo: coordenada real = coordenada interna + origen (origin.js)
+    /** @type {import('./types').TilesState | null} */
     this.tiles = null;     // ventanas en mosaico leídas del archivo (la aplicación las restituye)
+    /** @type {Space} */
     this.space = 'model';
+    /** @type {import('./types').TextStyle[]} */
     this.textStyles = [{ name: 'Standard', font: 'Arial', width: 1, oblique: 0 }];
+    /** @type {import('./types').DimStyle[]} */
     this.dimStyles = [{ ...DEFAULT_DIMSTYLE }];
+    /** @type {import('./types').MLeaderStyle[]} */
     this.mleaderStyles = [{ ...DEFAULT_MLSTYLE }];
+    /** @type {import('./types').TableStyle[]} */
     this.tableStyles = [{ ...DEFAULT_TBLSTYLE }];
+    /** @type {import('./types').MLineStyle[]} */
     this.mlineStyles = [newMlStyle()];
+    /** @type {Map<number, Entity>} */
     this.byId = new Map();
     this.nextId = 1;
+    /** @type {import('./types').CurrentProps} */
     this.cur = { layer: '0', color: 'BYLAYER', ltype: 'BYLAYER', lw: 'BYLAYER', textStyle: 'Standard', dimStyle: 'ISO-25', mleaderStyle: 'Standard', tableStyle: 'Standard', mlineStyle: 'STANDARD' };
     this.settings = { ...DEFAULT_SETTINGS };
+    /** @type {UndoRec[]} */
     this.undoS = []; this.redoS = []; this.tx = null;
+    /** @type {Set<number>} */
     this.touched = new Set(); // entidades añadidas, modificadas o borradas en la transacción
+    /** @type {number | null} */
     this.activeVp = null;     // ventana gráfica por la que se trabaja (MSPACE): sus capas inutilizadas no se ven
     this.dirty = false;
     this.name = 'Dibujo1';
@@ -91,11 +160,14 @@ export class Doc {
   }
 
   // Entidades del espacio activo (modelo, papel de la presentación activa o editor de bloques)
+  /** Entidades del espacio activo. @returns {Entity[]} */
   get ents() {
     if (this.space === 'bedit') return this.bedit?.ents || this.model;
     return this.space === 'model' ? this.model : (this.layouts[this.space]?.ents || this.model);
   }
+  /** @returns {Generator<Entity>} */
   *allEnts() { yield* this.model; for (const l of this.layouts) yield* l.ents; if (this.bedit) yield* this.bedit.ents; }
+  /** @returns {Layout | null} */
   layout() { return this.space === 'model' || this.space === 'bedit' ? null : this.layouts[this.space]; }
 
   // ----- Deshacer / rehacer -----
@@ -104,27 +176,33 @@ export class Doc {
   // su posición y el estado anterior de los modificados. Así una orden no copia el dibujo entero (con 100 000 objetos,
   // decenas de MB por paso). Las entidades del modelo se cambian con add, remove y modify, o avisando antes con before(e).
   // state() es el estado completo (lo usa la comprobación del deshacer).
+  /** @returns {string} */
   state() {
     return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso, scales: this.scales });
   }
+  /** @param {string} s */
   loadState(s) {
     const o = JSON.parse(s);
     Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {}, plotStyles: o.plotStyles || {}, ucs: o.ucs || null, ucsList: o.ucsList || [], views: o.views || [], vportConfigs: o.vportConfigs || [], selFilters: o.selFilters || [], layerFilters: o.layerFilters || [], layIso: o.layIso || null, scales: o.scales?.length ? o.scales : defaultScales() });
     if (this.bedit) this.space = 'bedit';
     else if (this.space === 'bedit') this.space = 'model';
-    else if (this.space !== 'model' && this.space !== 'bedit' && !this.layouts[this.space]) this.space = 'model';
+    else if (this.space !== 'model' && !this.layouts[this.space]) this.space = 'model';
     this.reindex();
   }
   reindex() { this.byId = new Map([...this.allEnts()].map(e => [e.id, e])); this.markFull(); }
   // Estado salvo las entidades del modelo: «geo» afecta al aspecto y al tamaño de los objetos (capas, bloques, estilos,
   // escalas); «rest», lo demás (presentaciones con sus objetos, editor de bloques, SCP, vistas, grupos…)
+  /** @returns {string} */
   geoState() {
     return JSON.stringify({ layers: this.layers, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, patterns: this.patterns, scales: this.scales, origin: this.origin });
   }
+  /** @returns {string} */
   restState() {
     return JSON.stringify({ layouts: this.layouts, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso });
   }
+  /** @returns {Generator<Entity>} */
   *paperEnts() { for (const l of this.layouts) yield* l.ents; if (this.bedit) yield* this.bedit.ents; }
+  /** @param {string | null | undefined} geo @param {string | null | undefined} rest */
   loadMeta(geo, rest) {
     if (geo) {
       const g = JSON.parse(geo), o0 = this.origin;
@@ -145,14 +223,17 @@ export class Doc {
     }
   }
   // full: la transacción guarda el estado completo (AUDIT, que repara la estructura del dibujo, incluso identificadores)
+  /** @param {boolean} [full] */
   begin(full = false) {
     if (this.tx) { this.tx.depth++; return; }
     this.tx = { depth: 1, geo: this.geoState(), rest: this.restState(), j: [], seen: new Set(), ...(full ? { snap: this.state() } : {}) };
     if (this.verifyUndo && !full) this.tx.full = this.state();
   }
   // ¿La entidad está en el espacio modelo? (las demás listas, pequeñas, se guardan enteras en cada transacción)
+  /** @param {Entity} e @returns {boolean} */
   inModel(e) { return this.byId.get(e.id) === e && !this.layouts.some(l => l.ents.includes(e)) && !this.bedit?.ents.includes(e); }
   // Registra el estado de una entidad del modelo antes de cambiarla (modify lo hace solo)
+  /** @param {Entity} e */
   before(e) {
     const t = this.tx;
     if (!t || !e || t.seen.has(e) || !this.inModel(e)) return;
@@ -176,6 +257,7 @@ export class Doc {
     const geo = this.geoState(), rest = this.restState();
     const j = t.j.filter(o => o.k !== 'mod' || o.json !== JSON.stringify(o.e)); // las modificaciones sin efecto no cuentan
     if (j.length || geo !== t.geo || rest !== t.rest) {
+      /** @type {UndoRec} */
       const rec = { j, geo: geo !== t.geo ? [t.geo, geo] : null, rest: rest !== t.rest ? [t.rest, rest] : null };
       if (t.full) this.verifyRec(rec, t.full);
       this.pushUndo(rec);
@@ -186,6 +268,7 @@ export class Doc {
   }
   // Pila de deshacer: hasta 200 pasos y unos 100 millones de caracteres guardados (con 100 000 objetos, desplazarlos
   // todos guarda cada uno; los pasos más antiguos se descartan)
+  /** @param {UndoRec} rec */
   pushUndo(rec) {
     const size = r => r.size ??= (r.full ? r.full[0].length + r.full[1].length : (r.geo ? r.geo[0].length + r.geo[1].length : 0) + (r.rest ? r.rest[0].length + r.rest[1].length : 0) + r.j.reduce((s, o) => s + (o.json?.length || 0) + (o.items ? o.items.reduce((a, x) => a + x.json.length, 0) : 0), 0));
     this.undoS.push(rec);
@@ -193,6 +276,7 @@ export class Doc {
     while (this.undoS.length > 1 && (this.undoS.length > 200 || total > 1e8)) total -= size(this.undoS.shift());
   }
   // Deshace los cambios del diario j (del último al primero) y devuelve el diario que los rehace
+  /** @param {JournalOp[]} j @returns {JournalOp[]} */
   revert(j) {
     const inv = [], m = this.model, q = this.quiet;
     let mid = false; // se reinsertaron objetos entre otros: el índice espacial se reconstruye (orden de dibujo)
@@ -254,6 +338,7 @@ export class Doc {
     if (mid) this.markFull();
     return inv;
   }
+  /** @returns {boolean} */
   undo() {
     if (!this.undoS.length) return false;
     if (this.undoS[this.undoS.length - 1].full) { const r = this.undoS.pop(); this.loadState(r.full[0]); this.redoS.push(r); this.touched.clear(); this.dirty = true; this.emit('change'); return true; }
@@ -263,6 +348,7 @@ export class Doc {
     this.touched.clear();
     this.dirty = true; this.emit('change'); return true;
   }
+  /** @returns {boolean} */
   redo() {
     if (!this.redoS.length) return false;
     if (this.redoS[this.redoS.length - 1].full) { const r = this.redoS.pop(); this.loadState(r.full[1]); this.undoS.push(r); this.touched.clear(); this.dirty = true; this.emit('change'); return true; }
@@ -273,12 +359,14 @@ export class Doc {
     this.dirty = true; this.emit('change'); return true;
   }
   // Punto de restauración dentro de una transacción (opción desHacer de RECORTA, ALARGA y LONGITUD)
+  /** @returns {{n: number, geo: string, rest: string} | null} */
   savepoint() {
     const t = this.tx;
     if (!t) return null;
     t.seen = new Set();
     return { n: t.j.length, geo: this.geoState(), rest: this.restState() };
   }
+  /** @param {{n: number, geo: string, rest: string} | null} sp */
   rollback(sp) {
     const t = this.tx;
     if (!t || !sp) return;
@@ -290,6 +378,7 @@ export class Doc {
   }
   // Comprobación del deshacer (doc.verifyUndo, para las pruebas): deshacer y rehacer el registro tiene que devolver
   // exactamente el estado completo de antes y el de después
+  /** @param {UndoRec} rec @param {string} before */
   verifyRec(rec, before) {
     const after = this.state(), q = this.quiet, tx = this.tx;
     // los objetos que no son del modelo se recrean al cargar su estado: al terminar se vuelven a poner los mismos
@@ -316,6 +405,7 @@ export class Doc {
   // ----- Diario de cambios (índice espacial incremental y dibujo por teselas) -----
   // Cada versión del documento tiene una entrada: un objeto añadido, suprimido o modificado (con su lista) o un cambio
   // general («full»: capas, estilos, orden de dibujo…), que obliga a reconstruir los índices.
+  /** @param {'add' | 'del' | 'mod'} kind @param {Entity} e @param {Entity[] | null} [arr] */
   logEnt(kind, e, arr = null) {
     this.ver++;
     this.log.push({ ver: this.ver, kind, e, arr });
@@ -326,7 +416,16 @@ export class Doc {
   markFull() { this.ver++; this.log = [{ ver: this.ver, full: true }]; }
 
   // ----- Entidades -----
-  add(e, target = this.ents) {
+  /**
+   * Añade la entidad (le asigna id y completa capa, color, tipo y grosor de línea) y la devuelve:
+   * add({type: 'line', …}) es un Line.
+   * @template {NewEntity} N
+   * @param {N} ne
+   * @param {Entity[]} [target]
+   * @returns {import('./types').EntityOf<N['type']>}
+   */
+  add(ne, target = this.ents) {
+    const e = /** @type {Entity} */ (/** @type {unknown} */ (ne)); // la misma, ya completa
     e.id = this.nextId++;
     e.layer ??= this.cur.layer; e.color ??= this.cur.color; e.ltype ??= this.cur.ltype; e.lw ??= this.cur.lw;
     if (this.cur.pstyle && this.cur.pstyle !== 'BYLAYER' && !('pstyle' in e)) e.pstyle = this.cur.pstyle; // estilo de trazado con nombre actual
@@ -338,9 +437,11 @@ export class Doc {
     if (this.tx && target === this.model) { this.tx.j.push({ k: 'ins', e, idx: target.length - 1 }); this.tx.seen.add(e); }
     this.touched.add(e.id);
     this.logEnt('add', e, target);
-    return e;
+    return /** @type {import('./types').EntityOf<N['type']>} */ (e);
   }
+  /** @param {number} id @returns {Entity | undefined} */
   get(id) { return this.byId.get(id); }
+  /** @param {number} id */
   remove(id) {
     const e = this.byId.get(id);
     if (!e) return;
@@ -359,6 +460,7 @@ export class Doc {
     this.changed();
   }
   // Suprime muchos objetos de una vez (recorre cada lista una sola vez)
+  /** @param {Iterable<number>} ids */
   removeMany(ids) {
     const set = new Set();
     for (const id of ids) { const e = this.byId.get(id); if (e) set.add(e); }
@@ -383,8 +485,17 @@ export class Doc {
     } finally { this.quiet = q; }
     this.emit('change');
   }
-  modify(id, fn) { const e = this.byId.get(id); if (e) { this.before(e); fn(e); this.touched.add(id); this.logEnt('mod', e); } return e; }
+  /**
+   * Modifica una entidad registrando su estado anterior para deshacer. E: tipo que la orden sabe que tiene; si no se
+   * indica, la entidad con cualquiera de los campos de los distintos tipos (LooseEntity).
+   * @template [E=import('./types').LooseEntity]
+   * @param {number} id
+   * @param {(e: E) => void} fn
+   * @returns {E | undefined}
+   */
+  modify(id, fn) { const e = this.byId.get(id); if (e) { this.before(e); fn(/** @type {E} */ (/** @type {unknown} */ (e))); this.touched.add(id); this.logEnt('mod', e); } return /** @type {E | undefined} */ (/** @type {unknown} */ (e)); }
   // Cambia el orden de dibujo de una lista de entidades (DRAWORDER)
+  /** @param {Entity[]} arr @param {Entity[]} list */
   setOrder(arr, list) {
     if (this.tx && arr === this.model) this.tx.j.push({ k: 'order', ids: arr.map(e => e.id) });
     arr.length = 0;
@@ -393,6 +504,7 @@ export class Doc {
   }
 
   // Listas de entidades editables: modelo, presentaciones y, si está abierto, el editor de bloques
+  /** @returns {Entity[][]} */
   lists() { return [this.model, ...this.layouts.map(l => l.ents), ...(this.bedit ? [this.bedit.ents] : [])]; }
 
   // Sombreados y cotas asociativos: si cambió alguna entidad de su geometría se recalculan; si la geometría
@@ -458,6 +570,7 @@ export class Doc {
     if (!r.ok) this.emit('constraint-fail');
   }
   // Vista previa: cotas y sombreados asociados a las entidades `clones` (copias modificadas), ya recalculados
+  /** @param {Entity[]} clones @returns {Entity[]} */
   previewDeps(clones) {
     const map = new Map(clones.map(e => [e.id, e])), get = id => map.get(id) || this.byId.get(id), out = [];
     for (const h of this.ents) {
@@ -480,28 +593,41 @@ export class Doc {
   changed() { this.markFull(); this.dirty = true; this.emit('change'); }
 
   // ----- Capas, estilos y bloques -----
+  /** @param {string} name @returns {Layer} */
   layer(name) { return this.layers.find(l => l.name === name) || this.layers[0]; }
+  /** @param {string} name @param {Color} [color] @returns {Layer} */
   addLayer(name, color) { const l = newLayer(name, color); this.layers.push(l); this.changed(); return l; }
+  /** @param {string} name @param {Color} [color] @returns {Layer} */
   ensureLayer(name, color) { return this.layers.find(l => l.name === name) || this.addLayer(name, color); }
+  /** @param {Entity} e @returns {boolean} */
   visible(e) {
     if (!this.layer(e.layer).on || annoHidden(e)) return false;
-    const vp = this.activeVp != null ? this.byId.get(this.activeVp) : null;
+    const vp = /** @type {import('./types').Viewport | null | undefined} */ (this.activeVp != null ? this.byId.get(this.activeVp) : null);
     return !vp?.frozen?.includes(e.layer);
   }
   // Visibilidad dentro de una ventana gráfica concreta (capas activadas y no inutilizadas en ella)
+  /** @param {import('./types').Viewport} vp @returns {(e: Entity) => boolean} */
   visibleIn(vp) { return e => this.layer(e.layer).on && !vp.frozen?.includes(e.layer) && !annoHidden(e); }
+  /** @param {Entity} e @returns {boolean} */
   locked(e) { return this.layer(e.layer).lock; }
+  /** @param {string} [name] */
   textStyle(name) { return this.textStyles.find(s => s.name === name) || this.textStyles[0]; }
+  /** @param {string} [name] */
   dimStyle(name) { return this.dimStyles.find(s => s.name === name) || this.dimStyles[0]; }
+  /** @param {string} [name] */
   mleaderStyle(name) { return this.mleaderStyles.find(s => s.name === name) || this.mleaderStyles[0]; }
+  /** @param {string} [name] */
   tableStyle(name) { return this.tableStyles.find(s => s.name === name) || this.tableStyles[0]; }
+  /** @param {string} [name] */
   mlineStyle(name) { return this.mlineStyles.find(s => s.name === name) || this.mlineStyles[0]; }
+  /** @param {string} name @param {Point} base @param {Entity[]} ents @param {Partial<Block>} [extra] */
   defineBlock(name, base, ents, extra = {}) {
     const old = this.blocks[name];
     this.blocks[name] = { name, base, ents, ver: (old?.ver || 0) + 1, ...extra };
     this.changed();
   }
   // ¿Las entidades (o los bloques que insertan, recursivamente) hacen referencia al bloque `target`?
+  /** @param {Iterable<Entity>} ents @param {string} target @param {Set<string>} [seen] @returns {boolean} */
   refersTo(ents, target, seen = new Set()) {
     for (const e of ents) {
       if (e.type === 'array') { if (this.refersTo(e.src, target, seen)) return true; continue; }
@@ -514,6 +640,7 @@ export class Doc {
     return false;
   }
   // ----- Editor de bloques: se edita una copia de las entidades del bloque, con identificadores propios -----
+  /** @param {string} name */
   openBedit(name) {
     const b = this.blocks[name];
     this.bedit = { name, base: { ...b.base }, ents: [], prev: this.space };
@@ -525,9 +652,11 @@ export class Doc {
     this.bedit.visCur = this.bedit.dyn?.vis?.states?.[0] || null;
     this.changed();
   }
+  /** @returns {Entity[]} */
   beditContent() {
     return this.bedit.ents.map(e => { const c = cloneEnt(e); for (const k of ['id', 'assoc', 'seed', '_xf', 'pathId']) delete c[k]; return c; });
   }
+  /** @returns {boolean} */
   beditChanged() {
     const b = this.blocks[this.bedit.name];
     return !b || JSON.stringify([this.bedit.base, this.beditContent(), this.beditDyn() || null]) !== JSON.stringify([b.base, b.ents, b.dyn || null]);
@@ -541,7 +670,9 @@ export class Doc {
     this.reindex();
     this.changed();
   }
+  /** @param {string} name @returns {boolean} */
   blockInUse(name) { return this.bedit?.name === name || this.refersTo([...this.allEnts()], name) || Object.values(this.blocks).some(b => b.name !== name && this.refersTo(b.ents, name)); }
+  /** Color, grosor (mm) y patrón de línea resueltos por capa. @param {Entity} e @returns {{color: Color, lw: number, pat: number[]}} */
   style(e) {
     const L = this.layer(e.layer);
     const color = e.color === 'BYLAYER' || e.color === 'BYBLOCK' ? L.color : e.color;
@@ -550,6 +681,7 @@ export class Doc {
     const lt = e.ltype === 'BYLAYER' || e.ltype === 'BYBLOCK' ? L.ltype : e.ltype;
     return { color, lw, pat: (LTYPES[lt] || LTYPES.CONTINUOUS).pat };
   }
+  /** @param {Entity[]} [ents] @returns {BBox | null} */
   extents(ents = this.ents.filter(e => this.visible(e))) {
     let b = null;
     for (const e of ents) b = bbUnion(b, bboxOf(e));
@@ -557,6 +689,7 @@ export class Doc {
   }
 
   // ----- Presentaciones -----
+  /** @param {string} name @param {string} [paper] @returns {Layout} */
   addLayout(name, paper = 'A4') {
     const [w, h] = PAPERS[paper] || PAPERS.A4;
     const l = { name, paper, w, h, ents: [] };
@@ -566,6 +699,7 @@ export class Doc {
   }
 
   // ----- Serialización -----
+  /** @returns {Record<string, unknown>} */
   toJSON() {
     return {
       app: 'TrazoCAD', version: 13, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
@@ -575,6 +709,7 @@ export class Doc {
       ...(this.viewState ? { tiles: this.viewState() } : {}),
     };
   }
+  /** @param {import('./types').TcadFile} o */
   fromJSON(o) {
     this.reset();
     this.layers = o.layers?.length ? o.layers : this.layers;

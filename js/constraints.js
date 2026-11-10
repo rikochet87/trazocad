@@ -1,4 +1,11 @@
 // Restricciones paramétricas: geométricas (horizontal, vertical, paralela, perpendicular, coincidente, concéntrica,
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** @typedef {import('./types').Matrix} Matrix */
+/** @typedef {import('./types').Constraint} Constraint */
+/** @typedef {import('./types').ConsRef} ConsRef */
+// @ts-check
 // igual, fija, tangente, colineal) y de cota (distancia horizontal/vertical/alineada, radio, diámetro, ángulo) con
 // parámetros y expresiones. Un solucionador numérico ajusta la geometría con el menor cambio posible.
 //
@@ -25,9 +32,12 @@ const WRITE = {
   point: (e, v) => { e.p = P(v[0], v[1]); },
   pline: (e, v) => { e.pts = e.pts.map((_, i) => P(v[2 * i], v[2 * i + 1])); },
 };
+/** ¿Se puede restringir (línea, círculo, arco, punto o polilínea)? @param {Entity | null | undefined} e @returns {boolean} */
 export const constrainable = e => !!e && !!VARS[e.type];
+/** Variables (coordenadas, radio, ángulos) de la entidad. @param {Entity} e @returns {number[]} */
 export const entVals = e => VARS[e.type](e);
 // ¿Siguen existiendo las entidades y los vértices o tramos referenciados?
+/** ¿Existen aún las entidades y los vértices o tramos referenciados? @param {import('./document.js').Doc} doc @param {Constraint} c @returns {boolean} */
 export function consValid(doc, c) {
   return c.refs.every(r => {
     const e = doc.get(r.id);
@@ -38,6 +48,7 @@ export function consValid(doc, c) {
   });
 }
 
+/** @param {Constraint} c @returns {number[]} */
 export const refIds = c => [...new Set(c.refs.map(r => r.id))];
 
 // Lectores de geometría sobre el vector de variables x (o sobre la entidad si x falta)
@@ -124,6 +135,7 @@ function residuals(c, R, ents, S, vals) {
 // ---------- Expresiones ----------
 // Números, nombres, + - * / ^, paréntesis, pi y funciones (ángulos en grados)
 const FUN = { sin: x => Math.sin(G.rad(x)), cos: x => Math.cos(G.rad(x)), tan: x => Math.tan(G.rad(x)), asin: x => G.deg(Math.asin(x)), acos: x => G.deg(Math.acos(x)), atan: x => G.deg(Math.atan(x)), sqrt: Math.sqrt, abs: Math.abs, round: Math.round, min: Math.min, max: Math.max };
+/** Expresión aritmética con nombres de parámetros → árbol (null si no es válida). @param {string} src */
 export function parseExpr(src) {
   const toks = String(src).match(/\d+(?:[.,]\d+)?(?:e[-+]?\d+)?|[A-Za-zÁÉÍÓÚáéíóúÑñ_][\wÁÉÍÓÚáéíóúÑñ]*|[-+*/^(),]|\S/g) || [];
   let i = 0;
@@ -157,9 +169,11 @@ export function parseExpr(src) {
   if (i < toks.length) throw new Error(`sobra "${toks[i]}"`);
   return f;
 }
+/** Nombres que usa una expresión. @param {string} src @returns {string[]} */
 export const exprNames = src => (String(src).match(/[A-Za-zÁÉÍÓÚáéíóúÑñ_][\wÁÉÍÓÚáéíóúÑñ]*/g) || []).filter(n => n.toLowerCase() !== 'pi' && !FUN[n.toLowerCase()]);
 
 // Valores de todos los parámetros (de cota y de usuario). Devuelve {vals: Map, errors: Map}
+/** Valores de los parámetros y de las cotas de restricción. @param {import('./document.js').Doc} doc @returns {{vals: Map<string, number>, errors: Map<string, string>}} */
 export function evalParams(doc) {
   const defs = new Map();
   for (const p of doc.params || []) defs.set(p.name, p.expr);
@@ -180,6 +194,8 @@ export function evalParams(doc) {
 // ---------- Solucionador ----------
 // Ajusta las entidades para cumplir las restricciones con el menor cambio ponderado (las de `keep` se mueven menos).
 // Devuelve {ok, changed: Set de ids, residual}
+/** Ajusta la geometría para cumplir las restricciones moviendo lo menos posible las entidades de keep.
+ * @param {import('./document.js').Doc} doc @param {Set<number>} [keep] @returns {{ok: boolean, changed: Set<number>, residual: number}} */
 export function solve(doc, keep = new Set()) {
   const cons = doc.constraints || [];
   if (!cons.length) return { ok: true, changed: new Set(), residual: 0 };
@@ -197,7 +213,7 @@ export function solve(doc, keep = new Set()) {
   const n = x0.length;
   if (!n || !usable.length) return { ok: true, changed: new Set(), residual: 0 };
   let b = null;
-  for (const e of ents.values()) for (const p of e.type === 'circle' || e.type === 'arc' ? [e.c] : e.type === 'line' ? [e.p1, e.p2] : e.type === 'point' ? [e.p] : e.pts) b = b ? { x1: Math.min(b.x1, p.x), y1: Math.min(b.y1, p.y), x2: Math.max(b.x2, p.x), y2: Math.max(b.y2, p.y) } : { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+  for (const e of ents.values()) for (const p of e.type === 'circle' || e.type === 'arc' ? [e.c] : e.type === 'line' ? [e.p1, e.p2] : e.type === 'point' ? [e.p] : /** @type {import('./types').Pline} */ (e).pts) b = b ? { x1: Math.min(b.x1, p.x), y1: Math.min(b.y1, p.y), x2: Math.max(b.x2, p.x), y2: Math.max(b.y2, p.y) } : { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
   const S = Math.max(1, b.x2 - b.x1, b.y2 - b.y1);
   const F = x => {
     const R = readers(ents, x, off);
@@ -252,6 +268,7 @@ function solveLin(A, b) {
 
 // ---------- Ayudas para comandos y dibujo ----------
 // Referencia de punto a partir de la referencia a objetos del punto designado
+/** Referencia de punto a partir de una referencia a objetos. @param {import('./document.js').Doc} doc @param {import('./types').PointRef | null} s @returns {ConsRef | null} */
 export function pointRefFromSnap(doc, s) {
   if (!s || s.ids) return null;
   const e = doc.get(s.id);
@@ -263,6 +280,7 @@ export function pointRefFromSnap(doc, s) {
   return null;
 }
 // Punto restringible de una entidad más cercano al punto designado (extremos, centro, vértices, punto medio)
+/** @param {Entity} e @param {Point} p @returns {ConsRef | null} */
 export function nearestPointRef(e, p) {
   const c = [];
   if (e.type === 'line') c.push([{ id: e.id, k: 'p1' }, e.p1], [{ id: e.id, k: 'p2' }, e.p2], [{ id: e.id, k: 'mid' }, G.mid(e.p1, e.p2)]);
@@ -273,6 +291,7 @@ export function nearestPointRef(e, p) {
   return c.reduce((b, x) => (!b || G.dist(x[1], p) < G.dist(b[1], p) ? x : b), null)?.[0] || null;
 }
 // Referencia de línea (línea o tramo de polilínea más cercano al punto designado)
+/** Línea o tramo de polilínea más próximo. @param {Entity} e @param {Point} p @returns {ConsRef | null} */
 export function lineRefAt(e, p) {
   if (e.type === 'line') return { id: e.id };
   if (e.type !== 'pline') return null;
@@ -282,6 +301,7 @@ export function lineRefAt(e, p) {
   return { id: e.id, seg: best };
 }
 // Geometría actual de una referencia (para colocar símbolos y cotas)
+/** Geometría actual de la referencia: punto, círculo o recta. @param {import('./document.js').Doc} doc @param {ConsRef} r */
 export function refGeom(doc, r) {
   const e = doc.get(r.id);
   if (!e) return null;
@@ -291,6 +311,8 @@ export function refGeom(doc, r) {
   return { line: R.line(r) };
 }
 // Cota virtual con la que se dibuja una restricción de cota
+/** Cota que representa una restricción de cota (para dibujarla; c puede no estar añadida aún). @param {import('./document.js').Doc} doc
+ * @param {{type: string, refs: ConsRef[], id?: number, name?: string, expr?: string, off?: number, ang?: number, sgn?: number, orient?: string}} c @param {string} label */
 export function consDim(doc, c, label) {
   const g = rf => refGeom(doc, rf);
   if (c.type === 'dist') {
@@ -318,12 +340,15 @@ export function consDim(doc, c, label) {
   }
   return null;
 }
+/** @type {Record<string, string>} */
 export const GEOM_NAMES = { horizontal: 'Horizontal', vertical: 'Vertical', parallel: 'Paralela', perpendicular: 'Perpendicular', coincident: 'Coincidente', concentric: 'Concéntrica', equal: 'Igual', fix: 'Fija', tangent: 'Tangente', collinear: 'Colineal' };
+/** @type {Set<string>} */
 export const DIM_TYPES = new Set(['dist', 'radius', 'diameter', 'angle']);
 
 // ---------- Restricciones automáticas (AUTOCONSTRAIN) ----------
 // Tipos en el orden de prioridad de AutoCAD. Las tolerancias son la distancia y el ángulo (grados) dentro de los que se
 // considera que la geometría ya cumple la restricción.
+/** @type {Record<string, string>} */
 export const AUTO_TYPES = { coincident: 'Coincidente', collinear: 'Colineal', parallel: 'Paralela', perpendicular: 'Perpendicular', tangent: 'Tangente', concentric: 'Concéntrica', horizontal: 'Horizontal', vertical: 'Vertical', equal: 'Igual' };
 export const AUTO_DEFAULT = { tol: 0.05, angTol: 1, off: [] };
 export const AUTO_MAX_VARS = 2400; // variables (coordenadas) como máximo en una designación: el cálculo crece con su cubo
@@ -332,6 +357,7 @@ export const AUTO_MAX_VARS = 2400; // variables (coordenadas) como máximo en un
 // de otras: cada candidata se acepta sólo si aumenta el rango del jacobiano de las restricciones (las existentes incluidas),
 // así no quedan restricciones redundantes. No modifica el documento. o: {tol, angTol, off: [tipos desactivados]}
 // Devuelve {cons: [restricciones nuevas], counts: {tipo: n}}
+/** AUTOCONSTRAIN: restricciones deducidas de la geometría. @param {import('./document.js').Doc} doc @param {number[]} ids @param {{tol?: number, angTol?: number, off?: string[]}} [o] */
 export function autoConstrain(doc, ids, o = {}) {
   const tol = o.tol ?? AUTO_DEFAULT.tol, at = G.rad(o.angTol ?? AUTO_DEFAULT.angTol), off = new Set(o.off || []);
   const sel = [...new Set(ids)].map(id => doc.get(id)).filter(constrainable);
@@ -347,7 +373,7 @@ export function autoConstrain(doc, ids, o = {}) {
   const n = x.length;
   if (n > AUTO_MAX_VARS) return { cons: [], counts, tooMany: true };
   let bb = null;
-  for (const e of ents.values()) for (const p of e.type === 'circle' || e.type === 'arc' ? [e.c] : e.type === 'line' ? [e.p1, e.p2] : e.type === 'point' ? [e.p] : e.pts) bb = bb ? { x1: Math.min(bb.x1, p.x), y1: Math.min(bb.y1, p.y), x2: Math.max(bb.x2, p.x), y2: Math.max(bb.y2, p.y) } : { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+  for (const e of ents.values()) for (const p of e.type === 'circle' || e.type === 'arc' ? [e.c] : e.type === 'line' ? [e.p1, e.p2] : e.type === 'point' ? [e.p] : /** @type {import('./types').Pline} */ (e).pts) bb = bb ? { x1: Math.min(bb.x1, p.x), y1: Math.min(bb.y1, p.y), x2: Math.max(bb.x2, p.x), y2: Math.max(bb.y2, p.y) } : { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
   const S = Math.max(1, bb.x2 - bb.x1, bb.y2 - bb.y1);
   const { vals } = evalParams(doc);
   const R = readers(ents, x, off2);

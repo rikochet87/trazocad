@@ -1,4 +1,16 @@
 // Lectura y escritura de DXF ASCII. Escribe DXF 2007 (AC1021, UTF-8, con directrices múltiples MULTILEADER, estilos de
+// @ts-check
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Block} Block */
+/** Pares (código, valor) de un objeto del DXF; d son sus datos. @typedef {{t: string, d: [number, string][]}} DxfGroup */
+/** Dibujo leído de un DXF (readDXF): lo que se pasa a Doc y a la aplicación.
+ * @typedef {{layers: import('./types').Layer[], ents: Entity[], blocks: Record<string, Block>, textStyles: import('./types').TextStyle[],
+ *   dimStyles: import('./types').DimStyle[], mleaderStyles: import('./types').MLeaderStyle[], mlineStyles: import('./types').MLineStyle[],
+ *   tableStyles: import('./types').TableStyle[], layouts: import('./types').Layout[], groups: (Omit<import('./types').Group, 'ids'> & {handles: string[]})[],
+ *   patterns: import('./types').Document['patterns'], layerStates: import('./types').LayerState[], insBase: Point, psltscale: number | null,
+ *   modelPlotStyle: string | null, ucs: import('./types').Ucs | null, ucsList: import('./types').Ucs[], views: import('./types').NamedView[],
+ *   modelView: (Partial<import('./types').TileState> & {cx: number, cy: number}) | null, skipped: number}} DxfData */
 // directriz y degradados), DXF 2000 (AC1015), ambos con presentaciones, ventanas gráficas y grupos, o R12 (AC1009, sólo modelo).
 import * as G from './geom.js';
 import { LTYPES, aciToHex, hexToAci, dimParts, ellPts, mtextGeom, mleaderGeom, insertAttribs, blockEnts, xformEnt, textBox, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, fieldText, mlEff, ENV } from './entities.js';
@@ -32,16 +44,19 @@ const BYBLOCK_RAW = -1056964608, NOCOLOR_RAW = -939524096; // colores «PorBloqu
 const ML_CONTENT_CODE = { mtext: 2, block: 1, none: 0 };
 
 // ================= EXPORTAR =================
+/** @type {import('./types').MTextAttach[]} */
 const MT_ATT = ['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br'];
 const mtextEsc = s => String(s).replace(/\\/g, '\\\\').replace(/{/g, '\\{').replace(/}/g, '\\}').replace(/\n/g, '\\P');
 
 // Los objetos anotativos se escriben con su representación de la escala de anotación del modelo (CANNOSCALE) y, en el
 // papel, a 1:1
+/** @param {import('./document.js').Doc} doc @param {'2007' | '2000' | 'R12'} [version] @returns {string} */
 export function writeDXF(doc, version = '2000') {
   const pa = ANNO.override, n = doc.settings.cannoscale || '1:1';
   ANNO.override = { name: n, k: factorOfName(doc, n) };
   try { return writeDXFi(doc, version); } finally { ANNO.override = pa; }
 }
+/** @param {import('./document.js').Doc} doc @param {'2007' | '2000' | 'R12'} version @returns {string} */
 function writeDXFi(doc, version) {
   const R12 = version === 'R12', V07 = version === '2007';
   const o = [];
@@ -417,7 +432,7 @@ function writeDXFi(doc, version) {
   const mline = (e, ow) => {
     if (R12) { for (const x of explodeEntity(e)) writeEnt(x, ow); return; }
     const st = doc.mlineStyle(e.mlstyle), gm = mlGeom(e), els = sortedElems(st), sh = justShift(st, e.just || 'top'), s = e.scale ?? 1;
-    const caps = st.caps || {}, flags = 1 | (gm.closed ? 2 : 0) | (caps.sLine || caps.sOuter || caps.sInner ? 0 : 4) | (caps.eLine || caps.eOuter || caps.eInner ? 0 : 8);
+    const caps = /** @type {Partial<import('./types').MLineStyle['caps']>} */ (st.caps || {}), flags = 1 | (gm.closed ? 2 : 0) | (caps.sLine || caps.sOuter || caps.sInner ? 0 : 4) | (caps.eLine || caps.eOuter || caps.eInner ? 0 : 8);
     common('MLINE', e, ow, 'AcDbMline');
     g(2, nm(st.name)); g(340, mlstH[st.name]); g(40, num(s)); g(70, { top: 0, zero: 1, bottom: 2 }[e.just || 'top']); g(71, flags); g(72, e.pts.length); g(73, els.length);
     xy(0, e.pts[0]); g(210, 0); g(220, 0); g(230, 1);
@@ -639,7 +654,8 @@ function writeDXFi(doc, version) {
     g(40, num(t?.vh || (ext ? Math.max(ext.y2 - ext.y1, 1) * 1.1 : 300))); g(41, 1.6); g(42, 50); g(43, 0); g(44, 0); g(50, 0); g(51, twistOut(rot));
     g(71, 0); g(72, 100); g(73, 1); g(74, 3); g(75, 0); g(76, 0); g(77, 0); g(78, 0);
   });
-  const lts = [['ByBlock', '', []], ['ByLayer', '', []], ...Object.entries(LTYPES).map(([k, v]) => [k === 'CONTINUOUS' ? 'Continuous' : k, v.desc, v.pat])];
+  /** @type {[string, string, number[]][]} */
+  const lts = [['ByBlock', '', []], ['ByLayer', '', []], ...Object.entries(LTYPES).map(([k, v]) => /** @type {[string, string, number[]]} */ ([k === 'CONTINUOUS' ? 'Continuous' : k, v.desc, v.pat]))];
   table('LTYPE', lts.length, th => {
     for (const [name, desc, pat] of lts) {
       ltypeH[name] = H();
@@ -802,7 +818,7 @@ function writeDXFi(doc, version) {
     const colCode = c => (!c || c === 'BYLAYER' ? 256 : c === 'BYBLOCK' ? 0 : hexToAci(c));
     const ltName = l => (!l || l === 'BYLAYER' ? 'BYLAYER' : l === 'BYBLOCK' ? 'BYBLOCK' : l === 'CONTINUOUS' ? 'Continuous' : l);
     for (const st of doc.mlineStyles) {
-      const c = st.caps || {}, fl = (st.fill ? 1 : 0) | (st.joints ? 2 : 0) | (c.sLine ? 16 : 0) | (c.sInner ? 32 : 0) | (c.sOuter ? 64 : 0) | (c.eLine ? 256 : 0) | (c.eInner ? 512 : 0) | (c.eOuter ? 1024 : 0);
+      const c = /** @type {Partial<import('./types').MLineStyle['caps']>} */ (st.caps || {}), fl = (st.fill ? 1 : 0) | (st.joints ? 2 : 0) | (c.sLine ? 16 : 0) | (c.sInner ? 32 : 0) | (c.sOuter ? 64 : 0) | (c.eLine ? 256 : 0) | (c.eInner ? 512 : 0) | (c.eOuter ? 1024 : 0);
       g(0, 'MLINESTYLE'); g(5, mlstH[st.name]); g(102, '{ACAD_REACTORS'); g(330, mlstDict); g(102, '}'); g(330, mlstDict); g(100, 'AcDbMlineStyle');
       g(2, nm(st.name)); g(70, fl); g(3, st.desc || ''); g(62, st.fill ? hexToAci(st.fill) : 256); if (st.fill) g(420, tcolor(st.fill)); g(51, 90); g(52, 90);
       const els = sortedElems(st);
@@ -1027,6 +1043,7 @@ function mtextPlain(s) {
 }
 
 // onProgress(fracción): avance de la lectura (lo usa el Web Worker de dxfworker.js para la barra de progreso)
+/** @param {string} text @param {((f: number) => void) | null} [onProgress] fracción leída (0..1) @returns {DxfData} */
 export function readDXF(text, onProgress = null) {
   const lines = text.split(/\r?\n/);
   const pairs = [];
@@ -1229,6 +1246,7 @@ export function readDXF(text, onProgress = null) {
           const mt = mtextIn(raw);
           let r = G.rad(numv(gr, 50));
           if (val(gr, 11) !== undefined) r = Math.atan2(numv(gr, 21), numv(gr, 11));
+          /** @type {import('./types').NewEntity<import('./types').MText>} */
           const e = { type: 'mtext', p: P(numv(gr, 10), numv(gr, 20)), h: numv(gr, 40, 2.5), w: Math.max(0, numv(gr, 41, 0)), rot: r,
             attach: MT_ATT[(parseInt(val(gr, 71, '1'), 10) || 1) - 1] || 'tl', text: mt.text, style: val(gr, 7, 'Standard'), ...(mt.rich ? { rich: true } : {}) };
           const ls = numv(gr, 44, 1);
@@ -1239,6 +1257,7 @@ export function readDXF(text, onProgress = null) {
         case 'ATTDEF': {
           if (!ctx.attdef) break;
           const j = parseInt(val(gr, 72, '0'), 10), r = G.rad(numv(gr, 50));
+          /** @type {import('./types').NewEntity<import('./types').AttDef>} */
           const a = { type: 'attdef', p: P(numv(gr, j && val(gr, 11) !== undefined ? 11 : 10), numv(gr, j && val(gr, 11) !== undefined ? 21 : 20)), h: numv(gr, 40, 2.5), rot: r,
             align: j === 1 || j === 4 ? 'c' : j === 2 ? 'r' : 'l', style: val(gr, 7, 'Standard'), tag: (val(gr, 2, '') || 'ATRIBUTO').toUpperCase(), prompt: specials(val(gr, 3, '')), def: specials(val(gr, 1, '')) };
           if (parseInt(val(gr, 70, '0'), 10) & 1) a.invisible = true;
@@ -1301,6 +1320,7 @@ export function readDXF(text, onProgress = null) {
           for (const [c, v] of gr.d) { if (c === 10) verts.push(P(parseFloat(v), 0)); else if (c === 20 && verts.length) verts[verts.length - 1].y = parseFloat(v); }
           if (verts.length < 2) { skipped++; break; }
           const ds = dimStyles.find(d => d.name === val(gr, 3, '')) || dimStyles[0] || DEFAULT_DIMSTYLE, k = ds.scale || 1;
+          /** @type {import('./types').NewEntity<import('./types').MLeader>} */
           const e = { type: 'mleader', pts: verts, content: 'none', text: '', h: numv(gr, 40, ds.txt * k) || ds.txt * k, asz: ds.asz * k, arrow: val(gr, 71, '1') === '0' ? 'none' : 'closed', land: 0, gap: 0, w: 0, style: 'Standard' };
           const tg = ctx.mtexts?.get(val(gr, 340));
           if (tg) { // MTEXT enlazado: pasa a ser el contenido de la directriz
@@ -1335,7 +1355,8 @@ export function readDXF(text, onProgress = null) {
           const pts = vs.map(q => q.p);
           if (pts.length < 2) { skipped++; break; }
           const sn = val(gr, 2, 'STANDARD'), st = mlineStyles.find(s => s.name.toUpperCase() === String(sn).toUpperCase());
-          const ml = { type: 'mline', pts, closed: !!(parseInt(val(gr, 71, '0'), 10) & 2), just: ['top', 'zero', 'bottom'][parseInt(val(gr, 70, '0'), 10)] || 'top', scale: numv(gr, 40, 1) || 1, mlstyle: st ? st.name : 'STANDARD' };
+          /** @type {import('./types').NewEntity<import('./types').MLine>} */
+          const ml = { type: 'mline', pts, closed: !!(parseInt(val(gr, 71, '0'), 10) & 2), just: /** @type {import('./types').MLine['just'][]} */ (['top', 'zero', 'bottom'])[parseInt(val(gr, 70, '0'), 10)] || 'top', scale: numv(gr, 40, 1) || 1, mlstyle: st ? st.name : 'STANDARD' };
           // Huecos de MLEDIT: distancias desde el inicio del elemento → distancias sobre el eje desde el vértice
           const cuts = [];
           vs.forEach((q, i) => q.els.forEach((pp, k) => {
@@ -1352,6 +1373,7 @@ export function readDXF(text, onProgress = null) {
           const k = gr.d.findIndex(x => x[0] === 100 && (x[1] === 'AcDbArcDimension' || x[1] === 'AcDbRadialDimensionLarge')), t = { d: k >= 0 ? gr.d.slice(k) : [] };
           const pt = (g2, n) => (val(g2, 10 + n) === undefined ? null : P(numv(g2, 10 + n), numv(g2, 20 + n)));
           const raw = val(gr, 1, ''), text = raw && raw !== '<>' && raw.trim() !== '' ? mtextPlain(specials(raw)) : '';
+          /** @type {import('./types').NewEntity<import('./types').Dim>} | null */
           let dm = null;
           if (gr.type === 'ARC_DIMENSION') {
             const a = pt(t, 3), b = pt(t, 4), c = pt(t, 5), loc = pt(gr, 0) || pt(gr, 1);
@@ -1467,6 +1489,7 @@ export function readDXF(text, onProgress = null) {
     return Object.keys(ov).length ? ov : null;
   }
   // Cota DIMENSION → entidad de cota (null si el tipo no se admite)
+  /** @param {DxfGroup} gr @returns {import('./types').NewEntity<import('./types').Dim> | null} */
   function dimFrom(gr) {
     const pt = k => (val(gr, 10 + k) === undefined ? null : P(numv(gr, 10 + k), numv(gr, 20 + k)));
     const f = parseInt(val(gr, 70, '0'), 10), type = f & 7, raw = val(gr, 1, '');
@@ -1483,7 +1506,7 @@ export function readDXF(text, onProgress = null) {
       }
     }
     const ov = dimOvFrom(gr);
-    const base = { type: 'dim', ...(text ? { text } : {}), ...(breaks.length ? { breaks } : {}), ...(ov ? { ov } : {}) };
+    const base = { type: /** @type {const} */ ('dim'), ...(text ? { text } : {}), ...(breaks.length ? { breaks } : {}), ...(ov ? { ov } : {}) };
     const p10 = pt(0), p11 = pt(1), p13 = pt(3), p14 = pt(4), p15 = pt(5), p16 = pt(6);
     switch (type) {
       case 0: return p13 && p14 && p10 ? { ...base, kind: 'lin', p1: p13, p2: p14, p3: p10, rot: G.rad(numv(gr, 50, 0)) } : null;
@@ -1539,6 +1562,7 @@ export function readDXF(text, onProgress = null) {
     const pts = [...line, ...(last ? [last] : [])];
     if (pts.length < 2) return null;
     const block = content === 1, mt = mtextIn(block ? attVal : text);
+    /** @type {import('./types').NewEntity<import('./types').MLeader>} */
     const e = { type: 'mleader', pts, content: block ? 'block' : mt.text ? 'mtext' : 'none', text: block ? richPlain(mt.text) : mt.text, ...(mt.rich && !block ? { rich: true } : {}),
       arrow: asz === 0 ? 'none' : 'closed', land: hasDog ? land : 0, w: 0 };
     if (styleH && mlStyleByHandle.has(styleH)) e.mstyle = mlStyleByHandle.get(styleH);
@@ -1708,6 +1732,7 @@ export function readDXF(text, onProgress = null) {
     if (!(nr > 0 && nc > 0) || rows.length !== nr || cols.length !== nc || cells.length < nr * nc) return null;
     const xd = xdataOf(gr), fl = xd?.find(x => x[0] === 1070), th = xd?.find(x => x[0] === 1040);
     const title = fl ? !!(+fl[1] & 1) : nc > 1 ? cells[0].span === nc : true;
+    /** @type {import('./types').NewEntity<import('./types').Table>} */
     const tb = { type: 'table', p: P(numv(gr, 10), numv(gr, 20)), rot: Math.atan2(dir.y, dir.x), cols, rows, title, header: fl ? !!(+fl[1] & 2) : true, tstyle: tableStyleByHandle.get(style) || 'Standard',
       cells: Array.from({ length: nr }, (_, r) => Array.from({ length: nc }, (_, c) => mtextPlain(specials(cells[r * nc + c].text || '')))) };
     if (th) tb.th = parseFloat(th[1]);
@@ -1776,6 +1801,7 @@ export function readDXF(text, onProgress = null) {
     } else if (gr.type === 'UCS' && val(gr, 2)) ucsList.push({ name: val(gr, 2), o: P(numv(gr, 10), numv(gr, 20)), ang: G.normAng(Math.atan2(numv(gr, 21), numv(gr, 11, 1))) });
     else if (gr.type === 'VIEW' && val(gr, 2)) {
       const tw = twistIn(numv(gr, 50)), [vx, vy] = fromFrame(tw, numv(gr, 10), numv(gr, 20));
+      /** @type {import('./types').NamedView} */
       const v = { name: val(gr, 2), space: 'model', cx: vx, cy: vy, w: numv(gr, 41, 1), h: numv(gr, 40, 1), ...(tw ? { twist: tw } : {}) };
       const x = xdataText(gr, 'VISTA');
       let meta = null;

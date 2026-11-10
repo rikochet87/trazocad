@@ -1,4 +1,8 @@
 // Tablas de estilos de trazado, como en AutoCAD: dependientes del color (.ctb, una entrada por color ACI 1-255)
+/** @typedef {import('./types').PlotTable} PlotTable */
+/** @typedef {import('./types').PlotStyle} PlotStyle */
+/** @typedef {import('./types').Document} Doc */
+// @ts-check
 // y con nombre (.stb, estilos asignados a capas y objetos). Cambian el color, el grosor, la intensidad y el tipo de
 // línea al imprimir y exportar (PDF, SVG, PNG); con «Mostrar estilos de trazado» también en la presentación en pantalla.
 // Tabla: {name, type: 'ctb' | 'stb', desc, styles: {clave: estilo}}. Clave: número ACI (ctb) o nombre (stb).
@@ -8,9 +12,11 @@
 // con DecompressionStream/CompressionStream.
 import { hexToAci, aciToHex, LTYPES, LWEIGHTS } from './entities.js';
 
+/** Estilo que deja las propiedades del objeto. @type {PlotStyle} */
 export const OBJECT = { color: null, lw: null, screen: 100, ltype: null };
 const allAci = st => Object.fromEntries(Array.from({ length: 255 }, (_, i) => [i + 1, { ...OBJECT, ...st }]));
 // Tablas predefinidas (no se guardan en el dibujo; se pueden copiar para editarlas)
+/** Tablas predefinidas. @type {Record<string, PlotTable>} */
 export const BUILTIN_PLOT = {
   'acad.ctb': { name: 'acad.ctb', type: 'ctb', desc: 'Usa las propiedades de los objetos', styles: allAci({}) },
   'monochrome.ctb': { name: 'monochrome.ctb', type: 'ctb', desc: 'Todo en negro', styles: allAci({ color: '#000000' }) },
@@ -19,13 +25,18 @@ export const BUILTIN_PLOT = {
   'acad.stb': { name: 'acad.stb', type: 'stb', desc: 'Estilo Normal: propiedades de los objetos', styles: { Normal: { ...OBJECT } } },
   'monochrome.stb': { name: 'monochrome.stb', type: 'stb', desc: 'Estilo Normal en negro', styles: { Normal: { ...OBJECT, color: '#000000' } } },
 };
+/** @param {Doc} doc @returns {Record<string, PlotTable>} */
 export const plotTables = doc => ({ ...BUILTIN_PLOT, ...(doc.plotStyles || {}) });
+/** @param {Doc} doc @param {string | null | undefined} name @returns {PlotTable | null} */
 export const plotTable = (doc, name) => (name ? plotTables(doc)[name] || null : null);
 // Nombres de los estilos de una tabla con nombre (Normal siempre primero)
+/** @param {PlotTable | null} t @returns {string[]} */
 export const stbNames = t => (t?.type === 'stb' ? ['Normal', ...Object.keys(t.styles).filter(k => k !== 'Normal')] : []);
 // Tabla en uso para la presentación (o el modelo con lay = null)
+/** Tabla de la presentación (o del modelo). @param {Doc} doc @param {import('./types').Layout | null} lay @returns {PlotTable | null} */
 export const tableFor = (doc, lay) => plotTable(doc, lay ? lay.plotStyle : doc.settings.modelPlotStyle);
 // Tabla con nombre (.stb) que decide los estilos que se ofrecen: la de la presentación o la primera en uso
+/** @param {Doc} doc @param {import('./types').Layout | null} [lay] @returns {PlotTable | null} */
 export function activeStb(doc, lay) {
   const own = tableFor(doc, lay);
   if (own?.type === 'stb') return own;
@@ -40,6 +51,7 @@ const screenOf = (h, s) => { if (s >= 100) return h; const k = Math.max(0, s) / 
 const grayOf = h => { const [r, g, b] = rgb(h), y = 0.299 * r + 0.587 * g + 0.114 * b; return '#' + hex2(y).repeat(3); };
 
 // Estilo de trazado que corresponde a un objeto: por su color ACI (ctb) o por su estilo con nombre, o el de su capa (stb)
+/** Estilo de trazado de una entidad. @param {Doc} doc @param {PlotTable} t @param {import('./types').Entity} e @param {string} color @returns {PlotStyle} */
 export function styleOf(doc, t, e, color) {
   if (!t) return null;
   if (t.type === 'ctb') return t.styles[hexToAci(color)] || null;
@@ -48,6 +60,7 @@ export function styleOf(doc, t, e, color) {
   return t.styles[name] || t.styles.Normal || null;
 }
 // st = doc.style(e) → {color, lw, pat} tal como se imprime. Sin tabla, devuelve null (se usan las propiedades del objeto)
+/** @param {Doc} doc @param {PlotTable} t @param {import('./types').Entity} e @param {{color: string, lw: number, pat: number[]}} st */
 export function applyPlot(doc, t, e, st) {
   const s = styleOf(doc, t, e, st.color);
   if (!s) return null;
@@ -59,6 +72,7 @@ export function applyPlot(doc, t, e, st) {
   return { color, lw: s.lw != null ? s.lw : st.lw, pat: lt };
 }
 // Función entidad → estilo de impresión ({color, lw, pat}) para la tabla de la presentación (null si no tiene)
+/** Función que aplica la tabla de la presentación al estilo de cada entidad (null si no hay tabla). @param {Doc} doc @param {import('./types').Layout | null} lay */
 export function plotStyler(doc, lay) {
   const t = tableFor(doc, lay);
   return t ? (e, st) => applyPlot(doc, t, e, st) || st : null;
@@ -98,6 +112,7 @@ function parseTree(text) {
 const lwTable = tree => Object.fromEntries(Object.entries(tree.custom_lineweight_table || {}).map(([k, v]) => [k, parseFloat(v)]));
 const colorFrom = v => { const n = parseInt(v, 10); if (!Number.isFinite(n) || n === USE_COLOR || ((n >>> 24) & 255) !== 0xc2) return null; return '#' + (n & 0xffffff).toString(16).padStart(6, '0'); };
 
+/** Archivo .ctb o .stb de AutoCAD. @param {ArrayBuffer} buf @param {string} fileName @returns {Promise<PlotTable>} */
 export async function readPlotFile(buf, fileName) {
   const b = new Uint8Array(buf);
   let k = 48;
@@ -120,6 +135,7 @@ export async function readPlotFile(buf, fileName) {
 const LT_CODES = { 0: 'CONTINUOUS', 2: 'DASHED', 6: 'DOT', 10: 'CENTER', 12: 'DASHDOT', 14: 'PHANTOM', 31: null };
 const LT_INDEX = Object.fromEntries(Object.entries(LT_CODES).filter(([, v]) => v).map(([k, v]) => [v, +k]));
 
+/** Archivo .ctb/.stb comprimido. @param {PlotTable} t @returns {Promise<Uint8Array<ArrayBuffer>>} */
 export async function writePlotFile(t) {
   const lws = [...new Set([0, ...LWEIGHTS.filter(v => typeof v === 'number'), ...Object.values(t.styles).map(s => s.lw).filter(v => v != null)])].sort((a, b) => a - b);
   const keys = t.type === 'ctb' ? Array.from({ length: 255 }, (_, i) => i + 1) : stbNames(t);
@@ -145,4 +161,5 @@ export async function writePlotFile(t) {
 function adler32(s) { let a = 1, b = 0; for (let i = 0; i < s.length; i++) { a = (a + (s.charCodeAt(i) & 255)) % 65521; b = (b + a) % 65521; } return ((b << 16) | a) >>> 0; }
 
 // Color de muestra para la tabla del editor
+/** @param {number} i @returns {string} */
 export const aciSample = i => aciToHex(i);

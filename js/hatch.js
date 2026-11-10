@@ -1,4 +1,5 @@
 // Detección de contornos para SOMBREADO: grafo plano a partir de las entidades, trazado de caras e islas.
+// @ts-check
 // También recalcula los sombreados asociativos cuando cambia su contorno.
 import * as G from './geom.js';
 import { primsOf, ellPts, plPolygon } from './entities.js';
@@ -16,6 +17,7 @@ function primSegs(q, out, src) {
 const NO_BOUNDARY = new Set(['hatch', 'text', 'mtext', 'attdef', 'point', 'dim', 'mleader', 'table']);
 
 // Contornos cerrados de una entidad (para "Seleccionar objetos")
+/** Contornos cerrados de una entidad (para «Seleccionar objetos»), o null. @param {import('./types').Entity} e @returns {import('./types').Loop[] | null} */
 export function loopsOfEntity(e) {
   switch (e.type) {
     case 'circle': return [Array.from({ length: 96 }, (_, i) => G.polar(e.c, i / 96 * G.TAU, e.r))];
@@ -30,6 +32,7 @@ export function loopsOfEntity(e) {
 
 // Busca la región cerrada que contiene P. Devuelve [contorno, ...islas] o null.
 // El resultado lleva en .ids las entidades que forman los contornos (para la asociatividad).
+/** @param {Iterable<import('./types').Entity>} ents @param {import('./types').Point} Pt @returns {import('./types').FoundBoundary | null} */
 export function findBoundary(ents, Pt) {
   const segs = [];
   for (const e of ents) {
@@ -133,7 +136,7 @@ export function findBoundary(ents, Pt) {
 
   // 3. Islas: componentes conexas no unidas al contorno y situadas dentro de él
   const outerComp = new Set(outer.vs.map(v => comp[v]));
-  const loops = [outer.loop], seen = new Set(), traced = [outer];
+  const loops = /** @type {import('./types').FoundBoundary} */ (/** @type {unknown} */ ([outer.loop])), seen = new Set(), traced = [outer];
   for (let v = 0; v < V.length; v++) {
     const c = comp[v];
     if (outerComp.has(c) || seen.has(c)) continue;
@@ -152,6 +155,7 @@ export function findBoundary(ents, Pt) {
 }
 
 // Punto interior de la región par-impar formada por los contornos (centro del tramo interior más ancho)
+/** Punto dentro del área de los contornos (null si no hay). @param {import('./types').Loop[]} loops @returns {import('./types').Point | null} */
 export function interiorPoint(loops) {
   const pts = loops.flat();
   if (pts.length < 3) return null;
@@ -173,6 +177,7 @@ export function interiorPoint(loops) {
 // Contornos de un sombreado asociativo a partir de sus entidades de origen (null si ya no hay contorno válido).
 // Con punto interior (seed) se repite la detección sólo con esas entidades; si el punto quedó fuera,
 // se prueba con un punto interior del contorno anterior. Se respetan su estilo de islas y las islas quitadas.
+/** Contornos actuales de un sombreado asociativo a partir de sus objetos. @param {import('./types').Hatch} h @param {import('./types').Entity[]} srcs */
 export function assocLoops(h, srcs) {
   if (!h.seed) {
     const loops = srcs.flatMap(e => loopsOfEntity(e) || []);
@@ -186,11 +191,15 @@ export function assocLoops(h, srcs) {
 // Estilo de detección de islas (como HPISLANDDETECTION de AutoCAD) sobre [contorno, ...islas]:
 // normal: todas (se alternan relleno y hueco), outer: sólo las del primer nivel, ignore: ninguna.
 // removed: puntos que marcan islas quitadas a mano (se quita la isla más interior que contiene cada punto)
+/** @type {Record<string, string>} */
 export const ISLAND_MODES = { normal: 'Normal', outer: 'Exterior', ignore: 'Ignorar' };
 const inLoop = (l, p) => G.pointInPoly(p, l);
+/** Profundidad de cada isla (-1 el contorno exterior). @param {import('./types').Loop[]} loops @returns {number[]} */
 export function islandDepths(loops) {
   return loops.map((l, i) => (i ? loops.reduce((n, o, j) => n + (j && j !== i && inLoop(o, l[0]) ? 1 : 0), 0) : -1));
 }
+/** Estilo de detección de islas sobre [contorno, ...islas] (conserva .ids); removed: puntos de islas quitadas a mano.
+ * @template {import('./types').Loop[] & {ids?: number[]}} L @param {L} loops @param {string} [mode] @param {import('./types').Point[]} [removed] @returns {L} */
 export function applyIslands(loops, mode = 'normal', removed = []) {
   const dep = islandDepths(loops), drop = new Set();
   loops.forEach((l, i) => { if (i && (mode === 'ignore' || (mode === 'outer' && dep[i] > 0))) drop.add(i); });
@@ -200,11 +209,12 @@ export function applyIslands(loops, mode = 'normal', removed = []) {
     if (best > 0) { drop.add(best); loops.forEach((l, i) => { if (i && dep[i] > dep[best] && inLoop(loops[best], l[0])) drop.add(i); }); }
   }
   if (!drop.size) return loops;
-  const out = loops.filter((_, i) => !drop.has(i));
+  const out = /** @type {L} */ (loops.filter((_, i) => !drop.has(i)));
   out.ids = loops.ids;
   return out;
 }
 // Isla (índice > 0) más interior del sombreado que contiene p, o -1
+/** Isla que contiene el punto (índice) o -1. @param {import('./types').Loop[]} loops @param {import('./types').Point} p @returns {number} */
 export function islandAt(loops, p) {
   const dep = islandDepths(loops);
   let best = -1;

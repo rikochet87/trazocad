@@ -1,4 +1,5 @@
 // Iconos SVG en línea (24×24, trazo currentColor).
+// @ts-check
 const I = {
   line: '<path d="M4 20 20 4"/><rect x="2.5" y="18.5" width="3" height="3"/><rect x="18.5" y="2.5" width="3" height="3"/>',
   pline: '<path d="M3 19 8 8l6 7 7-11"/><circle cx="8" cy="8" r="1.3"/><circle cx="14" cy="15" r="1.3"/>',
@@ -130,6 +131,7 @@ const I = {
   bprot: '<circle cx="9" cy="15" r="1.4" fill="currentColor"/><path d="M9 15 19 9"/><path d="M19 15A10 10 0 0 0 16 6" stroke-dasharray="2 2"/><circle cx="19" cy="9" r="1.8"/>',
   patlib: '<rect x="3" y="3" width="8" height="8"/><path d="m3 7 4-4M3 11l8-8M7 11l4-4"/><rect x="13" y="13" width="8" height="8"/><path d="M13 17h8M17 13v8"/><path d="M14 4h7M14 7h7M3 15h7M3 18h7"/>',
   mline: '<path d="M3 8h10l6 6"/><path d="M3 13h8l5 5"/><path d="M3 18h6" stroke-dasharray="2 2"/>',
+  // @ts-expect-error clave repetida: pisa el icono mlstyle del estilo de directriz (docs/NOTAS_TIPOS.md)
   mlstyle: '<path d="M3 7h12M3 11h12M3 15h12"/><path d="M3 15h12" stroke-dasharray="2 2"/><path d="m16 20 5-5-2-2-5 5v2Z"/>',
   mledit: '<path d="M3 7h9l6 6h3M3 12h7M3 17h4"/><path d="M14 9.5 8.5 15H3" stroke-dasharray="2 2"/><path d="M18 13.5v-3M16.5 12h3" stroke-width="2"/>',
   centermark: '<circle cx="12" cy="12" r="7"/><path d="M2 12h20M12 2v20" stroke-dasharray="4 2"/><path d="M10 12h4M12 10v4"/>',
@@ -199,6 +201,7 @@ const I = {
   origin: '<path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="3"/><path d="M16 5h5M18.5 2.5v5"/>',
 };
 
+/** SVG del icono. @param {string} name @param {number} [size] @returns {string} */
 export function icon(name, size = 20) {
   return `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[name] || ''}</svg>`;
 }

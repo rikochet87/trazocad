@@ -1,6 +1,12 @@
 // Archivos: nuevo, abrir, guardar (.tcad), exportar DXF/SVG/PNG, imprimir y autoguardado.
+// @ts-check
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Layout} Layout */
+/** @typedef {import('./app.js').App} App */
 import * as G from './geom.js';
-import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, bboxOf, mtextGeom, mleaderGeom, tableGeom, fieldText, ENV, insertClip, mlGeom, LTYPES, imageAlpha, imageClipLoops, dimTexts } from './entities.js';
+import { arcOf, dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, bboxOf, mtextGeom, mleaderGeom, tableGeom, fieldText, ENV, insertClip, mlGeom, LTYPES, imageAlpha, imageClipLoops, dimTexts } from './entities.js';
 import { arrayEnts } from './arrays.js';
 import { splinePts } from './spline.js';
 import { writeDXF, readDXF } from './dxf.js';
@@ -16,6 +22,7 @@ import { plotStyler } from './plotstyles.js';
 const AUTOSAVE_KEY = 'trazocad.autosave';
 // Autoguardado de los dibujos grandes (más de lo que cabe en localStorage): en IndexedDB
 const IDB_NAME = 'trazocad-autoguardado';
+/** Operación en el almacén de IndexedDB. @param {IDBTransactionMode} mode @param {(s: IDBObjectStore) => IDBRequest | undefined} fn @returns {Promise<unknown>} */
 function idb(mode, fn) {
   return new Promise((res, rej) => {
     const rq = indexedDB.open(IDB_NAME, 1);
@@ -29,6 +36,7 @@ function idb(mode, fn) {
   });
 }
 // Mover los objetos del DXF al origen local (coordenadas grandes): objetos, ventanas gráficas, vistas, SCP y punto base
+/** @param {import('./dxf.js').DxfData} r @param {Point} o */
 function shiftDXF(r, o) {
   const dx = -o.x, dy = -o.y, sp = p => (p ? { ...p, x: p.x + dx, y: p.y + dy } : p);
   for (const e of r.ents) shiftEnt(e, dx, dy);
@@ -41,6 +49,7 @@ function shiftDXF(r, o) {
 }
 const fsAccess = 'showSaveFilePicker' in window;
 
+/** @param {Blob} blob @param {string} name */
 function download(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -48,12 +57,17 @@ function download(blob, name) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
+/** @param {string} n */
 const baseName = n => n.replace(/\.[^.]+$/, '');
+/** @param {unknown} s */
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+/** @param {string} c */
 const printColor = c => (c.toLowerCase() === '#ffffff' ? '#000000' : c);
+/** @param {number | string} v */
 const n5 = v => +(+v).toFixed(5);
 
 export class IO {
+  /** @param {App} app */
   constructor(app) {
     this.app = app;
     this.handle = null;
@@ -90,7 +104,7 @@ export class IO {
     try {
       const s = await idb('readonly', st => st.get('dibujo'));
       if (!s || this.app.doc.model.length || this.app.doc.dirty) return;
-      const o = JSON.parse(s);
+      const o = JSON.parse(/** @type {string} */ (s));
       if (!(o.model || o.ents)?.length) return;
       this.app.doc.fromJSON(o);
       this.app.doc.dirty = true;
@@ -102,6 +116,7 @@ export class IO {
 
   // DXF en segundo plano (Web Worker de módulo, dxfworker.js) con barra de progreso; si el navegador no admite workers
   // de módulo, en el hilo principal
+  /** @param {File} file @returns {Promise<import('./dxf.js').DxfData>} */
   async readDXFFile(file) {
     const prog = this.app.ui.progress(`Abriendo ${file.name}`);
     try {
@@ -137,6 +152,7 @@ export class IO {
   }
 
   // Selector de archivo para leer (referencias externas). Devuelve {file, handle} o null.
+  /** @param {string} [desc] @param {string[]} [exts] */
   async pickFile(desc = 'Dibujos', exts = ['.tcad', '.dxf']) {
     if ('showOpenFilePicker' in window) {
       try {
@@ -174,11 +190,13 @@ export class IO {
   }
 
   // Texto de un archivo: UTF-8 o, si no lo es (DXF anteriores a 2007), Windows-1252
+  /** @param {File | Blob} file @returns {Promise<string>} */
   async readText(file) {
     const buf = await file.arrayBuffer();
     try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { return new TextDecoder('windows-1252').decode(buf); }
   }
 
+  /** @param {File} file @param {FileSystemFileHandle | null} [handle] */
   async loadFile(file, handle = null) {
     const dxf = /\.dxf$/i.test(file.name), doc = this.app.doc;
     try {
@@ -202,7 +220,7 @@ export class IO {
         if (r.ucsList?.length) doc.ucsList = r.ucsList;
         if (r.views?.length) doc.views = r.views;
         if (r.ucs) doc.ucs = r.ucs;
-        if (r.modelView?.vh > 0) doc.tiles = { active: 0, tiles: [{ r: { x1: 0, y1: 0, x2: 1, y2: 1 }, ...r.modelView }] };
+        if (r.modelView?.vh > 0) doc.tiles = { active: 0, tiles: [/** @type {import('./types').TileState} */ ({ r: { x1: 0, y1: 0, x2: 1, y2: 1 }, ...r.modelView })] };
         if (r.mleaderStyles?.length) { doc.mleaderStyles = r.mleaderStyles; doc.cur.mleaderStyle = r.mleaderStyles[0].name; }
         if (r.tableStyles?.length) { doc.tableStyles = r.tableStyles; doc.cur.tableStyle = r.tableStyles[0].name; }
         for (const s of r.mlineStyles || []) { const i = doc.mlineStyles.findIndex(x => x.name.toUpperCase() === s.name.toUpperCase()); if (i >= 0) doc.mlineStyles[i] = s; else doc.mlineStyles.push(s); }
@@ -251,6 +269,7 @@ export class IO {
     if (missing) this.app.print(`${missing} referencia(s) externa(s) sin cargar: use XREF › Recargar para elegir su archivo.`, 'err');
   }
 
+  /** @param {BlobPart} content @param {string} name @param {string} mime @param {string} ext @param {string} desc @param {boolean} [useHandle] */
   async writeFile(content, name, mime, ext, desc, useHandle) {
     const blob = content instanceof Blob ? content : new Blob([content], { type: mime });
     if (fsAccess) {
@@ -267,6 +286,7 @@ export class IO {
     return 'download';
   }
 
+  /** @param {boolean} [as] guardar como */
   async save(as) {
     const doc = this.app.doc;
     const h = await this.writeFile(JSON.stringify(doc.toJSON()), `${doc.name}.tcad`, 'application/json', '.tcad', 'Dibujo TrazoCAD', !as);
@@ -277,6 +297,7 @@ export class IO {
     this.app.print(`Dibujo guardado: ${doc.name}.tcad`);
   }
 
+  /** @param {'2007' | '2000' | 'R12'} [version] */
   async exportDXF(version = '2007') {
     const doc = this.app.doc;
     const h = await this.writeFile(writeDXF(realDoc(doc), version), `${doc.name}.dxf`, 'application/dxf', '.dxf', 'DXF', false);
@@ -286,13 +307,17 @@ export class IO {
   // ---------- SVG ----------
   // lwScale: unidades de dibujo por mm de grosor (null = trazo fino independiente del zoom); vis: filtro de visibilidad
   // Estilo con el que se imprime un objeto: el de la tabla de estilos de trazado de la exportación, o el suyo
+  /** @param {Entity} e @returns {{color: string, lw: number, pat: number[]}} */
   plotSt(e) { const st = this.app.doc.style(e); return this.plot ? this.plot(e, st) : st; }
   // Exportaciones de la presentación lay (o del modelo con null): prepara la tabla de estilos de trazado
+  /** @param {Layout | null} lay */
   plotFor(lay) { this.plot = plotStyler(this.app.doc, lay); this.ltk = 1; return this.plot; }
+  /** @param {Layout | null} lay @param {(lw: number) => number} px grosor en mm → píxeles @returns {(e: Entity) => import('./types').DrawStyle} */
   printSty(lay, px) { // función entidad → estilo de pintado de render.js para PNG y PDF
     const doc = this.app.doc, ps = plotStyler(doc, lay);
     return e => { const s = doc.style(e), st = ps ? ps(e, s) : s; return { color: ps ? st.color : printColor(st.color), px: px(st.lw), pat: st.pat, ltscale: doc.settings.ltscale }; };
   }
+  /** @param {Iterable<Entity>} ents @param {number} lwScale @param {string[]} out @param {(e: Entity) => boolean} [vis] */
   svgEnts(ents, lwScale, out, vis = e => this.app.doc.layer(e.layer).on) {
     const doc = this.app.doc;
     const stroke = e => {
@@ -324,7 +349,7 @@ export class IO {
       let d = `M${n5(e.pts[0].x)} ${n5(e.pts[0].y)}`;
       for (const pc of plPieces(e)) {
         if (!pc.bulge) d += ` L${n5(pc.b.x)} ${n5(pc.b.y)}`;
-        else { const sw = Math.abs(4 * Math.atan(pc.bulge)); d += ` A${n5(pc.prim.r)} ${n5(pc.prim.r)} 0 ${sw > Math.PI ? 1 : 0} ${pc.bulge > 0 ? 1 : 0} ${n5(pc.b.x)} ${n5(pc.b.y)}`; }
+        else { const sw = Math.abs(4 * Math.atan(pc.bulge)); d += ` A${n5(arcOf(pc).r)} ${n5(arcOf(pc).r)} 0 ${sw > Math.PI ? 1 : 0} ${pc.bulge > 0 ? 1 : 0} ${n5(pc.b.x)} ${n5(pc.b.y)}`; }
       }
       return d + (e.closed ? ' Z' : '');
     };
@@ -478,6 +503,7 @@ ${body.join('\n')}
   }
 
   // Extensión del modelo en los ejes de la vista del modelo (girada o no): centro en el dibujo, ancho y alto
+  /** Encuadre del modelo que se exporta: centro, tamaño y giro de la vista. @returns {{cx: number, cy: number, bw: number, bh: number, rot: number}} */
   modelFrame() {
     const doc = this.app.doc, b = doc.extents(doc.model.filter(e => doc.visible(e)));
     if (!b) return null;
@@ -521,10 +547,11 @@ ${body.join('\n')}
 
   // ---------- PDF vectorial ----------
   // which: 'current' (presentación activa o modelo) o 'all' (todas las presentaciones, una por página)
+  /** @param {'current' | 'all'} [which] */
   async buildPDF(which = 'current') {
     const app = this.app, doc = app.doc, K = 72 / 25.4; // puntos por mm
     const pageOf = lay => {
-      const W = lay.w * K, H = lay.h * K, ctx = new PdfContext(H);
+      const W = lay.w * K, H = lay.h * K, ctx = /** @type {import('./types').Ctx2D} */ (/** @type {unknown} */ (new PdfContext(H))); // imita un contexto 2D
       app.renderer.drawLayout(ctx, makeRV(lay.w / 2, lay.h / 2, K, W, H, 1), lay, this.printSty(lay, lw => Math.max(0.1, lw) * K), true);
       return { w: W, h: H, ctx };
     };
@@ -535,16 +562,17 @@ ${body.join('\n')}
     const f = this.modelFrame();
     if (!f) return null;
     const W = 420 * K, H = 297 * K, s = Math.min((W - 20 * K) / f.bw, (H - 20 * K) / f.bh);
-    const ctx = new PdfContext(H), R = makeRV(f.cx, f.cy, s, W, H, 1, 0, 0, f.rot);
+    const ctx = /** @type {import('./types').Ctx2D} */ (/** @type {unknown} */ (new PdfContext(H))), R = makeRV(f.cx, f.cy, s, W, H, 1, 0, 0, f.rot);
     setWorld(ctx, R);
     app.renderer.paintList(ctx, R, doc.model, this.printSty(null, lw => Math.max(0.1, lw) * K));
     return [{ w: W, h: H, ctx }];
   }
+  /** @param {'current' | 'all'} [which] */
   async exportPDF(which = 'current') {
     const pages = await this.buildPDF(which);
     if (!pages) return this.app.print('El dibujo está vacío.');
     const doc = this.app.doc, lay = this.app.layoutShown();
-    const blob = await buildPdf(pages, doc.name);
+    const blob = await buildPdf(/** @type {{w: number, h: number, ctx: import('./pdf.js').PdfContext}[]} */ (/** @type {unknown} */ (pages)), doc.name);
     const name = `${doc.name}${which !== 'all' && lay ? '-' + lay.name : ''}.pdf`;
     const h = await this.writeFile(blob, name, 'application/pdf', '.pdf', 'Documento PDF', false);
     if (h) this.app.print(`Exportado a PDF vectorial: ${pages.length} página(s)${lay || which === 'all' ? ', a escala real' : ' (modelo ajustado a A3)'}.`);

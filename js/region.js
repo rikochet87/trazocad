@@ -1,4 +1,9 @@
 // Regiones: áreas cerradas con huecos y operaciones booleanas (unión, diferencia e intersección) con aristas rectas y de arco.
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** @typedef {import('./types').RegionLoop} RegionLoop */
+// @ts-check
 // Región: {type: 'region', loops: [{pts, bulges?}]}. Cada contorno es cerrado y está orientado con el interior a su izquierda:
 // los exteriores en sentido antihorario (área positiva) y los huecos en sentido horario.
 import * as G from './geom.js';
@@ -6,9 +11,13 @@ import { plPieces, plArea, plLength, ellPts } from './entities.js';
 import { splinePts } from './spline.js';
 
 const loopEnt = l => ({ pts: l.pts, bulges: l.bulges, closed: true });
+/** Área con signo (positiva si es antihorario). @param {RegionLoop} l @returns {number} */
 export const loopArea = l => plArea(loopEnt(l));
+/** @param {RegionLoop} l @returns {number} */
 export const loopLength = l => plLength(loopEnt(l));
+/** @param {{loops: RegionLoop[]}} e @returns {number} */
 export const regionArea = e => e.loops.reduce((s, l) => s + loopArea(l), 0);
+/** @param {{loops: RegionLoop[]}} e @returns {number} */
 export const regionPerimeter = e => e.loops.reduce((s, l) => s + loopLength(l), 0);
 // Contorno normalizado: curvaturas nulas fuera y al menos tres vértices (una polilínea de dos vértices no se cierra),
 // partiendo por la mitad el arco de mayor ángulo
@@ -25,14 +34,17 @@ function clean(l) {
 }
 
 // Sentido contrario: mismos tramos recorridos al revés (curvaturas cambiadas de signo)
+/** @param {RegionLoop} l @returns {RegionLoop} */
 export function reverseLoop(l) {
   const n = l.pts.length, b = l.bulges || [];
   return clean({ pts: [l.pts[0], ...l.pts.slice(1).reverse()], bulges: l.pts.map((_, k) => -(b[n - 1 - k] || 0)) });
 }
 // Contorno orientado en sentido antihorario (sign = 1) u horario (sign = -1)
+/** @param {RegionLoop} l @param {number} [sign] 1 antihorario, -1 horario @returns {RegionLoop} */
 export const orient = (l, sign = 1) => (Math.sign(loopArea(l)) === sign ? clean(l) : reverseLoop(l));
 
 // Contorno cerrado de una entidad (sentido antihorario) o null
+/** Contorno cerrado (antihorario) de una entidad, o null. @param {Entity} e @returns {RegionLoop | null} */
 export function entityLoop(e) {
   switch (e.type) {
     case 'circle': return { pts: [0, 1, 2, 3].map(k => G.polar(e.c, k * Math.PI / 2, e.r)), bulges: [1, 1, 1, 1].map(() => Math.tan(Math.PI / 8)) };
@@ -47,6 +59,7 @@ export function entityLoop(e) {
   }
   return null;
 }
+/** @param {Entity} e @returns {RegionLoop[] | null} */
 export const entityLoops = e => (e.type === 'region' ? e.loops.map(l => ({ ...l })) : (l => (l ? [l] : null))(entityLoop(e)));
 
 // ---------- Tramos ----------
@@ -94,6 +107,7 @@ function probe(l) {
 }
 
 // Agrupa contornos sueltos en un conjunto con huecos: un contorno dentro de un número impar de otros es un hueco
+/** Orienta los contornos sueltos como exteriores y huecos. @param {RegionLoop[]} loops @returns {RegionLoop[]} */
 export function nestLoops(loops) {
   const polys = loops.map(l => polyOf(l));
   return loops.map((l, i) => {
@@ -168,6 +182,7 @@ function mergeLoop(lp, tol) {
 
 const bboxOfLoops = loops => loops.flatMap(l => l.pts).reduce((r, p) => ({ x1: Math.min(r.x1, p.x), y1: Math.min(r.y1, p.y), x2: Math.max(r.x2, p.x), y2: Math.max(r.y2, p.y) }), { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity });
 // op: 'union' | 'subtract' (A − B) | 'intersect'. A y B: listas de contornos orientados. Devuelve los contornos del resultado
+/** @param {RegionLoop[]} A @param {RegionLoop[]} B @param {'union' | 'subtract' | 'intersect'} op @returns {RegionLoop[]} */
 export function booleanLoops(A, B, op) {
   const bb = bboxOfLoops([...A, ...B]), size = Math.max(bb.x2 - bb.x1, bb.y2 - bb.y1) || 1, tol = size * 1e-9;
   const [pa, pb] = splitAll(piecesOf(A), piecesOf(B), tol * 10);
@@ -192,6 +207,7 @@ export function booleanLoops(A, B, op) {
 
 // Contornos cerrados a partir de líneas, arcos y polilíneas abiertas con extremos coincidentes (REGION con objetos sueltos).
 // Devuelve [{loop, src: [entidades que lo forman]}]; un objeto sólo forma parte de un contorno
+/** Encadena líneas, arcos y polilíneas en contornos cerrados. @param {Entity[]} items @param {number} [tol] @returns {{loop: RegionLoop, src: Entity[]}[]} */
 export function chainLoops(items, tol = 1e-6) {
   const pieces = [];
   for (const e of items) {

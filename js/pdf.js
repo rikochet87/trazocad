@@ -1,4 +1,5 @@
 // PDF vectorial: un contexto que imita la parte de la API de Canvas 2D que usa el dibujado (trayectos, arcos, recortes,
+// @ts-check
 // texto y degradados) y escribe operadores PDF. Así se reutiliza exactamente el mismo código de dibujado que la pantalla.
 // Coordenadas del contexto: puntos con el eje Y hacia abajo (como un canvas); al escribir se invierte con la altura de página.
 
@@ -8,12 +9,13 @@ const mul = (m, n) => [m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1], m[0
 const ap = (m, x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 
 // Colores CSS sencillos → [r, g, b, a] (0..1)
+/** @param {unknown} c @returns {[number, number, number, number]} */
 function parseColor(c) {
   if (typeof c !== 'string') return [0, 0, 0, 1];
   let m = c.match(/^#([0-9a-f]{6})$/i);
-  if (m) return [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16) / 255).concat(1);
+  if (m) return /** @type {[number, number, number, number]} */ ([0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16) / 255).concat(1));
   m = c.match(/^#([0-9a-f]{3})$/i);
-  if (m) return [...m[1]].map(h => parseInt(h + h, 16) / 255).concat(1);
+  if (m) return /** @type {[number, number, number, number]} */ ([...m[1]].map(h => parseInt(h + h, 16) / 255).concat(1));
   m = c.match(/^rgba?\(([^)]+)\)$/i);
   if (m) { const p = m[1].split(',').map(parseFloat); return [p[0] / 255, p[1] / 255, p[2] / 255, p[3] ?? 1]; }
   return c === 'white' ? [1, 1, 1, 1] : [0, 0, 0, 1];
@@ -61,6 +63,7 @@ class Gradient {
 export class PdfContext {
   constructor(H) {
     this.H = H; this.ops = []; this.fonts = new Set(); this.images = new Map(); this.alphas = new Set(); this.path = []; this.cur = null;
+    /** Estado del contexto (save/restore). @type {{m: number[], strokeStyle: string | Gradient, fillStyle: string | Gradient, lineWidth: number, lineCap: string, dash: number[], globalAlpha: number, font: string, textAlign: string, textBaseline: string, [k: string]: unknown}} */
     this.st = { m: [1, 0, 0, 1, 0, 0], strokeStyle: '#000000', fillStyle: '#000000', lineWidth: 1, lineCap: 'butt', dash: [], globalAlpha: 1, font: '10px sans-serif', textAlign: 'left', textBaseline: 'alphabetic' };
     this.stack = [];
     for (const k of ['strokeStyle', 'fillStyle', 'lineWidth', 'lineCap', 'globalAlpha', 'font', 'textAlign', 'textBaseline']) {
@@ -162,7 +165,7 @@ export class PdfContext {
   drawImage(img, dx, dy, dw, dh) { this.drawImageSrc(img?.src, dx, dy, dw ?? img?.naturalWidth ?? 1, dh ?? img?.naturalHeight ?? 1); }
   fillText(str, x, y) {
     if (!str) return;
-    const font = this.st.font, size = parseFloat((font.match(/([\d.]+)px/) || [, 10])[1]), name = pdfFont(font);
+    const font = this.st.font, size = parseFloat(String((font.match(/([\d.]+)px/) || [, 10])[1])), name = pdfFont(font);
     this.fonts.add(name);
     if (this.st.textAlign === 'center' || this.st.textAlign === 'right') { const w = this.measureText(str).width; x -= this.st.textAlign === 'center' ? w / 2 : w; }
     const [a, b, c, d, e, f] = this.st.m;
@@ -206,6 +209,7 @@ async function imagePixels(src) {
 const EMPTY_IMAGE = { w: 1, h: 1, rgb: new Uint8Array([255, 255, 255]), a: new Uint8Array([0]) };
 
 // pages: [{w, h (puntos), ctx: PdfContext}] → Blob del PDF
+/** Archivo PDF con las páginas (tamaño en puntos y contexto dibujado). @param {{w: number, h: number, ctx: PdfContext}[]} pages @param {string} [title] @returns {Promise<Blob>} */
 export async function buildPdf(pages, title = 'TrazoCAD') {
   const fontNames = [...new Set(pages.flatMap(p => [...p.ctx.fonts]))];
   const objs = []; // contenido de cada objeto (Uint8Array)

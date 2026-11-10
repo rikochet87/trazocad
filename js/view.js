@@ -1,41 +1,58 @@
 // Vista: transformación mundo <-> pantalla, zoom, encuadre y giro. ox, oy: esquina de la vista en la zona de dibujo
+// @ts-check
 // (las ventanas en mosaico del modelo la dividen en varias vistas). rot: giro de la vista (VIEWTWIST), en radianes: la
 // dirección del dibujo con ese ángulo se ve horizontal (PLAN alinea la vista con el SCP poniendo rot = ángulo del SCP).
 
 // Universal → ejes de la vista (sin escala) y al revés
+/** @param {number} rot @param {number} x @param {number} y @returns {[number, number]} */
 export const toFrame = (rot, x, y) => { if (!rot) return [x, y]; const c = Math.cos(rot), s = Math.sin(rot); return [x * c + y * s, -x * s + y * c]; };
+/** @param {number} rot @param {number} u @param {number} v @returns {[number, number]} */
 export const fromFrame = (rot, u, v) => { if (!rot) return [u, v]; const c = Math.cos(rot), s = Math.sin(rot); return [u * c - v * s, u * s + v * c]; };
 
 // Métodos comunes a las vistas: usan cx, cy (centro en el dibujo), scale, rot, w, h, ox, oy
+/** Campos de las subclases (en VpView, getters): no se declaran en ViewBase para no taparlos.
+ * @typedef {{cx: number, cy: number, scale: number, rot: number, w: number, h: number, ox: number, oy: number,
+ *   toScreen(p: Point): Point, toWorld(s: Point): Point, poly(): Point[], frameBox(pts: Point[]): FrameBox, frameCenter(f: FrameBox): Point,
+ *   fitPts(pts: Point[], margin?: number): void}} ViewFields */
+/** @typedef {import('./types').Point} Point */
+/** Rectángulo en los ejes de la vista. @typedef {{u1: number, v1: number, u2: number, v2: number}} FrameBox */
 class ViewBase {
+  /** @this {ViewFields} @param {Point} p @returns {Point} */
   toScreen(p) {
     const [u, v] = toFrame(this.rot, p.x - this.cx, p.y - this.cy);
     return { x: u * this.scale + this.ox + this.w / 2, y: this.oy + this.h / 2 - v * this.scale };
   }
+  /** @this {ViewFields} @param {Point} s @returns {Point} */
   toWorld(s) {
     const [dx, dy] = fromFrame(this.rot, (s.x - this.ox - this.w / 2) / this.scale, (this.oy + this.h / 2 - s.y) / this.scale);
     return { x: dx + this.cx, y: dy + this.cy };
   }
   // Esquinas de la vista en el dibujo (inferior izquierda, inferior derecha, superior derecha, superior izquierda)
+  /** @this {ViewFields} @returns {Point[]} */
   poly() {
     const { ox, oy, w, h } = this;
     return [{ x: ox, y: oy + h }, { x: ox + w, y: oy + h }, { x: ox + w, y: oy }, { x: ox, y: oy }].map(s => this.toWorld(s));
   }
   // Rectángulo del dibujo que contiene la vista (con la vista girada, el de sus cuatro esquinas)
+  /** @this {ViewFields} @returns {import('./types').BBox} */
   rect() {
     if (!this.rot) { const a = this.toWorld({ x: this.ox, y: this.oy + this.h }), b = this.toWorld({ x: this.ox + this.w, y: this.oy }); return { x1: a.x, y1: a.y, x2: b.x, y2: b.y }; }
     const q = this.poly(), xs = q.map(p => p.x), ys = q.map(p => p.y);
     return { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
   }
+  /** @this {ViewFields} @param {Point} s */
   contains(s) { return s.x >= this.ox && s.x < this.ox + this.w && s.y >= this.oy && s.y < this.oy + this.h; }
   // Rectángulo de los puntos en los ejes de la vista: {u1, v1, u2, v2}
+  /** @this {ViewFields} @param {Point[]} pts @returns {FrameBox} */
   frameBox(pts) {
     let u1 = Infinity, v1 = Infinity, u2 = -Infinity, v2 = -Infinity;
     for (const p of pts) { const [u, v] = toFrame(this.rot, p.x, p.y); u1 = Math.min(u1, u); u2 = Math.max(u2, u); v1 = Math.min(v1, v); v2 = Math.max(v2, v); }
     return { u1, v1, u2, v2 };
   }
   // Centro en el dibujo del rectángulo de la vista (en sus ejes)
+  /** @this {ViewFields} @param {FrameBox} f @returns {Point} */
   frameCenter(f) { const [x, y] = fromFrame(this.rot, (f.u1 + f.u2) / 2, (f.v1 + f.v2) / 2); return { x, y }; }
+  /** @this {ViewFields} @param {import('./types').BBox | null} b @param {number} [margin] */
   fit(b, margin) {
     if (!b || !isFinite(b.x1)) return;
     this.fitPts([{ x: b.x1, y: b.y1 }, { x: b.x2, y: b.y1 }, { x: b.x2, y: b.y2 }, { x: b.x1, y: b.y2 }], margin);
@@ -43,6 +60,7 @@ class ViewBase {
 }
 
 export class View extends ViewBase {
+  /** @type {undefined} sólo VpView tiene ventana gráfica: permite distinguirlas con v.vp */ vp;
   constructor() { super(); this.cx = 210; this.cy = 148.5; this.scale = 2; this.rot = 0; this.w = 800; this.h = 600; this.ox = 0; this.oy = 0; this.stack = []; }
 
   push() { this.stack.push({ cx: this.cx, cy: this.cy, scale: this.scale, rot: this.rot }); if (this.stack.length > 50) this.stack.shift(); }
@@ -76,6 +94,7 @@ export class View extends ViewBase {
 // Vista del modelo a través de una ventana gráfica activa de una presentación (MSPACE). Con el giro de la ventana (twist):
 // papel = centroRectángulo + giro(modelo − centroVentana, −twist)·s
 export class VpView extends ViewBase {
+  /** @param {View} paper vista del papel @param {import('./types').Viewport} vp */
   constructor(paper, vp) { super(); this.paper = paper; this.vp = vp; this.stack = []; }
   get w() { return this.paper.w; }
   get h() { return this.paper.h; }

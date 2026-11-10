@@ -1,4 +1,6 @@
 // Automatización: guiones .scr (SCRIPT) con las mismas órdenes y respuestas que la línea de comandos, grabación de
+/** @typedef {import('./app.js').App} App */
+// @ts-check
 // acciones a guion (ACTRECORD / ACTSTOP) y API en JavaScript para el usuario (consola, archivos .js cargados con APPLOAD
 // y órdenes nuevas definidas desde JavaScript).
 import * as G from './geom.js';
@@ -26,6 +28,7 @@ async function idle(app, maxMs = 120000) {
   }
 }
 
+/** Ejecuta un guion .scr; devuelve las líneas ejecutadas. @param {App} app @param {string} text @param {string} [name] @returns {Promise<number>} */
 export async function runScript(app, text, name = 'guion') {
   const lines = String(text).replace(/^﻿/, '').replace(/\r\n?/g, '\n').split('\n');
   if (lines.length && lines[lines.length - 1] === '') lines.pop(); // el salto final no es un Intro más
@@ -52,7 +55,7 @@ export async function runScript(app, text, name = 'guion') {
   } catch (err) {
     if (app.cmdPromise) { // se cancela la orden pendiente (y se cierra su diálogo, si lo abrió)
       app.cancelCurrent();
-      document.querySelector('#modal-root .modal-head .ib')?.click();
+      /** @type {HTMLElement | null} */ (document.querySelector('#modal-root .modal-head .ib'))?.click();
       try { await Promise.race([app.cmdPromise, tick(3000)]); } catch { /* cancelada */ }
     }
     throw err instanceof ScriptError ? err : new ScriptError(`${name}: ${err.message}`);
@@ -64,6 +67,7 @@ export async function runScript(app, text, name = 'guion') {
 // ---------- Grabación de acciones ----------
 // Se graba una respuesta por línea (así los textos con espacios no se parten): el nombre de cada orden, lo escrito y,
 // para lo designado con el ratón, las coordenadas universales (*x,y) o un punto sobre cada objeto designado.
+/** Grabación de acciones (ACTRECORD). @type {{on: boolean, lines: string[], name: string}} */
 export const REC = { on: false, lines: [], name: '' };
 const nf = v => String(+(+v).toFixed(8));
 // Coordenadas universales reales (con el origen local del modelo, origin.js)
@@ -74,6 +78,7 @@ export function pointOn(e) {
   if (q) return q.k === 's' ? G.mid(q.a, q.b) : G.polar(q.c, q.a2 > q.a1 ? (q.a1 + q.a2) / 2 : q.a1, q.r);
   return gripsOf(e)[0] || null;
 }
+/** @param {import('./types').CommandDef} d @param {unknown} arg */
 export function recCommand(d, arg) {
   if (!REC.on || d.hidden || d.name === 'ACTRECORD' || d.name === 'ACTSTOP') return;
   REC.lines.push(d.name);
@@ -95,6 +100,7 @@ export function recAnswer(app, r, v, typed) {
     default: REC.lines.push(v == null ? '' : String(v));
   }
 }
+/** @returns {string} */
 export const recText = () => `; Guion de TrazoCAD${REC.name ? ` "${REC.name}"` : ''} grabado con ACTRECORD (${new Date().toLocaleString('es')})\n${REC.lines.join('\n')}\n`;
 
 // ---------- API en JavaScript ----------
@@ -119,6 +125,7 @@ async function feed(app, name, answers) {
   return 'ok';
 }
 
+/** API en JavaScript para el usuario (window.tc). @param {App} app */
 export function makeApi(app) {
   const doc = () => app.doc;
   // Las altas y modificaciones fuera de una orden se agrupan en una operación de deshacer
@@ -158,7 +165,8 @@ export function makeApi(app) {
     // Consultas
     get: id => doc().get(id) || null,
     all: (filter = {}) => {
-      const f = typeof filter === 'function' ? filter : e => Object.entries(filter).every(([k, v]) => (Array.isArray(v) ? v.includes(e[k]) : e[k] === v));
+      // filtro: función o {propiedad: valor o lista de valores}
+      const f = /** @type {(e: import('./types').Entity) => boolean} */ (typeof filter === 'function' ? filter : e => Object.entries(filter).every(([k, v]) => (Array.isArray(v) ? v.includes(e[k]) : e[k] === v)));
       return doc().ents.filter(f);
     },
     selection: () => [...app.sel],
@@ -184,6 +192,7 @@ export function makeApi(app) {
       if (CMDS[N] && !CMDS[N].user) throw new Error(`La orden ${N} ya existe en TrazoCAD.`);
       const aliases = (o.aliases || []).map(a => String(a).toUpperCase()).filter(a => !findCmd(a) || findCmd(a).user);
       CMDS[N] = { name: N, aliases, desc: o.desc || 'Orden definida por el usuario', group: 'Usuario', user: true, ...(o.noTx ? { noTx: true } : {}), fn: (c, arg) => o.fn(c, api, arg) };
+      // @ts-expect-error la UI no tiene refreshHelp: la llamada no hace nada (docs/NOTAS_TIPOS.md)
       app.ui.refreshHelp?.();
       return N;
     },
@@ -195,6 +204,7 @@ export function makeApi(app) {
 
 // Ejecuta código JavaScript del usuario con la API (tc) y la aplicación (app); devuelve lo que devuelva el código
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+/** @param {App} app @param {string} code @param {string} [name] */
 export async function runJs(app, code, name = 'consola') {
   try { return await new AsyncFunction('tc', 'app', String(code))(app.api, app); }
   catch (err) { err.message = `${name}: ${err.message}`; throw err; }
@@ -202,8 +212,11 @@ export async function runJs(app, code, name = 'consola') {
 
 // Aplicaciones cargadas al iniciar (APPLOAD › Cargar al iniciar), guardadas en el navegador
 const APPS_KEY = 'trazocad.apps';
+/** Aplicaciones que se cargan al iniciar. @returns {{name: string, code: string}[]} */
 export function startupApps() { try { return JSON.parse(localStorage.getItem(APPS_KEY) || '[]'); } catch { return []; } }
+/** @param {{name: string, code: string}[]} list @returns {boolean} */
 export function saveStartupApps(list) { try { localStorage.setItem(APPS_KEY, JSON.stringify(list)); return true; } catch { return false; } }
+/** @param {App} app */
 export async function loadStartupApps(app) {
   for (const a of startupApps()) {
     try { await runJs(app, a.code, a.name); app.print(`Aplicación "${a.name}" cargada.`); } catch (err) { app.print(`Error al cargar "${a.name}": ${err.message}`, 'err'); }

@@ -1,4 +1,5 @@
 // Colores ACI (AutoCAD Color Index) ↔ RGB.
+// @ts-check
 const ACI_BASIC = { 1: [255, 0, 0], 2: [255, 255, 0], 3: [0, 255, 0], 4: [0, 255, 255], 5: [0, 0, 255], 6: [255, 0, 255], 7: [255, 255, 255], 8: [128, 128, 128], 9: [192, 192, 192] };
 function aciRGB(i) {
   if (ACI_BASIC[i]) return ACI_BASIC[i];
@@ -11,7 +12,9 @@ function aciRGB(i) {
 const hex2 = n => n.toString(16).padStart(2, '0');
 const rgbHex = ([r, g, b]) => `#${hex2(r)}${hex2(g)}${hex2(b)}`;
 const ACI_TABLE = Array.from({ length: 256 }, (_, i) => (i ? aciRGB(i) : [0, 0, 0]));
+/** Color ACI (1..255) → #rrggbb. @param {number} i @returns {string} */
 export const aciToHex = i => rgbHex(ACI_TABLE[Math.max(1, Math.min(255, i))]);
+/** #rrggbb → color ACI más próximo. @param {string} hex @returns {number} */
 export function hexToAci(hex) {
   if (!/^#[0-9a-f]{6}$/i.test(hex)) return 7;
   const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
@@ -23,4 +26,5 @@ export function hexToAci(hex) {
   return best;
 }
 // ¿El color hexadecimal es exactamente un color ACI?
+/** Color ACI si coincide exactamente (si no, 0). @param {string} hex @returns {number} */
 export const exactAci = hex => { const i = hexToAci(hex); return aciToHex(i).toLowerCase() === String(hex).toLowerCase() ? i : 0; };

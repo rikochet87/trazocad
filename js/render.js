@@ -1,6 +1,18 @@
 // Dibujado en canvas: capa base (rejilla, modelo, presentaciones) y capa superpuesta (cursor, selección, vistas previas).
+// @ts-check
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Viewport} Viewport */
+/** @typedef {import('./types').Layout} Layout */
+/** @typedef {import('./types').Ctx2D} Ctx2D */
+/** @typedef {import('./types').RenderCtx} RenderCtx */
+/** @typedef {import('./types').DrawStyle} DrawStyle */
+/** @typedef {import('./app.js').App} App */
+/** Estilo de cada entidad. @typedef {(e: Entity) => DrawStyle} StyleFn */
+/** Visibilidad de cada entidad. @typedef {(e: Entity) => boolean} VisFn */
 import * as G from './geom.js';
-import { TYPES, gripsOf, blockEnts, ENV, textBox, dimParts, bboxOf, bbUnion, insertClip, applyDash } from './entities.js';
+import { TYPES, typeDef, gripsOf, blockEnts, ENV, textBox, dimParts, bboxOf, bbUnion, insertClip, applyDash } from './entities.js';
 const arrayEntsOf = e => ENV.arrayEnts?.(e) || [];
 import { linsOf, rotsOf } from './dynblock.js';
 import { evalParams, refGeom, consDim, refIds, DIM_TYPES } from './constraints.js';
@@ -14,6 +26,7 @@ const BEDIT_BG = '#2a2f37';
 const HL = 'rgba(47,140,255,0.45)';
 const SNAP_COLOR = '#d4e157';
 const TRACK_COLOR = '#58d68d';
+/** Ejes de los planos isométricos, en grados. @type {Record<'top' | 'left' | 'right', [number, number]>} */
 export const ISO_AXES = { top: [30, 150], left: [90, 150], right: [30, 90] };
 
 // Contexto de dibujo con el origen desplazado. El canvas guarda las coordenadas y la transformación en coma flotante de
@@ -22,7 +35,10 @@ export const ISO_AXES = { top: [30, 150], left: [90, 150], right: [30, 90] };
 // coordenadas de pantalla (después de setTransform) pasan tal cual.
 const PASS_PROPS = ['strokeStyle', 'fillStyle', 'lineWidth', 'lineCap', 'lineJoin', 'miterLimit', 'lineDashOffset', 'font', 'textAlign', 'textBaseline', 'direction', 'globalAlpha', 'globalCompositeOperation', 'shadowBlur', 'shadowColor', 'shadowOffsetX', 'shadowOffsetY', 'imageSmoothingEnabled', 'imageSmoothingQuality', 'filter'];
 const PASS_FNS = ['beginPath', 'closePath', 'stroke', 'fill', 'clip', 'setLineDash', 'getLineDash', 'measureText', 'createPattern', 'putImageData', 'getImageData', 'createImageData', 'isPointInPath', 'isPointInStroke', 'resetTransform', 'getTransform'];
+/** Envoltorio de un contexto 2D que resta el centro de la vista (rx, ry) a las coordenadas del dibujo. Las propiedades
+ * y los métodos de PASS_PROPS y PASS_FNS se añaden al prototipo más abajo: se usa como Ctx2D (ver toCtx). */
 export class ShiftCtx {
+  /** @param {import('./types').VarArgsCtx} c */
   constructor(c) { this.c = c; this.rx = 0; this.ry = 0; this.world = false; this.stack = []; }
   get canvas() { return this.c.canvas; }
   save() { this.stack.push(this.world); this.c.save(); }
@@ -59,10 +75,15 @@ for (const k of PASS_PROPS) Object.defineProperty(ShiftCtx.prototype, k, { get()
 for (const k of PASS_FNS) ShiftCtx.prototype[k] = function (...a) { return this.c[k](...a); };
 
 // rot: giro de la vista (la dirección del dibujo con ese ángulo se ve horizontal)
+/** Vista para dibujar: centro (cx, cy) en el dibujo, escala en píxeles por unidad, tamaño y esquina en píxeles, giro en radianes.
+ * @param {number} cx @param {number} cy @param {number} scale @param {number} w @param {number} h @param {number} dpr
+ * @param {number} [ox] @param {number} [oy] @param {number} [rot] @returns {RenderCtx} */
 export function makeRV(cx, cy, scale, w, h, dpr, ox = 0, oy = 0, rot = 0) {
   return { scale, dpr, w, h, cx, cy, ox, oy, rot, toScreen: p => { const [u, v] = toFrame(rot, p.x - cx, p.y - cy); return { x: u * scale + ox + w / 2, y: oy + h / 2 - v * scale }; } };
 }
+/** @param {import('./types').View} view @param {number} dpr @returns {RenderCtx} */
 export const makeR = (view, dpr) => makeRV(view.cx, view.cy, view.scale, view.w, view.h, dpr, view.ox || 0, view.oy || 0, view.rot || 0);
+/** Pasa el contexto a coordenadas del dibujo. @param {Ctx2D} c @param {RenderCtx} R */
 export function setWorld(c, R) {
   const s = R.scale, d = R.dpr, r = R.rot || 0, co = Math.cos(r), sn = Math.sin(r);
   if (c instanceof ShiftCtx) { // el centro de la vista pasa a ser el origen de las coordenadas que recibe el canvas
@@ -78,8 +99,10 @@ export function setWorld(c, R) {
 // los rectángulos que tocan (antes y después, del índice espacial). Cambiar la escala, el giro, las capas o los estilos
 // la invalida. Lo pendiente se reparte entre fotogramas (budget, en ms) con la imagen anterior escalada como vista previa.
 const CACHE_MIN = 3000, CACHE_MARGIN = 128, BAND = 256;
+/** Dibujo en caché del modelo: a partir de min objetos; budget, ms por fotograma (0: todo de una vez). */
 export const TILES = { min: CACHE_MIN, on: true, budget: 70 }; // budget 0: dibujarlo todo de una vez
 // Rectángulo a menos rectángulo b: hasta cuatro rectángulos
+/** @param {BBox} a @param {BBox} b @returns {BBox[]} */
 function rectMinus(a, b) {
   if (b.x2 <= a.x1 || b.x1 >= a.x2 || b.y2 <= a.y1 || b.y1 >= a.y2) return [a];
   const out = [];
@@ -91,6 +114,7 @@ function rectMinus(a, b) {
   return out;
 }
 // Vista del modelo dentro de una ventana gráfica (con su giro), a partir de la vista del papel
+/** @param {RenderCtx} R @param {Viewport} vp @returns {RenderCtx} */
 export function vpR(R, vp) {
   const vcx = (vp.p1.x + vp.p2.x) / 2, vcy = (vp.p1.y + vp.p2.y) / 2, t = vp.twist || 0;
   const [x, y] = fromFrame(t, (R.cx - vcx) / vp.s, (R.cy - vcy) / vp.s);
@@ -100,12 +124,15 @@ export function vpR(R, vp) {
 export const vpModelRect = vpModelBox;
 
 // Color semitransparente (#rrggbb → rgba)
+/** @param {string} col @param {number} a @returns {string} */
 export const fadeColor = (col, a) => { const m = /^#(..)(..)(..)$/.exec(col); return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : col; };
 // Factor de escala de tipo de línea dentro de una ventana: el suyo y, con PSLTSCALE = 1, el que deja los trazos con el
 // mismo tamaño en el papel en todas las ventanas (como en AutoCAD)
+/** @param {import('./document.js').Doc} doc @param {Viewport} vp @returns {number} */
 export const vpLtk = (doc, vp) => (vp.ltscale || 1) * (doc.settings.psltscale ? 1 / (vp.s || 1) : 1);
 // st: {color, px, pat, ltscale}; sty: función entidad → st (para las entidades de los bloques);
 // vis: función entidad → visible, aplicada también a las entidades de los bloques
+/** @param {Ctx2D} c @param {Entity} e @param {RenderCtx} R @param {DrawStyle} st @param {StyleFn | null} [sty] @param {VisFn} [vis] */
 export function paintEntity(c, e, R, st, sty, vis) {
   e = annoEff(e); // anotativo: representación de la escala actual; si no la tiene, atenuado (ANNOALLVISIBLE = 1)
   if (e._annoOff && !st.hl) st = { ...st, color: fadeColor(st.color, 0.35) };
@@ -123,7 +150,7 @@ export function paintEntity(c, e, R, st, sty, vis) {
     if (k) {
       c.restore();
       const fr = ENV.doc?.settings?.xclipFrame ?? 2; // 0: oculto, 1: visible e impreso, 2: sólo en pantalla
-      if (fr === 1 || (fr === 2 && ENV.onScreen) || st.hl) paintEntity(c, { type: 'pline', pts: k.poly, closed: true }, R, { ...st, pat: [] });
+      if (fr === 1 || (fr === 2 && ENV.onScreen) || st.hl) paintEntity(c, /** @type {Entity} */ ({ type: 'pline', pts: k.poly, closed: true }), R, { ...st, pat: [] });
     }
     return;
   }
@@ -131,15 +158,18 @@ export function paintEntity(c, e, R, st, sty, vis) {
   c.strokeStyle = st.color; c.fillStyle = st.color;
   c.lineWidth = st.px / R.scale;
   applyDash(c, st.pat, st.ltscale || 1, R);
-  const T = TYPES[e.type];
+  const T = typeDef(e);
   if (T.draw) T.draw(c, e, R, st);
   else { c.beginPath(); T.path(c, e, R); c.stroke(); }
 }
 
 export class Renderer {
+  /** @param {App} app @param {HTMLCanvasElement} base @param {HTMLCanvasElement} over */
   constructor(app, base, over) {
     this.app = app; this.base = base; this.over = over;
-    this.cb = new ShiftCtx(base.getContext('2d')); this.co = new ShiftCtx(over.getContext('2d'));
+    // ShiftCtx se usa como un contexto 2D (sus propiedades y métodos de paso se añaden al prototipo)
+    this.cb = /** @type {Ctx2D} */ (/** @type {unknown} */ (new ShiftCtx(base.getContext('2d'))));
+    this.co = /** @type {Ctx2D} */ (/** @type {unknown} */ (new ShiftCtx(over.getContext('2d'))));
     this.tc = {}; // imagen en caché del modelo (drawModelTiles)
     ENV.onImageLoad = () => this.flushTiles(); // una imagen o una fuente cargada cambia el aspecto
     document.fonts?.addEventListener?.('loadingdone', () => { this.flushTiles(); this.invalidate(); });
@@ -164,17 +194,21 @@ export class Renderer {
     this.invalidate();
   }
   invalidate(base = true) { if (base) this.baseDirty = true; this.overDirty = true; }
+  /** @returns {RenderCtx} */
   R() { return makeR(this.app.view, this.dpr); }
 
   // ---------- Escena ----------
+  /** @param {Ctx2D} c @param {RenderCtx} R @param {Iterable<Entity>} ents @param {StyleFn} sty @param {VisFn} [vis] */
   paintList(c, R, ents, sty, vis = e => this.app.doc.visible(e)) {
     for (const e of ents) if (vis(e)) paintEntity(c, e, R, sty(e), sty, vis);
   }
+  /** @param {Ctx2D} c @param {RenderCtx} R @param {BBox} rect @param {StyleFn} sty @param {VisFn} [vis] */
   drawModel(c, R, rect, sty, vis) {
     const doc = this.app.doc;
     setWorld(c, R);
     this.paintList(c, R, this.app.spatial.of(doc.model, doc).query(rect, true), sty, vis);
   }
+  /** @param {Ctx2D} c @param {RenderCtx} R @param {Viewport} vp @param {StyleFn} sty */
   drawViewport(c, R, vp, sty) {
     c.save();
     setWorld(c, R);
@@ -185,6 +219,7 @@ export class Renderer {
     try { this.drawModel(c, vpR(R, vp), vpModelRect(vp), vsty, this.app.doc.visibleIn(vp)); } finally { ANNO.override = prev; }
     c.restore();
   }
+  /** @param {Ctx2D} c @param {RenderCtx} R @param {Layout} layout @param {StyleFn} sty @param {boolean} [forExport] */
   drawLayout(c, R, layout, sty, forExport = false) {
     const doc = this.app.doc;
     setWorld(c, R);
@@ -263,6 +298,7 @@ export class Renderer {
 
   // ---------- Dibujo en caché ----------
   flushTiles() { const t = this.tc; t.key = null; t.prev = null; this.invalidate(); }
+  /** @param {Ctx2D} c @param {StyleFn} sty */
   drawModelTiles(c, sty) {
     const app = this.app, doc = app.doc, v = app.view, d = this.dpr, tree = app.spatial.of(doc.model, doc);
     const sd = v.scale * d, rot = v.rot || 0, M = CACHE_MARGIN;
@@ -317,7 +353,7 @@ export class Renderer {
     }
     if (list.length > 64) { const u = list.reduce((a, r) => bbUnion(a, r), null); list = []; for (let y = u.y1; y < u.y2; y += BAND) list.push({ ...u, y1: y, y2: Math.min(u.y2, y + BAND) }); }
     const seen = r => r.x2 > need.x1 && r.x1 < need.x2 && r.y2 > need.y1 && r.y1 < need.y2;
-    list.sort((a, b) => seen(b) - seen(a));
+    list.sort((a, b) => +seen(b) - +seen(a));
     const until = performance.now() + TILES.budget, left = [];
     for (const r of list) {
       if (TILES.budget && performance.now() > until && left.length + 1 < list.length) { left.push(r); continue; }
@@ -340,7 +376,7 @@ export class Renderer {
   }
   // Dibuja una zona r (en píxeles de la imagen en caché): la borra y vuelve a dibujar los objetos que la tocan
   renderTile(t, r, sty, tree, v, d) {
-    const sd = v.scale * d, rot = v.rot || 0, raw = t.cv.getContext('2d'), c = new ShiftCtx(raw);
+    const sd = v.scale * d, rot = v.rot || 0, raw = t.cv.getContext('2d'), c = /** @type {Ctx2D} */ (/** @type {unknown} */ (new ShiftCtx(raw)));
     raw.save();
     raw.setTransform(1, 0, 0, 1, 0, 0); raw.clearRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
     raw.beginPath(); raw.rect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1); raw.clip();
@@ -355,6 +391,7 @@ export class Renderer {
   }
 
   // Restricciones: símbolos junto a la geometría (pantalla) y cotas de restricción con nombre=expresión (dibujo)
+  /** @param {Ctx2D} c @param {RenderCtx} R */
   drawConstraints(c, R) {
     const app = this.app, doc = app.doc;
     this.consLabels = [];
@@ -371,7 +408,7 @@ export class Renderer {
         if (!dv) continue;
         dv.style = doc.cur.dimStyle;
         setWorld(c, R);
-        paintEntity(c, dv, R, { color: COL, px: 1, pat: [] });
+        paintEntity(c, /** @type {Entity} */ (dv), R, { color: COL, px: 1, pat: [] });
         this.consLabels.push({ k, box: textBox(dimParts(dv).text) });
         continue;
       }
@@ -391,6 +428,7 @@ export class Renderer {
       }
     }
   }
+  /** @param {Ctx2D} c @param {string} type @param {number} x @param {number} y */
   drawBadge(c, type, x, y) {
     const d = this.dpr;
     c.setTransform(d, 0, 0, d, 0, 0); c.setLineDash([]);
@@ -413,6 +451,7 @@ export class Renderer {
   }
 
   // Parámetros dinámicos en el editor de bloques
+  /** @param {Ctx2D} c @param {RenderCtx} R @param {import('./types').BlockEditor} be */
   drawDynParams(c, R, be) {
     const d = be.dyn, v = this.app.view, dp = this.dpr;
     if (!d) return;
@@ -438,6 +477,7 @@ export class Renderer {
     if (d.vis) label(d.vis.pos || be.base, `Visibilidad: ${be.visCur} (${d.vis.states.length} estados)`);
   }
 
+  /** @param {Ctx2D} c @param {Point} s en pantalla */
   drawBasePoint(c, s) {
     const d = this.dpr;
     c.setTransform(d, 0, 0, d, 0, 0); c.setLineDash([]); c.lineWidth = 1.5;
@@ -446,6 +486,7 @@ export class Renderer {
     c.font = '11px sans-serif'; c.fillText('Punto base', s.x + 10, s.y - 10);
   }
 
+  /** @param {Ctx2D} c @param {RenderCtx} R @param {import('./types').View} [v] */
   drawGrid(c, R, v = this.app.view) {
     const S = this.app.doc.settings, u = ucsOf(this.app.doc);
     let step = S.gridX;
@@ -477,7 +518,7 @@ export class Renderer {
     c.strokeStyle = 'rgba(255,255,255,0.10)'; c.stroke(major);
     // ejes X e Y del SCP (o del universal)
     const so = v.toScreen(o), ax = (S.iso ? 0 : u.ang) - vr;
-    for (const [aa, col] of [[ax, 'rgba(220,80,80,0.45)'], [ax + Math.PI / 2, 'rgba(80,200,90,0.45)']]) {
+    for (const [aa, col] of /** @type {[number, string][]} */ ([[ax, 'rgba(220,80,80,0.45)'], [ax + Math.PI / 2, 'rgba(80,200,90,0.45)']])) {
       const dx = Math.cos(aa) * far, dy = -Math.sin(aa) * far;
       let x = so.x, y = so.y;
       if (Math.abs(dy) < 1e-6) y = Math.round(y) + 0.5; else if (Math.abs(dx) < 1e-6) x = Math.round(x) + 0.5;
@@ -487,6 +528,7 @@ export class Renderer {
 
   // Icono del SCP: en la esquina inferior izquierda o, con UCSICON › Origen, en el origen si cabe en la vista.
   // Gira con el SCP; el cuadrado del origen indica el SCP universal y la cruz, que el icono está en el origen.
+  /** @param {Ctx2D} c @param {import('./types').View} [v] */
   drawUCS(c, v = this.app.view) {
     const d = this.dpr, doc = this.app.doc, S = doc.settings;
     if (S.ucsIcon === false) return;
@@ -497,7 +539,7 @@ export class Renderer {
       if (s.x >= v.ox + 50 && s.x <= v.ox + v.w - 50 && s.y >= v.oy + 50 && s.y <= v.oy + v.h - 50) { x = s.x; y = s.y; atOrigin = true; }
     }
     // a: distancia sobre el eje X del SCP; b: sobre el eje Y (en píxeles)
-    const ia = u.ang - (v.rot || 0), cs = Math.cos(ia), sn = Math.sin(ia), P = (a, b) => [x + a * cs - b * sn, y - a * sn - b * cs];
+    const ia = u.ang - (v.rot || 0), cs = Math.cos(ia), sn = Math.sin(ia), P = (a, b) => /** @type {[number, number]} */ ([x + a * cs - b * sn, y - a * sn - b * cs]);
     c.setTransform(d, 0, 0, d, 0, 0); c.setLineDash([]); c.lineWidth = 2; c.font = '11px sans-serif';
     const arrow = (dir, col, lab) => {
       const [ax, ay] = dir, pt = k => P(ax * k, ay * k), side = (k, w) => P(ax * k - ay * w, ay * k + ax * w);
@@ -512,6 +554,7 @@ export class Renderer {
     else if (atOrigin) { c.strokeStyle = '#9aa4b1'; c.lineWidth = 1; c.beginPath(); c.moveTo(...P(-5, 0)); c.lineTo(...P(5, 0)); c.moveTo(...P(0, -5)); c.lineTo(...P(0, 5)); c.stroke(); }
   }
 
+  /** @param {Ctx2D} c @param {Entity} e @param {RenderCtx} R @param {boolean} [strong] */
   highlight(c, e, R, strong) {
     paintEntity(c, e, R, { color: HL, px: strong ? 6 : 4, pat: [], hl: true });
     paintEntity(c, e, R, { color: strong ? '#9ccbff' : '#cfe4ff', px: 1, pat: [], hl: true });
@@ -567,7 +610,7 @@ export class Renderer {
         for (const e of list) paintEntity(c, e, R, e.layer || e.color ? app.styleFor(e) : st, sty);
       }
       if (base && req.pointLike && req.opts.rubber !== false) {
-        paintEntity(c, { type: 'line', p1: base, p2: m.pt }, R, { color: app.layoutShown() ? '#4a5462' : '#d9dee5', px: 1, pat: req.opts.preview ? [2 / R.scale, -3 / R.scale] : [] });
+        paintEntity(c, /** @type {Entity} */ ({ type: 'line', p1: base, p2: m.pt }), R, { color: app.layoutShown() ? '#4a5462' : '#d9dee5', px: 1, pat: req.opts.preview ? [2 / R.scale, -3 / R.scale] : [] });
       }
     }
 
@@ -575,7 +618,7 @@ export class Renderer {
     c.setTransform(d, 0, 0, d, 0, 0); c.setLineDash([]); c.lineWidth = 1;
 
     if (app.vpActive) {
-      const vp = doc.get(app.vpActive);
+      const vp = /** @type {Viewport | undefined} */ (doc.get(app.vpActive));
       if (vp) {
         const a = app.paperView.toScreen(vp.p1), b = app.paperView.toScreen(vp.p2);
         c.strokeStyle = '#1e90d6'; c.lineWidth = 3;
@@ -626,12 +669,13 @@ export class Renderer {
   }
 
   // Resaltado de una designación muy grande: sólo lo visible y dibujado una vez por vista, versión y designación
+  /** @param {Ctx2D} c @param {Set<number>} hl @param {RenderCtx} R */
   drawBigSelection(c, hl, R) {
     const app = this.app, doc = app.doc, v = app.view, key = [v.cx, v.cy, v.scale, v.rot, this.dpr, doc.ver, hl.size, app.selStamp || 0].join('|');
     let k = this.selCache;
     if (!k || k.key !== key || k.cv.width !== this.over.width || k.cv.height !== this.over.height) {
       const cv = k?.cv && k.cv.width === this.over.width && k.cv.height === this.over.height ? k.cv : Object.assign(document.createElement('canvas'), { width: this.over.width, height: this.over.height });
-      const raw = cv.getContext('2d'), sc = new ShiftCtx(raw);
+      const raw = cv.getContext('2d'), sc = /** @type {Ctx2D} */ (/** @type {unknown} */ (new ShiftCtx(raw)));
       raw.setTransform(1, 0, 0, 1, 0, 0); raw.clearRect(0, 0, cv.width, cv.height);
       setWorld(sc, R);
       for (const e of app.idx().query(v.rect(), true)) if (hl.has(e.id) && doc.visible(e)) this.highlight(sc, e, R, true);
@@ -648,7 +692,7 @@ export class Renderer {
     for (const id of app.sel) {
       const e = doc.get(id);
       if (!e || !doc.visible(e)) continue;
-      const kinds = TYPES[e.type].gripKinds?.(e) || [];
+      const kinds = typeDef(e).gripKinds?.(e) || [];
       gripsOf(e).forEach((g, gi) => {
         const s = app.view.toScreen(g);
         const isHot = hot && G.eqPt(hot, g, 1e-9), isHover = app.hoverGrip && G.eqPt(app.hoverGrip.pt, g, 1e-9);
@@ -659,6 +703,7 @@ export class Renderer {
     }
   }
 
+  /** @param {Ctx2D} c @param {Point} s en pantalla @param {string} mode */
   drawMarker(c, s, mode) {
     const r = 6;
     c.strokeStyle = SNAP_COLOR; c.lineWidth = 2;

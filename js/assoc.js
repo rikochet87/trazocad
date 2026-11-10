@@ -1,4 +1,10 @@
 // Cotas asociativas: referencias de los puntos de una cota a la geometría y recálculo cuando ésta cambia.
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** @typedef {import('./types').PointRef} PointRef */
+/** @typedef {(id: number) => Entity | undefined} GetEnt */
+// @ts-check
 // assoc = { p1?, p2?, c?: referencia de punto, obj?: id (círculo/arco), l1?, l2?: ids (líneas de una cota angular) }
 // Referencia de punto: {id, snap, i} (índice en la lista de referencias a objetos de la entidad) o {ids: [a, b], snap: 'int'}
 import * as G from './geom.js';
@@ -6,12 +12,15 @@ import { snapsOf, primsOf } from './entities.js';
 
 const PT_KEYS = ['p1', 'p2', 'c'];
 // Tipos a los que no se asocia una cota (también se mueven por asociatividad o no tienen geometría estable)
+/** @type {Set<string>} */
 export const NO_ASSOC = new Set(['dim', 'mleader', 'hatch', 'table']);
 
 const refIds = r => (r == null ? [] : typeof r === 'number' ? [r] : r.ids || [r.id]);
+/** Entidades a las que se asocia la cota. @param {import('./types').Dim} e @returns {number[]} */
 export const dimRefIds = e => (e.assoc ? Object.values(e.assoc).flatMap(refIds) : []);
 
 // Posición actual del punto referenciado (null si ya no existe)
+/** Posición actual del punto referenciado (null si ya no existe). @param {PointRef} ref @param {GetEnt} get @param {Point} [old] @returns {Point | null} */
 export function refPoint(ref, get, old) {
   if (ref.snap === 'int') {
     const a = get(ref.ids[0]), b = get(ref.ids[1]);
@@ -31,6 +40,7 @@ export function refPoint(ref, get, old) {
 const clean = e => { if (e.assoc && !Object.keys(e.assoc).length) delete e.assoc; };
 
 // Copias: las referencias a entidades copiadas a la vez pasan a las copias; las demás se pierden
+/** @param {import('./types').Dim} e @param {Map<number, number>} map original → copia */
 export function remapDim(e, map) {
   if (!e.assoc) return;
   const A = e.assoc;
@@ -44,6 +54,7 @@ export function remapDim(e, map) {
 }
 
 // Quita las referencias a entidades borradas
+/** @param {import('./types').Dim | import('./types').CenterMark} e @param {GetEnt} get */
 export function dropMissing(e, get) {
   if (!e.assoc) return;
   for (const k of Object.keys(e.assoc)) if (refIds(e.assoc[k]).some(id => !get(id))) delete e.assoc[k];
@@ -52,7 +63,9 @@ export function dropMissing(e, get) {
 
 // Marcas y líneas de centro asociativas: e.assoc = {a, b?} (círculo/arco para la marca; dos objetos para la línea).
 // Recalcula e.lines con la posición actual de las referencias.
+/** @param {import('./types').CenterMark} e @returns {number[]} */
 export const centerRefs = e => (e.assoc ? [e.assoc.a, e.assoc.b].filter(x => x != null) : []);
+/** @param {import('./types').CenterMark | import('./types').NewEntity<import('./types').CenterMark>} e @param {GetEnt} get @returns {boolean} */
 export function updateCenter(e, get) {
   const A = e.assoc;
   if (!A) return true;
@@ -82,6 +95,7 @@ export function updateCenter(e, get) {
 
 const linesX = (a, b) => G.llInt(a.p1, a.p2, b.p1, b.p2);
 // Base de una cota angular entre dos líneas: vértice y extremo más alejado de cada una
+/** @param {import('./types').Line} a @param {import('./types').Line} b */
 export function angBase(a, b) {
   const X = linesX(a, b);
   if (!X) return null;
@@ -90,6 +104,7 @@ export function angBase(a, b) {
 }
 
 // Recalcula los puntos de la cota a partir de su geometría. Devuelve false si la asociación ya no es válida.
+/** Recalcula los puntos de la cota (false si la asociación ya no vale). @param {import('./types').Dim} e @param {GetEnt} get @returns {boolean} */
 export function updateDim(e, get) {
   const A = e.assoc;
   if (!A) return true;

@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "checkJs": true,
+    "strict": false,
+    "noEmit": true,
+    "module": "ESNext",
+    "target": "ES2022",
+    "lib": ["ES2022", "WebWorker"]
+  },
+  "files": ["sw.js"]
+}

@@ -1,14 +1,29 @@
 // Operaciones de edición geométrica: recortar, alargar, partir, longitud, desfase, empalme, chaflán, descomponer, unir, estirar.
+// @ts-check
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').NewEntity} NewEntity */
+/** @typedef {import('./types').Line} Line */
+/** @typedef {import('./types').Pline} Pline */
+/** @typedef {import('./types').Piece} Piece */
+/** @typedef {import('./types').LooseEntity} LooseEntity */
+/** Parametrización de una curva para recortar y partir: param(p) ∈ [0, max]. @typedef {{closed: boolean, max: number, param: (p: Point) => number}} CurveInfo */
+/** Curva recorrida por longitud: at(s) da el punto y el ángulo de la tangente (radianes) a la distancia s del inicio.
+ * @typedef {{len: number, closed: boolean, start: Point, end: Point, at: (s: number) => {p: Point, a: number}}} Path */
 import * as G from './geom.js';
-import { primsOf, bboxOf, dimParts, plPieces, pieceAt, pieceParam, pieceLen, plLength, cloneEnt, inWindow, xformEnt, blockEnts, mtextGeom, mleaderGeom, tableGeom, ellPts, mlGeom, ENV, dimTexts } from './entities.js';
+import { arcOf, primsOf, bboxOf, dimParts, plPieces, pieceAt, pieceParam, pieceLen, plLength, cloneEnt, inWindow, xformEnt, blockEnts, mtextGeom, mleaderGeom, tableGeom, ellPts, mlGeom, ENV, dimTexts } from './entities.js';
 import { mlineParts, mlStyleOf } from './mline.js';
 import { hatchSegments } from './patterns.js';
 import { splinePts, rebuild as rebuildSpline, deBoor, domain, nearestParam, tangentAt, subSpline, joinSplines, reverseSpline, lineSpline, interpolate } from './spline.js';
 const { TAU } = G;
 
+/** Propiedades generales que heredan los objetos derivados. @param {Entity} e @returns {Pick<Entity, 'layer' | 'color' | 'ltype' | 'lw'>} */
 const props = e => ({ layer: e.layer, color: e.color, ltype: e.ltype, lw: e.lw });
+/** Copia sin identificador. @template {Entity} E @param {E} e @returns {E} */
 const fresh = e => { const c = cloneEnt(e); delete c.id; return c; };
 
+/** @param {Entity} e @param {Point} p @returns {Point | null} */
 export function nearestOn(e, p) {
   let best = null, bd = Infinity;
   for (const q of primsOf(e)) { const r = G.nearPrim(p, q), d = G.dist(r, p); if (d < bd) { bd = d; best = r; } }
@@ -16,18 +31,21 @@ export function nearestOn(e, p) {
 }
 
 // Crea una polilínea (o línea/arco si sólo tiene un tramo) a partir de vértices y curvaturas
+/** @param {Partial<Entity>} base @param {Point[]} pts @param {number[]} bul @param {boolean} [closed] @returns {NewEntity} */
 function mkPoly(base, pts, bul, closed = false) {
   const b = bul.map(x => (Math.abs(x) < 1e-12 ? 0 : x));
   if (!closed && pts.length === 2) {
     if (!b[0]) return { ...base, type: 'line', p1: pts[0], p2: pts[1] };
     return { ...base, type: 'arc', ...G.bulgeArc(pts[0], pts[1], b[0]) };
   }
+  /** @type {import('./types').NewEntity<Pline>} */
   const e = { ...base, type: 'pline', pts, closed };
   if (b.some(x => x)) e.bulges = b;
   return e;
 }
 
 // ---------- Parametrización de curvas ----------
+/** @param {Entity} e @returns {CurveInfo | null} */
 export function curveInfo(e) {
   switch (e.type) {
     case 'line': return {
@@ -54,6 +72,7 @@ export function curveInfo(e) {
 
 // Punto de intersección refinado sobre la curva exacta de una spline (la intersección se busca en su teselado).
 // q: primitiva de la otra entidad (recta infinita si ext, o círculo)
+/** @param {import('./types').Spline} s @param {Point} pt @param {import('./types').Prim} q @returns {Point} */
 function onSpline(s, pt, q) {
   const [u0, u1] = domain(s), h = (u1 - u0) * 1e-7;
   const f = u => { const c = deBoor(s, u); return q.k === 's' ? G.cross(G.sub(q.b, q.a), G.sub(c, q.a)) / (G.dist(q.a, q.b) || 1) : G.dist(c, q.c) - q.r; };
@@ -71,6 +90,7 @@ function onSpline(s, pt, q) {
   return G.dist(p, pt) < Math.max(b.x2 - b.x1, b.y2 - b.y1) * 0.01 ? p : pt;
 }
 // Intersecciones entre dos entidades (exactas cuando una es spline y la otra no)
+/** Intersecciones de e con o. @param {Entity} e @param {Entity} o @returns {Point[]} */
 export function entInts(e, o) {
   const out = [];
   if (!G.bbOverlap(bboxOf(e), bboxOf(o))) return out;
@@ -81,6 +101,7 @@ export function entInts(e, o) {
   return out;
 }
 
+/** Trozo de la curva entre los parámetros a y b (de curveInfo). @param {Entity} e @param {number} a @param {number} b @returns {NewEntity | null} */
 export function subCurve(e, a, b) {
   switch (e.type) {
     case 'line': return { ...props(e), type: 'line', p1: G.lerp(e.p1, e.p2, a), p2: G.lerp(e.p1, e.p2, b) };
@@ -117,6 +138,7 @@ export function subCurve(e, a, b) {
   return null;
 }
 
+/** @param {Entity} e @param {CurveInfo} info @param {Entity[]} others @returns {number[]} */
 function cutParams(e, info, others) {
   const ts = [];
   for (const o of others) {
@@ -128,6 +150,7 @@ function cutParams(e, info, others) {
 }
 
 // Devuelve {add:[...]} (la entidad original se elimina) o null si no hay cambio
+/** @param {Entity} e @param {Point} pick @param {Entity[]} others @returns {{add: NewEntity[]} | null} */
 export function trimEntity(e, pick, others) {
   const info = curveInfo(e);
   if (!info) return null;
@@ -152,6 +175,7 @@ export function trimEntity(e, pick, others) {
 }
 
 // PARTE: elimina el tramo entre p1 y p2 (en círculos, en sentido antihorario de p1 a p2)
+/** @param {Entity} e @param {Point} p1 @param {Point} p2 @returns {{add: NewEntity[]} | null} */
 export function breakEntity(e, p1, p2) {
   const info = curveInfo(e);
   if (!info) return null;
@@ -172,6 +196,7 @@ export function breakEntity(e, p1, p2) {
 }
 
 // Devuelve la entidad modificada (clon) o null
+/** @param {Entity} e @param {Point} pick @param {Entity[]} others @returns {Entity | null} */
 export function extendEntity(e, pick, others) {
   const bounds = [], owner = [];
   for (const o of others) if (o.id !== e.id) for (const q of primsOf(o)) { bounds.push(q); owner.push(o); }
@@ -191,15 +216,15 @@ export function extendEntity(e, pick, others) {
       if (t > 1e-9 && t < best) { best = t; bp = pt; }
     }
     if (!bp) return null;
-    const c = cloneEnt(e);
-    if (e.fit) { c.fit = atStart ? [bp, ...e.fit] : [...e.fit, bp]; return rebuildSpline(c) ? c : null; }
+    const c = /** @type {LooseEntity} */ (cloneEnt(e));
+    if (e.fit) { c.fit = atStart ? [bp, ...e.fit] : [...e.fit, bp]; return rebuildSpline(/** @type {import('./types').Spline} */ (/** @type {unknown} */ (c))) ? /** @type {Entity} */ (c) : null; }
     // Vértices de control o geometría importada: se añade un tramo recto tangente (la curva existente no cambia)
     let s = subSpline(e, u0, u1);
     if (atStart) s = reverseSpline(s);
     s = joinSplines(s, lineSpline(end, bp, s.deg));
     if (atStart) s = reverseSpline(s);
     delete c.cv; delete c.w;
-    return Object.assign(c, s);
+    return /** @type {Entity} */ (Object.assign(c, s));
   }
   const lastLine = e.type === 'pline' && !e.closed && e.pts.length > 1;
   if (e.type === 'line' || lastLine) {
@@ -219,9 +244,9 @@ export function extendEntity(e, pick, others) {
       if (t > 1 + 1e-9 && t < best) { best = t; bp = pt; }
     }
     if (!bp) return null;
-    const c = cloneEnt(e);
+    const c = /** @type {LooseEntity} */ (cloneEnt(e));
     if (e.type === 'line') c[atStart ? 'p1' : 'p2'] = bp; else c.pts[atStart ? 0 : c.pts.length - 1] = bp;
-    return c;
+    return /** @type {Entity} */ (c);
   }
   if (e.type === 'arc') {
     const s1 = G.polar(e.c, e.a1, e.r), s2 = G.polar(e.c, e.a2, e.r), atStart = G.dist(pick, s1) < G.dist(pick, s2);
@@ -232,14 +257,15 @@ export function extendEntity(e, pick, others) {
       if (d > 1e-9 && d < gap - 1e-9 && d < best) { best = d; ba = a; }
     }
     if (ba === null) return null;
-    const c = cloneEnt(e);
+    const c = /** @type {LooseEntity} */ (cloneEnt(e));
     if (atStart) c.a1 = ba; else c.a2 = ba;
-    return c;
+    return /** @type {Entity} */ (c);
   }
   return null;
 }
 
 // ---------- LONGITUD ----------
+/** @param {Entity} e @returns {number | null} */
 export function lengthOf(e) {
   switch (e.type) {
     case 'line': return G.dist(e.p1, e.p2);
@@ -253,6 +279,7 @@ export function lengthOf(e) {
 // ---------- Recorrido por longitud (GRADUA, DIVIDE) ----------
 // Curva parametrizada por la longitud recorrida desde su inicio: {len, closed, start, end, at(s) → {p, a}} (a: ángulo de la
 // tangente en el sentido de avance). Las elipses y splines se recorren sobre su teselado. null si el objeto no es una curva.
+/** @param {Point[]} pts @param {boolean} closed @returns {Path} */
 function polyPath(pts, closed) {
   const P2 = closed ? [...pts, pts[0]] : pts, cum = [0];
   for (let i = 1; i < P2.length; i++) cum.push(cum[i - 1] + G.dist(P2[i - 1], P2[i]));
@@ -268,6 +295,7 @@ function polyPath(pts, closed) {
     },
   };
 }
+/** @param {Entity} e @returns {Path | null} */
 export function pathOf(e) {
   switch (e.type) {
     case 'line': { const len = G.dist(e.p1, e.p2), a = G.ang(e.p1, e.p2); return { len, closed: false, start: e.p1, end: e.p2, at: s => ({ p: G.lerp(e.p1, e.p2, len ? s / len : 0), a }) }; }
@@ -287,7 +315,7 @@ export function pathOf(e) {
           let i = 0;
           while (i < pcs.length - 1 && cum[i + 1] <= s) i++;
           const pc = pcs[i], L = cum[i + 1] - cum[i], p = pieceAt(pc, L > 0 ? (s - cum[i]) / L : 0);
-          return { p, a: pc.bulge ? G.ang(pc.prim.c, p) + (pc.bulge > 0 ? Math.PI / 2 : -Math.PI / 2) : G.ang(pc.a, pc.b) };
+          return { p, a: pc.bulge ? G.ang(arcOf(pc).c, p) + (pc.bulge > 0 ? Math.PI / 2 : -Math.PI / 2) : G.ang(pc.a, pc.b) };
         },
       };
     }
@@ -297,36 +325,40 @@ export function pathOf(e) {
   return null;
 }
 // Recorrido en sentido contrario (GRADUA empieza por el extremo más próximo al punto designado)
+/** @param {Path} pt @returns {Path} */
 export function reversePath(pt) { return { ...pt, start: pt.end, end: pt.start, at: s => { const r = pt.at(pt.len - s); return { p: r.p, a: r.a + Math.PI }; } }; }
 
 // mode: 'delta' | 'percent' | 'total'
+/** @param {Entity} e @param {Point} pick @param {'delta' | 'percent' | 'total'} mode @param {number} val @returns {Entity | null} */
 export function lengthenEntity(e, pick, mode, val) {
   const L = lengthOf(e);
   const newL = mode === 'delta' ? L + val : mode === 'percent' ? L * val / 100 : val;
   if (!(newL > 1e-9)) return null;
-  const c = cloneEnt(e);
+  const c = /** @type {LooseEntity} */ (cloneEnt(e));
   if (e.type === 'line') {
     const u = G.norm(G.sub(e.p2, e.p1));
     if (G.dist(pick, e.p2) <= G.dist(pick, e.p1)) c.p2 = G.add(e.p1, G.mul(u, newL)); else c.p1 = G.sub(e.p2, G.mul(u, newL));
-    return c;
+    return /** @type {Entity} */ (c);
   }
   if (e.type === 'arc') {
     const sw = newL / e.r;
     if (sw >= TAU - 1e-9) return null;
     const s2 = G.polar(e.c, e.a2, e.r), s1 = G.polar(e.c, e.a1, e.r);
     if (G.dist(pick, s2) <= G.dist(pick, s1)) c.a2 = G.normAng(e.a1 + sw); else c.a1 = G.normAng(e.a2 - sw);
-    return c;
+    return /** @type {Entity} */ (c);
   }
   return null;
 }
 
 // ---------- DESFASE ----------
+/** @param {Piece} pc @param {number} d @param {number} sg */
 function offsetPiece(pc, d, sg) {
   if (!pc.bulge) { const o = G.mul(G.perp(G.norm(G.sub(pc.b, pc.a))), d * sg); return { a: G.add(pc.a, o), b: G.add(pc.b, o), line: true }; }
-  const { c, r } = pc.prim, nr = r + (pc.bulge > 0 ? -1 : 1) * sg * d;
+  const { c, r } = arcOf(pc), nr = r + (pc.bulge > 0 ? -1 : 1) * sg * d;
   if (nr <= 1e-9) return null;
   return { a: G.add(c, G.mul(G.norm(G.sub(pc.a, c)), nr)), b: G.add(c, G.mul(G.norm(G.sub(pc.b, c)), nr)), c, r: nr, sign: Math.sign(pc.bulge) };
 }
+/** @returns {import('./types').Prim} */
 const primOfOff = o => (o.line ? { k: 's', a: o.a, b: o.b } : { k: 'a', c: o.c, r: o.r, a1: 0, a2: TAU });
 function joinOff(o1, o2, vertex) {
   if (G.eqPt(o1.b, o2.a, 1e-9)) return o1.b;
@@ -336,17 +368,18 @@ function joinOff(o1, o2, vertex) {
   return cands.reduce((b, p) => (G.dist(p, vertex) < G.dist(b, vertex) ? p : b));
 }
 
+/** @param {Entity} e @param {number} d @param {Point} side punto del lado hacia el que se desfasa @returns {NewEntity | null} */
 export function offsetEntity(e, d, side) {
-  const c = fresh(e);
+  const c = /** @type {LooseEntity} */ (fresh(e));
   switch (e.type) {
     case 'line': {
       const v = G.sub(e.p2, e.p1), s = G.cross(v, G.sub(side, e.p1)) > 0 ? 1 : -1, o = G.mul(G.perp(G.norm(v)), d * s);
-      c.p1 = G.add(e.p1, o); c.p2 = G.add(e.p2, o); return c;
+      c.p1 = G.add(e.p1, o); c.p2 = G.add(e.p2, o); return /** @type {Entity} */ (c);
     }
     case 'circle': case 'arc': {
       const r = e.r + (G.dist(side, e.c) > e.r ? d : -d);
       if (r <= 1e-9) return null;
-      c.r = r; return c;
+      c.r = r; return /** @type {Entity} */ (c);
     }
     case 'pline': {
       const pcs = plPieces(e);
@@ -355,7 +388,7 @@ export function offsetEntity(e, d, side) {
       pcs.forEach((pc, i) => { const dd = G.dist(side, G.nearPrim(side, pc.prim)); if (dd < bd) { bd = dd; si = i; } });
       const ps = pcs[si];
       const sg = !ps.bulge ? (G.cross(G.sub(ps.b, ps.a), G.sub(side, ps.a)) > 0 ? 1 : -1)
-        : ((G.dist(side, ps.prim.c) < ps.prim.r) === (ps.bulge > 0) ? 1 : -1);
+        : ((G.dist(side, arcOf(ps).c) < arcOf(ps).r) === (ps.bulge > 0) ? 1 : -1);
       const offs = pcs.map(pc => offsetPiece(pc, d, sg));
       if (offs.some(o => !o)) return null;
       const n = offs.length, closed = !!e.closed && e.pts.length > 2;
@@ -374,7 +407,7 @@ export function offsetEntity(e, d, side) {
       if (!closed) { pts.push(offs[n - 1].b); bul.push(0); }
       c.pts = pts;
       if (bul.some(x => x)) c.bulges = bul; else delete c.bulges;
-      return c;
+      return /** @type {Entity} */ (c);
     }
     case 'spline': {
       // Puntos desplazados según la normal y spline interpolada por ellos
@@ -394,6 +427,7 @@ export function offsetEntity(e, d, side) {
 }
 
 // ---------- EMPALME / CHAFLÁN ----------
+/** @param {Line} l1 @param {Point} pk1 @param {Line} l2 @param {Point} pk2 */
 function cornerSides(l1, pk1, l2, pk2) {
   const X = G.llInt(l1.p1, l1.p2, l2.p1, l2.p2);
   if (!X) return null;
@@ -406,6 +440,8 @@ function cornerSides(l1, pk1, l2, pk2) {
   return { x, a: side(l1, pk1), b: side(l2, pk2) };
 }
 
+/** @param {Line} l1 @param {Point} pk1 @param {Line} l2 @param {Point} pk2 @param {number} R
+ * @returns {{error: string} | {l1: Line, l2: Line, arc: NewEntity | null, error?: undefined}} */
 export function filletLines(l1, pk1, l2, pk2, R) {
   const k = cornerSides(l1, pk1, l2, pk2);
   if (!k) return { error: 'Las líneas son paralelas.' };
@@ -424,6 +460,8 @@ export function filletLines(l1, pk1, l2, pk2, R) {
   return { l1: r1, l2: r2, arc: { ...props(l1), type: 'arc', c, r: R, a1, a2 } };
 }
 
+/** @param {Line} l1 @param {Point} pk1 @param {Line} l2 @param {Point} pk2 @param {number} d1 @param {number} d2
+ * @returns {{error: string} | {l1: Line, l2: Line, seg: NewEntity | null, error?: undefined}} */
 export function chamferLines(l1, pk1, l2, pk2, d1, d2) {
   const k = cornerSides(l1, pk1, l2, pk2);
   if (!k) return { error: 'Las líneas son paralelas.' };
@@ -434,6 +472,7 @@ export function chamferLines(l1, pk1, l2, pk2, d1, d2) {
 }
 
 // Empalme o chaflán en todos los vértices entre tramos rectos de una polilínea
+/** @param {Pline} e @param {(A: Point, V: Point, B: Point) => {t1: Point, t2: Point, bulge: number} | null} make @returns {{ent: Pline, count: number}} */
 function cornerPline(e, make) {
   const n = e.pts.length, closed = !!e.closed && n > 2, bul = e.bulges || [];
   const pts = [], bs = [];
@@ -449,6 +488,7 @@ function cornerPline(e, make) {
   if (bs.some(x => x)) out.bulges = bs; else delete out.bulges;
   return { ent: out, count };
 }
+/** @param {Pline} e @param {number} R */
 export function filletPline(e, R) {
   return cornerPline(e, (A, V, B) => {
     const u1 = G.norm(G.sub(A, V)), u2 = G.norm(G.sub(B, V)), th = Math.acos(Math.max(-1, Math.min(1, G.dot(u1, u2))));
@@ -459,6 +499,7 @@ export function filletPline(e, R) {
     return { t1: G.add(V, G.mul(u1, dt)), t2: G.add(V, G.mul(u2, dt)), bulge: turn * Math.tan((Math.PI - th) / 4) };
   });
 }
+/** @param {Pline} e @param {number} d1 @param {number} d2 */
 export function chamferPline(e, d1, d2) {
   return cornerPline(e, (A, V, B) => {
     if (d1 > G.dist(V, A) / 2 + 1e-9 || d2 > G.dist(V, B) / 2 + 1e-9) return null;
@@ -467,6 +508,7 @@ export function chamferPline(e, d1, d2) {
 }
 
 // ---------- DESCOMPONER ----------
+/** Objetos en que se descompone (null si no se descompone). @param {Entity} e @returns {NewEntity[] | null} */
 export function explodeEntity(e) {
   const b = props(e);
   if (e.type === 'mline') {
@@ -474,18 +516,18 @@ export function explodeEntity(e) {
     return mlineParts(mlGeom(e)).map(x => ({ ...b, ...x, color: x.color && x.color !== 'BYLAYER' ? x.color : b.color, ltype: x.ltype && x.ltype !== 'BYLAYER' ? x.ltype : b.ltype }))
       .concat(st.fill ? mlGeom(e).fill.map(l => ({ ...b, type: 'hatch', pattern: 'SOLID', scale: 1, angle: 0, loops: [l], color: st.fill })) : []);
   }
-  if (e.type === 'region') return e.loops.flatMap(l => plPieces({ pts: l.pts, bulges: l.bulges, closed: true }).map(pc => (pc.bulge ? { ...b, type: 'arc', c: pc.prim.c, r: pc.prim.r, a1: pc.prim.a1, a2: pc.prim.a2 } : { ...b, type: 'line', p1: pc.a, p2: pc.b })));
+  if (e.type === 'region') return e.loops.flatMap(l => plPieces({ pts: l.pts, bulges: l.bulges, closed: true }).map(pc => (pc.bulge ? { ...b, type: 'arc', c: arcOf(pc).c, r: arcOf(pc).r, a1: arcOf(pc).a1, a2: arcOf(pc).a2 } : { ...b, type: 'line', p1: pc.a, p2: pc.b })));
   if (e.type === 'array') return (ENV.arrayEnts?.(e) || []).map(v => { const c = cloneEnt(v); delete c.id; return c; });
-  if (e.type === 'pline') return plPieces(e).map(pc => (pc.bulge ? { ...b, type: 'arc', c: pc.prim.c, r: pc.prim.r, a1: pc.prim.a1, a2: pc.prim.a2 } : { ...b, type: 'line', p1: pc.a, p2: pc.b }));
+  if (e.type === 'pline') return plPieces(e).map(pc => (pc.bulge ? { ...b, type: 'arc', c: arcOf(pc).c, r: arcOf(pc).r, a1: arcOf(pc).a1, a2: arcOf(pc).a2 } : { ...b, type: 'line', p1: pc.a, p2: pc.b }));
   if (e.type === 'dim') {
     const d = dimParts(e);
-    return [
+    return /** @type {NewEntity[]} */ ([
       ...d.lines.map(([p1, p2]) => ({ ...b, type: 'line', p1, p2 })),
       ...d.arcs.map(([c, r, a1, a2]) => ({ ...b, type: 'arc', c, r, a1, a2 })),
       ...d.arrows.map(pts => ({ ...b, type: 'hatch', pattern: 'SOLID', scale: 1, angle: 0, loops: [pts] })),
       ...d.dots.map(([c, r]) => ({ ...b, type: 'circle', c, r })),
       ...dimTexts(d).map(t => ({ ...b, type: 'text', p: t.p, h: t.h, rot: t.rot, text: t.str, align: t.align, style: t.style })),
-    ];
+    ]);
   }
   if (e.type === 'insert') return blockEnts(e).map(v => { const c = cloneEnt(v); delete c.id; return c; });
   if (e.type === 'mtext') return mtextGeom(e).lines.filter(l => l.str).map(l => ({ ...b, type: 'text', p: l.p, h: l.h, rot: l.rot, text: l.str, align: l.align, style: e.style }));
@@ -515,6 +557,7 @@ const revChain = (pts, bul) => {
   return [[...pts].reverse(), rb];
 };
 // Une líneas, arcos y polilíneas abiertas con extremos coincidentes
+/** @param {Entity[]} ents @param {number} [tol] @returns {{ids: number[], ent: NewEntity}[]} */
 export function joinEntities(ents, tol = 1e-6) {
   const items = [];
   for (const e of ents) {
@@ -546,6 +589,7 @@ export function joinEntities(ents, tol = 1e-6) {
     if (ids.length > 1) {
       let closed = false;
       if (pts.length > 2 && G.eqPt(pts[0], pts[pts.length - 1], tol)) { pts.pop(); bul.pop(); closed = true; }
+      /** @type {import('./types').NewEntity<Pline>} */
       const ent = { ...props(it.src), type: 'pline', pts, closed };
       if (bul.some(x => Math.abs(x) > 1e-12)) ent.bulges = bul;
       out.push({ ids, ent });
@@ -554,30 +598,31 @@ export function joinEntities(ents, tol = 1e-6) {
   return out;
 }
 
+/** @param {Entity} e @param {BBox} r ventana @param {Point} d desplazamiento @returns {Entity} */
 export function stretchEntity(e, r, d) {
-  const c = cloneEnt(e), mv = p => (G.inRect(p, r) ? G.add(p, d) : p);
-  if (inWindow(e, r)) return xformEnt(c, G.Mx.T(d.x, d.y));
+  const c = /** @type {LooseEntity} */ (cloneEnt(e)), mv = p => (G.inRect(p, r) ? G.add(p, d) : p);
+  if (inWindow(e, r)) return xformEnt(/** @type {Entity} */ (c), G.Mx.T(d.x, d.y));
   switch (e.type) {
-    case 'line': c.p1 = mv(e.p1); c.p2 = mv(e.p2); return c;
-    case 'pline': c.pts = e.pts.map(mv); return c;
-    case 'mline': c.pts = e.pts.map(mv); return c;
-    case 'region': c.loops = e.loops.map(l => ({ ...l, pts: l.pts.map(mv) })); return c;
-    case 'array': return G.inRect(G.Mx.ap(e.M || G.Mx.I(), e.base), r) ? xformEnt(c, G.Mx.T(d.x, d.y)) : null;
+    case 'line': c.p1 = mv(e.p1); c.p2 = mv(e.p2); return /** @type {Entity} */ (c);
+    case 'pline': c.pts = e.pts.map(mv); return /** @type {Entity} */ (c);
+    case 'mline': c.pts = e.pts.map(mv); return /** @type {Entity} */ (c);
+    case 'region': c.loops = e.loops.map(l => ({ ...l, pts: l.pts.map(mv) })); return /** @type {Entity} */ (c);
+    case 'array': return G.inRect(G.Mx.ap(e.M || G.Mx.I(), e.base), r) ? xformEnt(/** @type {Entity} */ (c), G.Mx.T(d.x, d.y)) : null;
     case 'dim':
       c.p1 = mv(e.p1); c.p2 = mv(e.p2); c.p3 = mv(e.p3);
       if (e.p4) { c.p4 = mv(e.p4); c.p5 = mv(e.p5); }
       if (e.c) c.c = mv(e.c);
       if (e.l1) { c.l1 = e.l1.map(mv); c.l2 = e.l2.map(mv); }
-      return c;
-    case 'hatch': c.loops = e.loops.map(l => l.map(mv)); if (c.seed) c.seed = mv(c.seed); c._xf = true; return c;
-    case 'circle': case 'arc': case 'ellipse': return G.inRect(e.c, r) ? xformEnt(c, G.Mx.T(d.x, d.y)) : null;
-    case 'text': case 'mtext': case 'attdef': case 'point': case 'insert': case 'table': return G.inRect(e.p, r) ? xformEnt(c, G.Mx.T(d.x, d.y)) : null;
-    case 'mleader': c.pts = e.pts.map(mv); return c;
+      return /** @type {Entity} */ (c);
+    case 'hatch': c.loops = e.loops.map(l => l.map(mv)); if (c.seed) c.seed = mv(c.seed); c._xf = true; return /** @type {Entity} */ (c);
+    case 'circle': case 'arc': case 'ellipse': return G.inRect(e.c, r) ? xformEnt(/** @type {Entity} */ (c), G.Mx.T(d.x, d.y)) : null;
+    case 'text': case 'mtext': case 'attdef': case 'point': case 'insert': case 'table': return G.inRect(e.p, r) ? xformEnt(/** @type {Entity} */ (c), G.Mx.T(d.x, d.y)) : null;
+    case 'mleader': c.pts = e.pts.map(mv); return /** @type {Entity} */ (c);
     case 'spline': {
       const k = e.fit ? 'fit' : e.cv ? 'cv' : 'ctrl';
       c[k] = e[k].map(mv);
-      if (k === 'ctrl') return c;
-      return rebuildSpline(c) ? c : null;
+      if (k === 'ctrl') return /** @type {Entity} */ (c);
+      return rebuildSpline(/** @type {import('./types').Spline} */ (/** @type {unknown} */ (c))) ? /** @type {Entity} */ (c) : null;
     }
   }
   return null;

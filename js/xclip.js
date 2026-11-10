@@ -1,12 +1,19 @@
 // Delimitación de referencias a bloques y referencias externas (XCLIP): contorno poligonal en coordenadas del bloque.
+/** @typedef {import('./document.js').Doc} Doc */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+// @ts-check
 // Referencia: e.clip = {pts: [vértices en coordenadas de la definición], invert: mostrar sólo lo de fuera, off: delimitación desactivada}
 import * as G from './geom.js';
 
+/** @param {{clip?: {pts?: Point[], off?: boolean}}} e @returns {boolean} */
 export const clipActive = e => !!(e.clip && !e.clip.off && e.clip.pts?.length > 2);
 // ¿Se ve el punto? (dentro del contorno, o fuera si la delimitación está invertida)
+/** @param {Point[]} poly @param {boolean} [invert] @returns {(p: Point) => boolean} */
 export const clipKeeps = (poly, invert) => p => G.pointInPoly(p, poly) !== !!invert;
 
 // Recorta primitivas (segmentos y arcos) con el contorno: devuelve los segmentos visibles (los arcos se tesselan)
+/** Recorta las primitivas al contorno (o a su exterior). @param {import('./types').Prim[]} prims @param {Point[]} poly @param {boolean} [invert] @returns {import('./types').Prim[]} */
 export function clipPrims(prims, poly, invert) {
   const keep = clipKeeps(poly, invert), out = [], n = poly.length;
   const seg = (a, b) => {
@@ -31,4 +38,5 @@ export function clipPrims(prims, poly, invert) {
 }
 
 // Contorno rectangular a partir de dos esquinas
+/** @param {Point} a @param {Point} b @returns {Point[]} */
 export const rectClip = (a, b) => [G.P(Math.min(a.x, b.x), Math.min(a.y, b.y)), G.P(Math.max(a.x, b.x), Math.min(a.y, b.y)), G.P(Math.max(a.x, b.x), Math.max(a.y, b.y)), G.P(Math.min(a.x, b.x), Math.max(a.y, b.y))];

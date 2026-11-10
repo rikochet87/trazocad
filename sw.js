@@ -1,4 +1,7 @@
 // Service worker: precarga la aplicación para uso sin conexión (cache-first con actualización en segundo plano).
+// @ts-check (con lib WebWorker: jsconfig.sw.json)
+/** El ámbito global del service worker. */
+const sw = /** @type {ServiceWorkerGlobalScope} */ (/** @type {unknown} */ (self));
 const CACHE = 'trazocad-v13';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
@@ -11,15 +14,15 @@ const ASSETS = [
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png',
 ];
 
-self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+sw.addEventListener('install', e => {
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => sw.skipWaiting()));
 });
 
-self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+sw.addEventListener('activate', e => {
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => sw.clients.claim()));
 });
 
-self.addEventListener('fetch', e => {
+sw.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
   e.respondWith(caches.open(CACHE).then(async cache => {

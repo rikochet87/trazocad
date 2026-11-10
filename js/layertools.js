@@ -1,4 +1,10 @@
 // Herramientas de capas: aislar y desaislar (LAYISO, LAYUNISO), recorrer (LAYWALK), fusionar (LAYMRG)
+/** @typedef {import('./document.js').Doc} Doc */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** @typedef {import('./types').LayerFilter} LayerFilter */
+// @ts-check
 // y filtros de capa por propiedades y por grupos (paleta de capas).
 
 // Todas las listas de entidades del dibujo, incluidas las de los bloques y los objetos de origen de las matrices
@@ -7,6 +13,7 @@ function* everyEnt(doc) {
   yield* walk([...doc.allEnts()]);
   for (const b of Object.values(doc.blocks)) yield* walk(b.ents);
 }
+/** @param {Doc} doc @returns {Set<string>} */
 export function usedLayers(doc) {
   const s = new Set(['0', doc.cur.layer]);
   for (const e of everyEnt(doc)) s.add(e.layer);
@@ -15,6 +22,7 @@ export function usedLayers(doc) {
 
 // ---------- Aislar ----------
 // mode: 'off' desactiva las demás capas; 'lock' las bloquea. Guarda el estado anterior para LAYUNISO.
+/** @param {Doc} doc @param {string[]} names @param {string} [mode] off o lock */
 export function layIso(doc, names, mode = 'off') {
   const keep = new Set(names);
   doc.layIso = { mode, cur: doc.cur.layer, layers: Object.fromEntries(doc.layers.map(l => [l.name, { on: l.on, lock: l.lock }])) };
@@ -27,6 +35,7 @@ export function layIso(doc, names, mode = 'off') {
   doc.changed();
 }
 // Devuelve el número de capas restauradas, o -1 si no hay nada aislado
+/** @param {Doc} doc @returns {number} capas restauradas (-1: no había nada aislado) */
 export function layUniso(doc) {
   const s = doc.layIso;
   if (!s) return -1;
@@ -43,6 +52,7 @@ export function layUniso(doc) {
 
 // ---------- Fusionar ----------
 // Pasa los objetos de las capas from a la capa to y elimina las capas from. Devuelve el número de objetos movidos.
+/** @param {Doc} doc @param {string[]} from @param {string} to @returns {number} */
 export function layMerge(doc, from, to) {
   const src = new Set(from.filter(n => n !== to && n !== '0'));
   let n = 0;
@@ -60,11 +70,14 @@ export function layMerge(doc, from, to) {
 
 // ---------- Filtros ----------
 // {name, kind: 'prop', rules: {name, color, on, lock, ltype, lw, used}} o {name, kind: 'group', layers: [...]}
+/** @type {Record<string, string>} */
 export const LF_RULES = { name: 'Nombre (* ?, varios separados por comas)', color: 'Color', on: 'Activada', lock: 'Bloqueada', ltype: 'Tipo de línea', lw: 'Grosor de línea', used: 'En uso' };
+/** @param {Doc} doc @param {string} name @returns {LayerFilter | undefined} */
 export const findLayerFilter = (doc, name) => doc.layerFilters.find(f => f.name.toLowerCase() === String(name).trim().toLowerCase());
 const wild = p => new RegExp('^' + p.trim().replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i');
 const yes = v => /^(s|si|sí|1|true|y|yes)$/i.test(String(v).trim());
 // ¿Pasa la capa l el filtro f? used: conjunto de capas en uso (se calcula una vez por lista)
+/** @param {LayerFilter} f @param {import('./types').Layer} l @param {Set<string>} [used] @returns {boolean} */
 export function layerMatches(f, l, used) {
   if (f.kind === 'group') return f.layers.includes(l.name);
   const r = f.rules || {};
@@ -78,10 +91,11 @@ export function layerMatches(f, l, used) {
   return true;
 }
 // Capas que muestra la paleta con el filtro de nombre fname ('' = todas, '*usadas*' = en uso) y su inversión
+/** @param {Doc} doc @param {string} fname @param {boolean} [invert] @returns {import('./types').Layer[]} */
 export function filteredLayers(doc, fname, invert = false) {
   if (!fname && !invert) return doc.layers;
   const used = usedLayers(doc);
-  const f = fname === '*usadas*' ? { kind: 'prop', rules: { used: 'sí' } } : findLayerFilter(doc, fname);
+  const f = fname === '*usadas*' ? /** @type {LayerFilter} */ ({ name: '*usadas*', kind: 'prop', rules: { used: 'sí' } }) : findLayerFilter(doc, fname);
   if (!f) return doc.layers;
   return doc.layers.filter(l => layerMatches(f, l, used) !== invert);
 }

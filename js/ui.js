@@ -1,4 +1,5 @@
 // Interfaz: cinta de opciones, paletas (propiedades y capas), barra de estado, línea de comandos y diálogos.
+// @ts-check
 import { icon } from './icons.js';
 import { CMDS, loadPatterns } from './commands.js';
 import { TYPES, LTYPES, LWEIGHTS, COLORS, FONTS, ARROWS, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, DEFAULT_TBLSTYLE, ML_CONTENT, DATE_FORMATS, formatDate, fmt, bboxOf, bbUnion, propsOf, blockAttdefs, attVal, TOL_MODES, hexToAci } from './entities.js';
@@ -26,7 +27,11 @@ import { LIBRARY, LIB_CATS, libItem, libPreview } from './library.js';
 import { loadPalettes, savePalettes, resetPalettes, toolFromEntity, toolDesc } from './toolpalettes.js';
 import { readDXF } from './dxf.js';
 
+/** @typedef {import('./types').Entity} Entity */
 const $ = (s, r = document) => r.querySelector(s);
+/** Crea un elemento con atributos (on…: manejadores; class; html) e hijos.
+ * @template {keyof HTMLElementTagNameMap} K @param {K} tag
+ * @returns {HTMLElementTagNameMap[K]} */
 const h = (tag, attrs = {}, ...kids) => {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -108,6 +113,7 @@ const TOGGLES = [
 const ISO_NAMES = { top: 'superior', left: 'izquierdo', right: 'derecho' };
 
 export class UI {
+  /** @param {import('./app.js').App} app */
   constructor(app) { this.app = app; this.histOpen = false; this.pending = false; }
 
   build() {
@@ -433,7 +439,7 @@ export class UI {
         const set = v => (one ? this.setGeom(e0.id, pr, v) : this.setGeomAll(shown.map(e => e.id), pr.label, v));
         let input;
         if (pr.type === 'mtext') {
-          input = h('button', { class: 'btn prop-btn', title: raw, onclick: async () => { const v = await this.editMText(e0, 'Editar texto de líneas múltiples'); if (v?.text) this.setGeom(e0.id, pr, v); } },
+          input = h('button', { class: 'btn prop-btn', title: raw, onclick: async () => { const v = await this.editMText(/** @type {import('./types').MText | import('./types').MLeader} */ (e0), 'Editar texto de líneas múltiples'); if (v?.text) this.setGeom(e0.id, pr, v); } },
             (String(raw).split('\n')[0] || '…').slice(0, 28) + (String(raw).length > 28 || String(raw).includes('\n') ? '…' : ''));
         } else if (pr.type === 'action') {
           input = h('button', { class: 'btn prop-btn', onclick: () => set(true) }, raw);
@@ -486,7 +492,7 @@ export class UI {
   setGeomAll(ids, label, v) {
     const doc = this.app.doc;
     doc.begin();
-    for (const id of ids) doc.modify(id, e => { const pr = propsOf(e).find(q => !q.sec && q.label === label); if (pr && !pr.ro) pr.set(e, v); });
+    for (const id of ids) doc.modify(id, /** @param {Entity} e */ e => { const pr = propsOf(e).find(q => !q.sec && q.label === label); if (pr && !pr.ro) pr.set(e, v); });
     doc.commit();
     this.app.renderer.invalidate(); this.refresh();
   }
@@ -525,7 +531,7 @@ export class UI {
     };
     const bar = h('div', { class: 'tp-bar' },
       h('button', { class: 'btn', title: 'Crear herramientas a partir de los bloques o sombreados designados', onclick: fromSel }, '+ Designación'),
-      h('button', { class: 'btn', title: 'Añadir una herramienta que ejecute una orden o una línea de guion', onclick: async () => { const t = { kind: 'command', label: 'Orden', cmd: 'LINE' }; if (await this.editTool(t)) { pal.tools.push(t); save(); } } }, '+ Orden'),
+      h('button', { class: 'btn', title: 'Añadir una herramienta que ejecute una orden o una línea de guion', onclick: async () => { const t = /** @type {import('./toolpalettes.js').Tool} */ ({ kind: 'command', label: 'Orden', cmd: 'LINE' }); if (await this.editTool(t)) { pal.tools.push(t); save(); } } }, '+ Orden'),
       h('button', { class: 'btn', title: 'Nueva paleta vacía', onclick: async () => { const n = await this.prompt('Nueva paleta', 'Nombre', 'Mis herramientas'); if (n) { pals.push({ name: n, tools: [] }); this.palIdx = pals.length - 1; save(); } } }, 'Nueva'),
       h('button', { class: 'btn', title: 'Cambiar el nombre de la paleta', onclick: async () => { const n = await this.prompt('Renombrar paleta', 'Nombre', pal.name); if (n) { pal.name = n; save(); } } }, 'Renombrar'),
       h('button', { class: 'btn', title: 'Eliminar esta paleta', onclick: async () => { if (pals.length > 1 && await this.confirm(`¿Eliminar la paleta "${pal.name}"?`, 'Eliminar')) { pals.splice(idx, 1); this.palIdx = 0; save(); } } }, 'Eliminar'),
@@ -577,7 +583,8 @@ export class UI {
     const F = t.kind === 'block' ? [['label', 'Nombre'], ['block', 'Bloque'], ['layer', 'Capa'], ['color', 'Color (#rrggbb, vacío = PorCapa)'], ['scale', 'Escala', 1], ['rot', 'Rotación (°)', 1], ['vis', 'Estado de visibilidad']]
       : t.kind === 'hatch' ? [['label', 'Nombre'], ['pattern', 'Patrón'], ['scale', 'Escala', 1], ['angle', 'Ángulo (°)', 1], ['layer', 'Capa'], ['color', 'Color (#rrggbb, vacío = PorCapa)']]
         : [['label', 'Nombre'], ['cmd', 'Orden o línea de guion (p. ej. CIRCLE o UCS OB)']];
-    const inputs = F.map(([k, label, numeric]) => [k, numeric, h('input', { type: 'text', value: t[k] ?? '', class: 'full' }), label]);
+    // F: [campo, etiqueta, numérico]
+    const inputs = F.map(([k, label, numeric]) => /** @type {[string, boolean, HTMLInputElement, string]} */ (/** @type {unknown} */ ([k, numeric, h('input', { type: 'text', value: t[k] ?? '', class: 'full' }), label])));
     const box = h('div', { class: 'grid2' }, ...inputs.map(([, , inp, label]) => h('label', { class: 'fld' }, label, inp)));
     const ok = await this.modal('Propiedades de la herramienta', box, [{ label: 'Cancelar', value: false }, { label: 'Aceptar', value: true, primary: true }]);
     if (!ok) return false;
@@ -652,7 +659,7 @@ export class UI {
     const p = this.modal('DesignCenter', box, [{ label: 'Cerrar', value: null },
       { label: 'Añadir al dibujo', value: () => (picked.length && src !== 'lib' && data() !== doc ? { action: 'add', src: data(), kind, names: picked } : null) },
       { label: 'Insertar', value: () => (picked.length && (src === 'lib' || kind === 'blocks') ? (src === 'lib' ? { action: 'insert', lib: true, name: picked[0] } : { action: 'insert', src: data(), name: picked[0] }) : null), primary: true }]);
-    this.closeModalWith = v => { const b = document.querySelector('#modal-root .modal'); if (b) { this._appPick = v; b.querySelector('.modal-head .ib').click(); } };
+    this.closeModalWith = v => { const b = document.querySelector('#modal-root .modal'); if (b) { this._appPick = v; /** @type {HTMLElement} */ (b.querySelector('.modal-head .ib')).click(); } };
     return p.then(v => { const x = this._appPick; this._appPick = null; this.closeModalWith = null; return x || v; });
   }
 
@@ -718,7 +725,7 @@ export class UI {
         h('button', { class: 'ib' + (l.on ? '' : ' off'), title: l.on ? 'Desactivar' : 'Activar', html: icon(l.on ? 'eye' : 'eyeoff', 16), onclick: ev => { ev.stopPropagation(); tx(() => { l.on = !l.on; }); } }),
         h('button', { class: 'ib' + (l.lock ? ' off' : ''), title: l.lock ? 'Desbloquear' : 'Bloquear', html: icon(l.lock ? 'lock' : 'unlock', 16), onclick: ev => { ev.stopPropagation(); tx(() => { l.lock = !l.lock; }); } }),
         vp ? (() => {
-          const fz = !!vp.frozen?.includes(l.name);
+          const fz = !!/** @type {import('./types').Viewport} */ (vp).frozen?.includes(l.name);
           return h('button', { class: 'ib' + (fz ? ' frz' : ''), title: fz ? 'Reutilizar en esta ventana' : 'Inutilizar en esta ventana', html: icon(fz ? 'freeze' : 'sun', 16), onclick: ev => {
             ev.stopPropagation();
             tx(() => doc.modify(vp.id, v => { const set = new Set(v.frozen || []); if (fz) set.delete(l.name); else set.add(l.name); if (set.size) v.frozen = [...set]; else delete v.frozen; }));
@@ -831,6 +838,8 @@ export class UI {
   hideMenu() { $('#ctxmenu').hidden = true; }
 
   // ---------- Diálogos ----------
+  /** Diálogo modal: se resuelve con el valor del botón pulsado (si es una función, con lo que devuelve).
+   * Cada diálogo devuelve su propio resultado (sin tipo común). @param {string} title @param {Node} content @param {{label: string, value: unknown, primary?: boolean}[]} buttons */
   modal(title, content, buttons) {
     return new Promise(res => {
       const root = $('#modal-root'), under = root.hidden ? [] : [...root.childNodes]; // diálogo abierto desde otro: al cerrarse vuelve el anterior
@@ -844,9 +853,9 @@ export class UI {
       box.addEventListener('keydown', e => {
         e.stopPropagation();
         if (e.key === 'Escape') close(null);
-        if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') { const p = buttons.find(b => b.primary); if (p) close(typeof p.value === 'function' ? p.value() : p.value); }
+        if (e.key === 'Enter' && /** @type {HTMLInputElement} */ (e.target).tagName === 'INPUT' && /** @type {HTMLInputElement} */ (e.target).type !== 'checkbox') { const p = buttons.find(b => b.primary); if (p) close(typeof p.value === 'function' ? p.value() : p.value); }
       });
-      setTimeout(() => (box.querySelector('textarea,input,select') || box.querySelector('.btn.primary'))?.focus(), 30);
+      setTimeout(() => /** @type {HTMLElement | null} */ (box.querySelector('textarea,input,select') || box.querySelector('.btn.primary'))?.focus(), 30);
     });
   }
   // Consola de JavaScript: el código se ejecuta con la API (tc) y la aplicación (app); Ctrl+Intro ejecuta
@@ -880,7 +889,7 @@ export class UI {
       h('label', { class: 'chk' }, startup, ' Cargar también al iniciar TrazoCAD (sólo .js; se guarda en este navegador)'),
       h('p', { class: 'hint' }, 'Un archivo .js se ejecuta con la API de TrazoCAD (tc) y puede definir órdenes nuevas con tc.defineCommand. Un archivo .scr se ejecuta como guion.'));
     const p = this.modal('Cargar aplicaciones (APPLOAD)', box, [{ label: 'Cerrar', value: null }, { label: 'Cargar archivo…', value: () => ({ action: 'load', startup: startup.checked }), primary: true }]);
-    this.closeModalWith = v => { const b = document.querySelector('#modal-root .modal'); if (b) { this._appPick = v; b.querySelector('.modal-head .ib').click(); } };
+    this.closeModalWith = v => { const b = document.querySelector('#modal-root .modal'); if (b) { this._appPick = v; /** @type {HTMLElement} */ (b.querySelector('.modal-head .ib')).click(); } };
     return p.then(v => { const x = this._appPick; this._appPick = null; this.closeModalWith = null; return x || v; });
   }
   // Barra de progreso (apertura de DXF grandes en segundo plano): set(fracción), done()
@@ -894,16 +903,20 @@ export class UI {
       done: () => { clearTimeout(show); if (shown) box.remove(); },
     };
   }
+  /** @param {string} msg @param {string} [okLabel] @returns {Promise<boolean>} */
   confirm(msg, okLabel = 'Aceptar') {
     return this.modal('TrazoCAD', h('p', {}, msg), [{ label: 'Cancelar', value: false }, { label: okLabel, value: true, primary: true }]).then(v => !!v);
   }
+  /** @param {string} title @param {string} label @param {string} [value] @returns {Promise<string | null>} */
   prompt(title, label, value = '') {
     const inp = h('input', { type: 'text', value, class: 'full' });
-    return this.modal(title, h('label', { class: 'fld' }, label, inp), [{ label: 'Cancelar', value: null }, { label: 'Aceptar', value: () => inp.value.trim(), primary: true }]);
+    return /** @type {Promise<string | null>} */ (this.modal(title, h('label', { class: 'fld' }, label, inp), [{ label: 'Cancelar', value: null }, { label: 'Aceptar', value: () => inp.value.trim(), primary: true }]));
   }
 
   // Editor de texto de líneas múltiples con formato. src: texto plano o {text, rich, h, style}.
   // Devuelve {text, rich} (sin espacios ni saltos finales) o null.
+  /** @param {string | {text?: string, rich?: boolean, h?: number, style?: string}} [src] @param {string} [title]
+   * @returns {Promise<{text: string, rich: boolean} | null>} */
   editMText(src = '', title = 'Texto de líneas múltiples') {
     const doc = this.app.doc, o = typeof src === 'string' ? { text: src } : src;
     const h0 = o.h || doc.settings.textH, st = doc.textStyle(o.style || doc.cur.textStyle);
@@ -966,15 +979,15 @@ export class UI {
     const setSel = (a, b = a) => {
       const pos = k => {
         let n = 0;
-        for (const c of ed.childNodes) {
+        for (const c of /** @type {NodeListOf<HTMLElement & Text>} */ (ed.childNodes)) {
           const len = c.nodeType === 3 ? c.data.length : c.tagName === 'SPAN' && c.classList.contains('r') ? c.textContent.length : 1;
-          if (k <= n + len && (c.nodeType === 3 || c.classList?.contains('r'))) { const t = c.nodeType === 3 ? c : c.firstChild || c; return [t, Math.min(k - n, t.data?.length ?? 0)]; }
+          if (k <= n + len && (c.nodeType === 3 || c.classList?.contains('r'))) { const t = /** @type {Text} */ (c.nodeType === 3 ? c : c.firstChild || c); return [t, Math.min(k - n, t.data?.length ?? 0)]; }
           if (k <= n) return [ed, [...ed.childNodes].indexOf(c)];
           n += len;
         }
         return [ed, ed.childNodes.length];
       };
-      const r = document.createRange(), [sn, so] = pos(a), [en, eo] = pos(b);
+      const r = document.createRange(), [sn, so] = /** @type {[Node, number]} */ (pos(a)), [en, eo] = /** @type {[Node, number]} */ (pos(b));
       r.setStart(sn, so); r.setEnd(en, eo);
       const s = getSelection(); s.removeAllRanges(); s.addRange(r);
     };
@@ -1012,7 +1025,7 @@ export class UI {
       mid.splice(0, mid.length, { t: 'stk', a: m[1].trim(), b: m[3].trim(), k: m[2], f: mid.find(p => p.f)?.f || base });
     });
     ed.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ed.closest('.modal').querySelector('.btn.primary').click(); return; }
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); /** @type {HTMLElement} */ (ed.closest('.modal').querySelector('.btn.primary')).click(); return; }
       if (e.key === 'Enter') { // salto de línea en el modelo (sin <div> del navegador)
         e.preventDefault();
         const sel = getSel() || [0, 0], [pre, , post] = cut(read(), sel[0], sel[1]);
@@ -1089,14 +1102,14 @@ export class UI {
         const cell = (c, span) => {
           const ta = h('textarea', { rows: 1, 'data-rc': `${r},${c}`, onfocus: () => { sel = [r, c]; }, oninput: ev => { cells[r][c] = ev.target.value; }, onpaste: ev => paste(ev, r, c) });
           ta.value = cells[r][c] ?? '';
-          ta.addEventListener('keydown', ev => { if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); grid.closest('.modal').querySelector('.btn.primary').click(); } });
+          ta.addEventListener('keydown', ev => { if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); /** @type {HTMLElement} */ (grid.closest('.modal').querySelector('.btn.primary')).click(); } });
           return h('td', { class: isTitle ? 'title' : '', colspan: span > 1 ? span : false }, ta);
         };
         if (isTitle) tr.append(cell(0, nc)); else cols.forEach((__, c) => tr.append(cell(c, 1)));
         tbl.append(tr);
       });
       grid.replaceChildren(tbl);
-      setTimeout(() => grid.querySelector(`[data-rc="${sel[0]},${title && sel[0] === 0 ? 0 : sel[1]}"]`)?.focus(), 0);
+      setTimeout(() => /** @type {HTMLElement | null} */ (grid.querySelector(`[data-rc="${sel[0]},${title && sel[0] === 0 ? 0 : sel[1]}"]`))?.focus(), 0);
     };
     const btn = (label, fn) => h('button', { class: 'btn', onclick: () => { fn(); render(); } }, label);
     const chk = (label, get, set) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: get(), onchange: ev => { set(ev.target.checked); render(); } }), label);
@@ -1134,6 +1147,7 @@ export class UI {
     const app = this.app, S = app.doc.settings;
     const box = h('div', { class: 'settings' });
     const sec = (t, ...k) => box.append(h('fieldset', {}, h('legend', {}, t), ...k));
+    /** @param {string} label @param {string} key @param {string | number} [step] */
     const field = (label, key, step = 'any') => h('label', { class: 'fld' }, label, h('input', { type: 'number', step, min: 0, 'data-key': key, value: S[key] }));
     const modes = Object.entries(OSNAP_MODES).map(([k, l]) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', 'data-osnap': k, checked: !!app.osnapModes[k] }), l));
     sec('Referencia a objetos (REFENT)', h('div', { class: 'grid2' }, ...modes));
@@ -1151,13 +1165,13 @@ export class UI {
       h('label', { class: 'chk', title: 'Las cotas nuevas se asocian a la geometría designada con referencia a objetos (DIMASSOC)' }, assocChk, 'Cotas asociativas')));
     this.modal('Parámetros de dibujo', box, [{ label: 'Cancelar', value: false }, { label: 'Aceptar', value: true, primary: true }]).then(ok => {
       if (!ok) return;
-      box.querySelectorAll('[data-key]').forEach(inp => {
+      /** @type {NodeListOf<HTMLInputElement>} */ (box.querySelectorAll('[data-key]')).forEach(inp => {
         const v = parseFloat(inp.value);
         if (Number.isFinite(v) && v >= 0) S[inp.dataset.key] = inp.dataset.key.endsWith('Dec') ? Math.min(8, Math.round(v)) : v;
       });
-      S.iso = isoChk.checked; S.isoPlane = plane.value; S.dimAssoc = assocChk.checked; S.author = author.value.trim();
+      S.iso = isoChk.checked; S.isoPlane = /** @type {import('./types').Settings['isoPlane']} */ (plane.value); S.dimAssoc = assocChk.checked; S.author = author.value.trim();
       app.ui.updateStatus();
-      box.querySelectorAll('[data-osnap]').forEach(inp => { app.osnapModes[inp.dataset.osnap] = inp.checked; });
+      /** @type {NodeListOf<HTMLInputElement>} */ (box.querySelectorAll('[data-osnap]')).forEach(inp => { app.osnapModes[inp.dataset.osnap] = inp.checked; });
       app.savePrefs();
       app.doc.changed();
       app.renderer.invalidate();
@@ -1196,7 +1210,7 @@ export class UI {
       const tile = (name, title, extra, cls = '') => {
         const sw = h('button', { class: `swatch-btn ${cls}` + (name === chosen ? ' sel' : ''), title,
           onclick: () => { chosen = name; grid.querySelectorAll('.swatch-btn').forEach(x => x.classList.remove('sel')); sw.classList.add('sel'); },
-          ondblclick: () => body.closest('.modal').querySelector('.btn.primary').click() },
+          ondblclick: () => /** @type {HTMLElement} */ (body.closest('.modal').querySelector('.btn.primary')).click() },
         this.patThumb(name, extra), h('span', {}, name === 'USER' ? 'Usuario' : name));
         grid.append(sw);
       };
@@ -1290,7 +1304,7 @@ export class UI {
         ? h('table', { class: 'xref-list' }, h('thead', {}, h('tr', {}, ...['Nombre', 'Descripción', 'Capas', 'Capa actual', 'Guardado'].map(t => h('th', {}, t)))), tbody)
         : h('p', { class: 'hint' }, 'No hay estados de capa. «Nuevo…» guarda la configuración actual de las capas (activadas, bloqueadas, color, tipo y grosor de línea) con un nombre.'),
       h('fieldset', {}, h('legend', {}, 'Propiedades que se restauran'), h('div', { class: 'grid2' }, ...checks, h('label', { class: 'chk', title: 'Las capas creadas después de guardar el estado se desactivan al restaurarlo' }, offMissing, 'Desactivar las capas que no están en el estado'))));
-    const opts = () => { const p = [...box.querySelectorAll('[data-p]')].filter(x => x.checked).map(x => x.dataset.p); S.lsProps = p; S.lsOffMissing = offMissing.checked; return { props: p, offMissing: offMissing.checked }; };
+    const opts = () => { const p = [.../** @type {NodeListOf<HTMLInputElement>} */ (box.querySelectorAll('[data-p]'))].filter(x => x.checked).map(x => x.dataset.p); S.lsProps = p; S.lsOffMissing = offMissing.checked; return { props: p, offMissing: offMissing.checked }; };
     const act = a => () => (a === 'new' || a === 'import' || sel ? { action: a, name: sel, opts: opts() } : null);
     return this.modal('Estados de capa', box, [{ label: 'Cerrar', value: null }, { label: 'Nuevo…', value: act('new') }, { label: 'Importar .las…', value: act('import') },
       ...(doc.layerStates.length ? [{ label: 'Exportar .las…', value: act('export') }, { label: 'Actualizar', value: act('update') }, { label: 'Renombrar…', value: act('rename') }, { label: 'Descripción…', value: act('desc') }, { label: 'Eliminar', value: act('delete') }, { label: 'Restaurar', value: act('restore'), primary: true }] : [])]);
@@ -1361,7 +1375,7 @@ export class UI {
       const b = doc.blocks[name];
       const sw = h('button', { class: 'swatch-btn' + (name === chosen ? ' sel' : ''), title: `${name} · ${b.ents.length} objeto(s)`,
         onclick: () => { chosen = name; grid.querySelectorAll('.swatch-btn').forEach(x => x.classList.remove('sel')); sw.classList.add('sel'); },
-        ondblclick: () => grid.closest('.modal').querySelector('.btn.primary').click() },
+        ondblclick: () => /** @type {HTMLElement} */ (grid.closest('.modal').querySelector('.btn.primary')).click() },
       this.thumb(b.ents, 110, 80), h('span', {}, name));
       grid.append(sw);
     }
@@ -1506,7 +1520,8 @@ export class UI {
   mleditDialog() {
     const doc = this.app.doc, cur = doc.mlineStyle(doc.cur.mlineStyle), offs = sortedElems(cur).map(x => x.off), wd = Math.max(...offs) - Math.min(...offs) || 1;
     const name = '__mle__', st = { ...JSON.parse(JSON.stringify(cur)), name, fill: null }, k = 4 / wd, P = G.P;
-    const ml = pts => ({ type: 'mline', pts, closed: false, just: 'zero', scale: k, mlstyle: name, layer: '0', color: '#ffffff', ltype: 'BYLAYER', lw: 'BYLAYER' });
+    /** @param {import('./types').Point[]} pts */
+    const ml = pts => /** @type {import('./types').MLine} */ ({ type: 'mline', pts, closed: false, just: 'zero', scale: k, mlstyle: name, layer: '0', color: '#ffffff', ltype: 'BYLAYER', lw: 'BYLAYER' });
     const dot = p => ({ type: 'point', p, layer: '0', color: '#f0b429', ltype: 'BYLAYER', lw: 'BYLAYER' });
     const sample = t => {
       if (['CC', 'OC', 'MC'].includes(t)) { const A = ml([P(-10, 0), P(10, 0)]), B = ml([P(0, -10), P(0, 10)]); mlCross(A, st, P(-5, 0), B, st, P(0, -5), t); return [A, B]; }
@@ -1523,7 +1538,7 @@ export class UI {
     doc.mlineStyles = [st];
     let res = null;
     const grid = h('div', { class: 'swatches mledit' }, ...Object.entries(MLEDIT_TOOLS).map(([t, label]) => h('button', { class: 'swatch-btn', title: `${label} (${t})`,
-      onclick: ev => { res = t; ev.currentTarget.closest('.modal').querySelector('.btn.primary').click(); } }, this.thumb(sample(t), 84, 64, 0.1), h('span', {}, label))));
+      onclick: ev => { res = t; /** @type {HTMLElement} */ (/** @type {HTMLElement} */ (ev.currentTarget).closest('.modal').querySelector('.btn.primary')).click(); } }, this.thumb(sample(t), 84, 64, 0.1), h('span', {}, label))));
     doc.mlineStyles = saved;
     return this.modal('Herramientas de edición de líneas múltiples', h('div', {}, grid, h('p', { class: 'hint' }, 'Elija una herramienta y designe después las líneas múltiples. En los cruces y las uniones se conserva la parte de cada línea por la que se designa.')),
       [{ label: 'Cancelar', value: null }, { label: 'Aceptar', value: () => res, primary: true }]);
@@ -1553,7 +1568,8 @@ export class UI {
   // Administrador de parámetros. Devuelve {cons: {id: {name, expr}}, params: [{name, expr}]} o null.
   parametersManager() {
     const doc = this.app.doc, { vals, errors } = evalParams(doc);
-    const rows = [...doc.constraints.filter(k => k.name).map(k => ({ kind: 'cons', id: k.id, name: k.name, expr: k.expr, type: k.type })), ...doc.params.map(p => ({ kind: 'user', name: p.name, expr: p.expr }))];
+    /** @type {{kind: 'cons' | 'user', id?: number, name: string, expr: string, type?: string}[]} */
+    const rows = [...doc.constraints.filter(k => k.name).map(k => ({ kind: /** @type {const} */ ('cons'), id: k.id, name: k.name, expr: k.expr, type: k.type })), ...doc.params.map(p => ({ kind: /** @type {const} */ ('user'), name: p.name, expr: p.expr }))];
     const tbody = h('tbody');
     const TYPE = { dist: 'Distancia', radius: 'Radio', diameter: 'Diámetro', angle: 'Ángulo (°)' };
     const render = () => {
@@ -1684,7 +1700,7 @@ export class UI {
           if (!f) return;
           try {
             const t2 = await readPlotFile(await f.file.arrayBuffer(), f.file.name), n = plotTables(doc)[t2.name] ? uniq(t2.name) : t2.name;
-            tx(() => { doc.plotStyles[n] = { ...t2, name: n }; cur = n; });
+            tx(() => { doc.plotStyles[n] = /** @type {import('./types').PlotTable} */ ({ ...t2, name: n }); cur = n; });
             app.print(`Tabla de estilos de trazado "${n}" importada (${Object.keys(t2.styles).length} estilos).`);
           } catch (err) { app.print(`No se puede leer la tabla de estilos: ${err.message}`, 'err'); }
         }),
@@ -1735,7 +1751,8 @@ export class UI {
   ucsManager() {
     const app = this.app, doc = app.doc, S = doc.settings;
     const desc = u => (u ? `${fmt(u.o.x, 4)}, ${fmt(u.o.y, 4)}` : '0, 0');
-    const rows = [['*universal*', 'Universal', null], ...(doc.ucsPrev?.length ? [['*previo*', 'Previo', doc.ucsPrev.at(-1)]] : []), ...doc.ucsList.map(u => [u.name, u.name, u])];
+    /** @type {[string, string, import('./types').Ucs | null][]} */
+    const rows = [['*universal*', 'Universal', null], ...(doc.ucsPrev?.length ? [/** @type {[string, string, import('./types').Ucs | null]} */ (['*previo*', 'Previo', doc.ucsPrev.at(-1)])] : []), ...doc.ucsList.map(u => /** @type {[string, string, import('./types').Ucs]} */ ([u.name, u.name, u]))];
     let sel = doc.ucs ? doc.ucs.name || null : '*universal*';
     const tbody = h('tbody');
     for (const [key, label, u] of rows) {
@@ -1859,7 +1876,7 @@ export class UI {
   // ---------- Buscar y reemplazar ----------
   // Busca y reemplaza dentro del diálogo; devuelve {select: ids} con «Designar» o null.
   findDialog(findPool, spaceOf) {
-    const app = this.app, doc = app.doc, o = this.findOpts || { matchCase: false, whole: false, wild: false, where: 'space', kinds: Object.keys(FIND_KINDS) };
+    const app = this.app, doc = app.doc, o = /** @type {{q?: string, rep?: string, matchCase: boolean, whole: boolean, wild: boolean, where: string, kinds: string[]}} */ (this.findOpts || { matchCase: false, whole: false, wild: false, where: 'space', kinds: Object.keys(FIND_KINDS) });
     const q = h('input', { type: 'text', value: o.q || '' }), rep = h('input', { type: 'text', value: o.rep || '' });
     const where = h('select', {}, h('option', { value: 'space' }, 'Espacio actual'), h('option', { value: 'all' }, 'Todo el dibujo (modelo y presentaciones)'), app.sel.size ? h('option', { value: 'sel' }, `Designación actual (${app.sel.size})`) : null);
     where.value = o.where === 'sel' && !app.sel.size ? 'space' : o.where;
@@ -1869,8 +1886,8 @@ export class UI {
     const tbody = h('tbody'), status = h('p', { class: 'hint' }, 'Escriba el texto y pulse «Buscar».');
     let results = [];
     const read = () => {
-      const r = { q: q.value, rep: rep.value, where: where.value, kinds: [...kinds.querySelectorAll('[data-kind]')].filter(x => x.checked).map(x => x.dataset.kind) };
-      for (const i of opts.querySelectorAll('[data-k]')) r[i.dataset.k] = i.checked;
+      const r = { q: q.value, rep: rep.value, where: where.value, kinds: [.../** @type {NodeListOf<HTMLInputElement>} */ (kinds.querySelectorAll('[data-kind]'))].filter(x => x.checked).map(x => x.dataset.kind) };
+      for (const i of /** @type {NodeListOf<HTMLInputElement>} */ (opts.querySelectorAll('[data-k]'))) r[i.dataset.k] = i.checked;
       return (this.findOpts = r);
     };
     const spaceName = e => { const s = spaceOf(doc, e); return s === 'model' ? 'Modelo' : s === null ? '—' : doc.layouts[s].name; };
@@ -1912,6 +1929,7 @@ export class UI {
   overkillDialog(o) {
     const tol = h('input', { type: 'text', value: String(o.tol) });
     const ign = Object.entries(OK_PROPS).map(([k, l]) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', 'data-p': k, checked: o.ignore.includes(k) }), l));
+    /** @param {unknown} v @param {string} label @returns {[HTMLInputElement, HTMLLabelElement]} */
     const ck = (v, label) => { const i = h('input', { type: 'checkbox', checked: !!v }); return [i, h('label', { class: 'chk' }, i, label)]; };
     const [pl, plL] = ck(o.plines, 'Optimizar segmentos de polilíneas (vértices repetidos o alineados)'), [ov, ovL] = ck(o.overlap, 'Combinar objetos colineales que se solapan parcialmente'), [ee, eeL] = ck(o.endToEnd, 'Combinar objetos colineales alineados extremo con extremo');
     const box = h('div', {}, h('div', { class: 'grid2' }, h('label', { class: 'fld' }, 'Tolerancia', tol)),
@@ -1920,7 +1938,7 @@ export class UI {
       h('p', { class: 'hint' }, 'Se suprimen los objetos iguales a otro dentro de la tolerancia (las líneas y polilíneas aunque tengan el sentido contrario). Las líneas y los arcos colineales se combinan en uno solo; un círculo absorbe los arcos que tiene encima.'));
     return this.modal('Suprimir objetos duplicados', box, [{ label: 'Cancelar', value: null }, { label: 'Aceptar', primary: true, value: () => {
       const t = parseFloat(tol.value.replace(',', '.'));
-      return { tol: t > 0 ? t : 1e-6, ignore: [...box.querySelectorAll('[data-p]')].filter(x => x.checked).map(x => x.dataset.p), plines: pl.checked, overlap: ov.checked, endToEnd: ee.checked };
+      return { tol: t > 0 ? t : 1e-6, ignore: [.../** @type {NodeListOf<HTMLInputElement>} */ (box.querySelectorAll('[data-p]'))].filter(x => x.checked).map(x => x.dataset.p), plines: pl.checked, overlap: ov.checked, endToEnd: ee.checked };
     } }]);
   }
 

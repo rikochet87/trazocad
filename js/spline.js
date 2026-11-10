@@ -1,4 +1,10 @@
 // Splines: B-splines (racionales opcionales) con evaluación de De Boor, interpolación por puntos de ajuste y teselado.
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** Curva B-spline (racional si tiene pesos w): grado, vértices de control y vector de nudos. @typedef {{deg: number, ctrl: Point[], knots: number[], w?: number[], closed?: boolean}} SplineGeom */
+/** @typedef {import('./types').Spline | import('./types').NewEntity<import('./types').Spline>} SplineEnt */
+// @ts-check
 // Una spline guarda {deg, ctrl, knots, w?} y, según cómo se creó, `fit` (puntos de ajuste) o `cv` (vértices de control).
 import * as G from './geom.js';
 const { P } = G;
@@ -12,6 +18,7 @@ function span(knots, p, n, u) {
   return lo;
 }
 
+/** Punto de la curva en el parámetro u. @param {SplineGeom} s @param {number} u @returns {Point} */
 export function deBoor(s, u) {
   const { deg: p, ctrl, knots, w } = s, k = span(knots, p, ctrl.length, u);
   const d = [];
@@ -25,6 +32,7 @@ export function deBoor(s, u) {
   const q = d[p];
   return P(q[0] / q[2], q[1] / q[2]);
 }
+/** Intervalo de parámetros de la curva. @param {SplineGeom} s @returns {[number, number]} */
 export const domain = s => [s.knots[s.deg], s.knots[s.ctrl.length]];
 
 // Funciones base no nulas N[0..p] en u para el intervalo k (The NURBS Book, A2.2)
@@ -69,6 +77,7 @@ function solve(A, B) {
 
 const dedupe = pts => pts.filter((p, i) => !i || !G.eqPt(p, pts[i - 1], 1e-9));
 
+/** Nudos con los extremos fijados para n vértices y grado p. @param {number} n @param {number} p @returns {number[]} */
 export function clampedKnots(n, p) {
   const k = [];
   for (let i = 0; i <= p; i++) k.push(0);
@@ -83,6 +92,7 @@ function periodic(ctrl) {
 }
 
 // Spline que pasa por los puntos de ajuste (cúbica, parametrización por longitud de cuerda)
+/** Spline que pasa por los puntos (null si no hay bastantes). @param {Point[]} pts @param {boolean} [closed] @returns {SplineGeom | null} */
 export function interpolate(pts, closed) {
   pts = dedupe(pts);
   if (closed && pts.length > 2 && G.eqPt(pts[0], pts[pts.length - 1], 1e-9)) pts.pop();
@@ -112,6 +122,7 @@ export function interpolate(pts, closed) {
 }
 
 // Spline definida por vértices de control
+/** Spline definida por vértices de control. @param {Point[]} cv @param {boolean} [closed] @returns {SplineGeom | null} */
 export function fromCV(cv, closed) {
   cv = dedupe(cv);
   if (cv.length < 2) return null;
@@ -121,6 +132,7 @@ export function fromCV(cv, closed) {
 }
 
 // Recalcula la geometría (ctrl, knots) a partir de fit/cv. Devuelve false si no es posible.
+/** Recalcula ctrl y knots a partir de fit o cv. @param {SplineEnt} e @returns {boolean} */
 export function rebuild(e) {
   const src = e.fit || e.cv;
   if (!src) return true;
@@ -149,11 +161,14 @@ function tessellate(e, perSpan = 16) {
   tcache.set(e, t);
   return t;
 }
+/** Polilínea que aproxima la curva. @param {SplineGeom} e @returns {Point[]} */
 export const splinePts = e => tessellate(e).pts;
 // Parámetro de cada punto de splinePts (en las cerradas el tramo final vuelve al primer punto con u = fin del dominio)
+/** Parámetro de cada punto de splinePts. @param {SplineGeom} e @returns {number[]} */
 export const splineParams = e => tessellate(e).us;
 
 // Parámetro del punto de la curva más cercano a p
+/** @param {SplineGeom} e @param {Point} p @returns {number} */
 export function nearestParam(e, p) {
   const { pts, us } = tessellate(e), n = pts.length, [u0, u1] = domain(e);
   let bi = 0, bd = Infinity;
@@ -176,6 +191,7 @@ export function nearestParam(e, p) {
 }
 
 // Derivada (numérica) en u
+/** Derivada (numérica) en u. @param {SplineGeom} e @param {number} u @returns {Point} */
 export function tangentAt(e, u) {
   const [u0, u1] = domain(e), h = (u1 - u0) * 1e-6, a = Math.max(u0, u - h), b = Math.min(u1, u + h);
   return G.norm(G.sub(deBoor(e, b), deBoor(e, a)));
@@ -201,6 +217,7 @@ const mult = (knots, u) => knots.filter(k => sameK(k, u)).length;
 function refineTo(s, u) { let c = s; while (mult(c.knots, u) < c.deg) c = insertKnot(c, u); return c; }
 
 // Tramo [ua, ub] de la curva como spline abierta con extremos fijados
+/** Tramo [ua, ub] como spline abierta. @param {SplineGeom} s @param {number} ua @param {number} ub @returns {SplineGeom} */
 export function subSpline(s, ua, ub) {
   const c = refineTo(refineTo(s, ua), ub), p = c.deg, t = c.knots;
   const ra = t.findIndex(k => sameK(k, ua)), rb = t.findIndex(k => sameK(k, ub)), ma = mult(t, ua);
@@ -211,12 +228,14 @@ export function subSpline(s, ua, ub) {
   return out;
 }
 // Une dos splines abiertas del mismo grado (el final de a coincide con el inicio de b)
+/** @param {SplineGeom} a @param {SplineGeom} b @returns {SplineGeom} */
 export function joinSplines(a, b) {
   const p = a.deg, a1 = a.knots[a.knots.length - 1], b0 = b.knots[0];
   const out = { deg: p, ctrl: [...a.ctrl, ...b.ctrl.slice(1)], knots: [...a.knots.slice(0, -1), ...b.knots.slice(p + 1).map(k => k - b0 + a1)] };
   if (a.w || b.w) out.w = [...(a.w || a.ctrl.map(() => 1)), ...(b.w || b.ctrl.map(() => 1)).slice(1)];
   return out;
 }
+/** @param {SplineGeom} s @returns {SplineGeom} */
 export function reverseSpline(s) {
   const k0 = s.knots[0], k1 = s.knots[s.knots.length - 1];
   const out = { deg: s.deg, ctrl: [...s.ctrl].reverse(), knots: s.knots.map(k => k0 + k1 - k).reverse() };
@@ -224,6 +243,7 @@ export function reverseSpline(s) {
   return out;
 }
 // Segmento recto como spline del grado p (para alargar una spline en la dirección de su tangente)
+/** Segmento recto como spline de grado p. @param {Point} a @param {Point} b @param {number} p @returns {SplineGeom} */
 export function lineSpline(a, b, p) {
   return { deg: p, ctrl: Array.from({ length: p + 1 }, (_, i) => G.lerp(a, b, i / p)), knots: [...Array(p + 1).fill(0), ...Array(p + 1).fill(1)] };
 }

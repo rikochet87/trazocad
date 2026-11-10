@@ -1,17 +1,28 @@
 // Patrones de sombreado en formato acad.pat: [ángulo, origen x, origen y, desplazamiento, separación, ...trazos]
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** Familia de líneas de un patrón: ángulo (grados), origen, desfase (x, y) y trazos. @typedef {number[]} FamDef */
+/** Patrón: descripción y familias. @typedef {{desc?: string, fam: FamDef[]}} PatDef */
+// @ts-check
 // Además de los predefinidos, el dibujo guarda sus patrones personalizados (doc.patterns, leídos de archivos .pat)
 // y admite el patrón «definido por el usuario» (pattern 'USER', e.user = {sp, dbl}): líneas paralelas, opcionalmente cruzadas.
 import * as G from './geom.js';
 
 // Documento cuyos patrones personalizados se consultan (lo fija app.js)
+/** @type {{doc: import('./types').Document | null}} */
 export const PAT_ENV = { doc: null };
 export const USER_DEFAULT = { sp: 3.175, dbl: false };
 // Definición de un patrón por su nombre: personalizado del dibujo o predefinido (null si no existe)
+/** Patrón personalizado del dibujo o predefinido (null si no existe). @param {string} name @returns {PatDef | null} */
 export const patternDef = name => PAT_ENV.doc?.patterns?.[name] || PATTERNS[name] || null;
+/** @param {string} name @returns {boolean} */
 export const isCustomPattern = name => !!PAT_ENV.doc?.patterns?.[name] && !PATTERNS[name];
 // Familias base del patrón definido por el usuario
+/** Familias del patrón USER. @param {{sp?: number, dbl?: boolean}} [u] @returns {FamDef[]} */
 export const userFams = u => { const { sp, dbl } = { ...USER_DEFAULT, ...u }; return dbl ? [[0, 0, 0, 0, sp], [90, 0, 0, 0, sp]] : [[0, 0, 0, 0, sp]]; };
 
+/** Patrones predefinidos. @type {Record<string, PatDef>} */
 export const PATTERNS = {
   SOLID: { desc: 'Relleno sólido', fam: [] },
   ANSI31: { desc: 'ANSI31 · hierro, ladrillo, piedra', fam: [[45, 0, 0, 0, 3.175]] },
@@ -30,15 +41,20 @@ export const PATTERNS = {
 
 // ---------- Degradados (pattern 'GRADIENT', datos en e.grad = {type, c1, c2, centered, stops}; ángulo en e.angle) ----------
 // stops: paradas [[posición 0..1, color], …] de un degradado de varios colores; si falta, se usan c1 → c2
+/** @type {Record<string, string>} */
 export const GRADIENTS = { LINEAR: 'Lineal', CYLINDER: 'Cilíndrico', INVCYLINDER: 'Cilíndrico invertido', SPHERICAL: 'Esférico', INVSPHERICAL: 'Esférico invertido', HEMISPHERICAL: 'Semiesférico', INVHEMISPHERICAL: 'Semiesférico invertido' };
+/** @type {import('./types').Gradient} */
 export const GRAD_DEFAULT = { type: 'LINEAR', c1: '#1e90d6', c2: '#ffffff', centered: true };
 // Paradas de color ordenadas (al menos dos)
+/** Paradas ordenadas (al menos dos). @param {import('./types').Gradient} g @returns {[number, string][]} */
 export function gradStops(g) {
-  const s = Array.isArray(g.stops) ? g.stops.filter(x => Array.isArray(x) && Number.isFinite(+x[0]) && typeof x[1] === 'string').map(([t, c]) => [Math.max(0, Math.min(1, +t)), c]) : [];
+  const s = Array.isArray(g.stops) ? g.stops.filter(x => Array.isArray(x) && Number.isFinite(+x[0]) && typeof x[1] === 'string').map(([t, c]) => /** @type {[number, string]} */ ([Math.max(0, Math.min(1, +t)), c])) : [];
   return s.length >= 2 ? s.sort((a, b) => a[0] - b[0]) : [[0, g.c1], [1, g.c2]];
 }
 // Texto editable de las paradas: "0 #ff0000, 0.5 #ffff00, 1 #0000ff" (las posiciones también admiten %)
+/** @param {import('./types').Gradient} g @returns {string} */
 export const stopsText = g => gradStops(g).map(([t, c]) => `${+(t * 100).toFixed(2)}% ${c}`).join(', ');
+/** "0 #ff0000, 50% #ffff00, …" → paradas (null si no es válido). @param {string} s @returns {[number, string][] | null} */
 export function parseStops(s) {
   const out = [];
   for (const part of String(s).split(/[,;]/)) {
@@ -57,11 +73,11 @@ export function gradientSpec(e, bb) {
   const lo = Math.min(...pu), hi = Math.max(...pu), half = Math.max(1e-9, Math.hypot(hi - lo, Math.max(...pn) - Math.min(...pn)) / 2);
   // S: paradas del primer color al último; los tipos invertidos las recorren al revés
   const inv = g.type.startsWith('INV'), t = g.type.replace(/^INV/, ''), base = gradStops(g);
-  const S = inv ? base.map(([k, c]) => [1 - k, c]).reverse() : base, rev = S.map(([k, c]) => [1 - k, c]).reverse();
+  const S = inv ? base.map(([k, c]) => /** @type {[number, string]} */ ([1 - k, c])).reverse() : base, rev = S.map(([k, c]) => /** @type {[number, string]} */ ([1 - k, c])).reverse();
   if (t === 'LINEAR') return { kind: 'linear', p0: G.add(C, G.mul(u, lo)), p1: G.add(C, G.mul(u, hi)), stops: base };
   if (t === 'CYLINDER') { // del primer color en los bordes al último en el centro (desplazado si no está centrado)
     const m = 0.5 - shift / 2;
-    return { kind: 'linear', p0: G.add(C, G.mul(u, lo)), p1: G.add(C, G.mul(u, hi)), stops: [...S.map(([k, c]) => [k * m, c]), ...rev.slice(1).map(([k, c]) => [m + k * (1 - m), c])] };
+    return { kind: 'linear', p0: G.add(C, G.mul(u, lo)), p1: G.add(C, G.mul(u, hi)), stops: [...S.map(([k, c]) => /** @type {[number, string]} */ ([k * m, c])), ...rev.slice(1).map(([k, c]) => /** @type {[number, string]} */ ([m + k * (1 - m), c]))] };
   }
   if (t === 'HEMISPHERICAL') { const c0 = G.add(C, G.mul(n, Math.min(...pn))); return { kind: 'radial', c: c0, r: half * 2, stops: rev }; }
   // Esférico: luz en el centro (desplazada hacia arriba a la izquierda si no está centrado)
@@ -70,6 +86,7 @@ export function gradientSpec(e, bb) {
 }
 
 // Familias de líneas del patrón de un sombreado, ya giradas y escaladas
+/** Familias del sombreado giradas y escaladas. @param {import('./types').Hatch} e */
 export function famsOf(e) {
   const fam = e.pattern === 'USER' ? userFams(e.user) : (patternDef(e.pattern) || PATTERNS.ANSI31).fam;
   const A = G.rad(e.angle || 0), S = e.scale || 1;
@@ -100,6 +117,7 @@ export function famLines(f, bb, maxLines = 4000) {
 }
 
 // Segmentos reales (recortados con par-impar y troceados por trazos) de un sombreado de patrón
+/** Segmentos del patrón recortados al sombreado. @param {import('./types').Hatch} e @param {BBox} bb @param {number} [maxLines] */
 export function hatchSegments(e, bb, maxLines = 20000) {
   if (e.pattern === 'SOLID') return [];
   const edges = [];
@@ -142,6 +160,7 @@ const RESERVED = new Set(['SOLID', 'GRADIENT', 'USER', '_USER']);
 // por familia «ángulo, x origen, y origen, desplazamiento, separación[, trazos…]». k: factor de unidades (25,4 si el archivo
 // está en pulgadas, como acad.pat). Los nombres de los patrones predefinidos se omiten.
 // Devuelve {pats: {NOMBRE: {desc, fam}}, skipped: [nombres omitidos], errors: [texto]}
+/** Archivo .pat → patrones. @param {string} text @param {number} [k] factor de unidades @returns {{pats: Record<string, PatDef>, skipped: string[], errors: string[]}} */
 export function parsePat(text, k = 1) {
   const pats = {}, skipped = [], errors = [];
   let cur = null;
@@ -169,6 +188,7 @@ export function parsePat(text, k = 1) {
 }
 // Texto .pat de un patrón (para exportarlo)
 const pn = v => String(+(+v).toFixed(8));
+/** @param {string} name @param {PatDef} p @returns {string} */
 export const patText = (name, p) => [`*${name}${p.desc ? `, ${p.desc}` : ''}`, ...p.fam.map(f => f.map(pn).join(', '))].join('\n');
 // Patrón base a partir de familias ya giradas y escaladas (las de un HATCH de DXF): deshace el ángulo A (grados) y la escala S
 export function baseFams(fams, A, S) {

@@ -1,9 +1,15 @@
 // Referencias externas: otro dibujo (.tcad o .dxf) insertado como bloque vinculado a su archivo.
+/** @typedef {import('./document.js').Doc} Doc */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+// @ts-check
 // El contenido se guarda en caché dentro del dibujo (bloque con `xref: {file, loaded}`) y se actualiza con Recargar.
 // Las capas, bloques y estilos de la referencia llevan el prefijo "NOMBRE|", como en AutoCAD; al unirla pasan a "NOMBRE$0$".
 import { cloneEnt } from './entities.js';
 import { readDXF } from './dxf.js';
 
+/** @param {Doc} doc @param {string} name @returns {boolean} */
 export const isXref = (doc, name) => !!doc.blocks[name]?.xref;
 
 // ---- Archivos recordados entre sesiones (IndexedDB, clave = nombre del archivo) ----
@@ -25,26 +31,31 @@ async function xtx(mode, fn) {
     t.onerror = t.onabort = () => { db.close(); rej(t.error); };
   });
 }
+/** Recuerda en el navegador el archivo (copia o manejador) de la referencia. @param {string} file @param {Blob | FileSystemFileHandle} source @returns {Promise<boolean>} */
 export async function rememberXref(file, source) {
   if (!file || !source || typeof indexedDB === 'undefined') return false;
   try { await xtx('readwrite', st => st.put(source, file)); return true; } catch { return false; }
 }
+/** @param {string} file @returns {Promise<Blob | FileSystemFileHandle | null>} */
 export async function recallXref(file) {
   if (!file || typeof indexedDB === 'undefined') return null;
   try { return (await xtx('readonly', st => st.get(file))) || null; } catch { return null; }
 }
+/** @param {string} file @returns {Promise<void>} */
 export async function forgetXref(file) { try { await xtx('readwrite', st => st.delete(file)); } catch { /* sin almacenamiento */ } }
 // Archivo de lo recordado: copia guardada o manejador (pide permiso de lectura sólo con ask, que necesita un gesto del usuario)
+/** @param {Blob | FileSystemFileHandle | null} src @param {boolean} [ask] @returns {Promise<Blob | null>} */
 export async function recalledFile(src, ask = false) {
   if (!src) return null;
   if (typeof Blob !== 'undefined' && src instanceof Blob) return src;
+  const h = /** @type {FileSystemFileHandle} */ (src); // no es una copia: es un manejador
   try {
-    if (src.queryPermission) {
-      let p = await src.queryPermission({ mode: 'read' });
-      if (p !== 'granted' && ask && src.requestPermission) p = await src.requestPermission({ mode: 'read' });
+    if (h.queryPermission) {
+      let p = await h.queryPermission({ mode: 'read' });
+      if (p !== 'granted' && ask && h.requestPermission) p = await h.requestPermission({ mode: 'read' });
       if (p !== 'granted') return null;
     }
-    return await src.getFile();
+    return await h.getFile();
   } catch { return null; }
 }
 // Recarga las referencias del dibujo cuyos archivos se recuerdan y se pueden leer sin preguntar.
@@ -60,7 +71,9 @@ export async function restoreXrefs(doc) {
   }
   return { loaded, missing };
 }
+/** @param {Doc} doc @returns {string[]} */
 export const xrefNames = doc => Object.keys(doc.blocks).filter(n => doc.blocks[n].xref);
+/** @param {string} s @returns {string} */
 export const cleanXrefName = s => String(s).replace(/\.[^.]+$/, '').replace(/[|<>/\\":;?*=`]/g, '_').trim() || 'Referencia';
 
 // Contenido de un archivo: {ents, layers, blocks, textStyles, dimStyles, base}
@@ -76,6 +89,7 @@ export function parseSource(text, fileName) {
 
 const STRIP = ['id', 'assoc', 'seed', '_xf', '_h', 'pathId'];
 // Define (o actualiza) la referencia `name` con el contenido `src`. Devuelve el número de objetos.
+/** @param {Doc} doc @param {string} name @param {ReturnType<typeof parseSource>} src contenido del archivo @param {string} fileName */
 export function defineXref(doc, name, src, fileName) {
   const pre = n => `${name}|${n}`;
   const lay = n => (!n || n === '0' ? '0' : pre(n));
@@ -118,11 +132,13 @@ function eachEnt(doc, fn) {
   for (const arr of doc.lists()) for (const e of arr) fn(e, arr);
   for (const b of Object.values(doc.blocks)) for (const e of b.ents) fn(e, b.ents);
 }
+/** Número de referencias al bloque. @param {Doc} doc @param {string} name @returns {number} */
 export const xrefRefs = (doc, name) => { let n = 0; eachEnt(doc, e => { if (e.type === 'insert' && e.name === name) n++; }); return n; };
 
 // Desenlaza: borra las referencias, el bloque y todo lo que depende de él
+/** @param {Doc} doc @param {string} name */
 export function detachXref(doc, name) {
-  for (const arr of doc.lists()) for (let i = arr.length - 1; i >= 0; i--) if (arr[i].type === 'insert' && arr[i].name === name) { doc.byId.delete(arr[i].id); arr.splice(i, 1); }
+  for (const arr of doc.lists()) for (let i = arr.length - 1; i >= 0; i--) if (arr[i].type === 'insert' && /** @type {import('./types').Insert} */ (arr[i]).name === name) { doc.byId.delete(arr[i].id); arr.splice(i, 1); }
   for (const b of Object.values(doc.blocks)) b.ents = b.ents.filter(e => !(e.type === 'insert' && e.name === name));
   delete doc.blocks[name];
   for (const k of Object.keys(doc.blocks)) if (doc.blocks[k].xrefDep === name) delete doc.blocks[k];
@@ -135,6 +151,7 @@ export function detachXref(doc, name) {
 }
 
 // Une: la referencia pasa a ser un bloque normal; los prefijos "NOMBRE|" se convierten en "NOMBRE$0$"
+/** @param {Doc} doc @param {string} name */
 export function bindXref(doc, name) {
   const ren = n => (usesPrefix(n, name) ? `${name}$0$${n.slice(name.length + 1)}` : n);
   eachEnt(doc, e => {
@@ -145,7 +162,7 @@ export function bindXref(doc, name) {
     if (e.type === 'array') for (const x of e.src) { x.layer = ren(x.layer); if (x.type === 'insert') x.name = ren(x.name); }
   });
   for (const l of doc.layers) if (usesPrefix(l.name, name)) { l.name = ren(l.name); delete l.xref; }
-  for (const s of [...doc.textStyles, ...doc.dimStyles, ...doc.mlineStyles]) { s.name = ren(s.name); if (s.textStyle) s.textStyle = ren(s.textStyle); }
+  for (const s of /** @type {{name: string, textStyle?: string}[]} */ ([...doc.textStyles, ...doc.dimStyles, ...doc.mlineStyles])) { s.name = ren(s.name); if (s.textStyle) s.textStyle = ren(s.textStyle); }
   for (const k of Object.keys(doc.blocks)) {
     const b = doc.blocks[k];
     if (b.xrefDep === name) { delete doc.blocks[k]; delete b.xrefDep; b.name = ren(k); doc.blocks[b.name] = b; }

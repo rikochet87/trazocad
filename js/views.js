@@ -1,30 +1,43 @@
 // Vistas con nombre (VIEW) y ventanas en mosaico del espacio modelo (VPORTS): división, unión y configuraciones guardadas.
+/** @typedef {import('./document.js').Doc} Doc */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** @typedef {import('./types').NamedView} NamedView */
+/** @typedef {import('./app.js').App} App */
+// @ts-check
 import { setUcs } from './ucs.js';
 import { toFrame, fromFrame, vpModelPoly } from './view.js';
 import { setTwist } from './entities.js';
 
+/** @param {Doc} doc @param {string} name @returns {NamedView | undefined} */
 export const findView = (doc, name) => doc.views.find(v => v.name.toLowerCase() === String(name).trim().toLowerCase());
+/** @param {string} n @returns {boolean} */
 export const validViewName = n => /^[^<>/\\":;?*|,=`]{1,255}$/.test(n);
 
 // Vista actual (o la ventana de esquinas pts, alineada con la vista) como vista con nombre; ucs: guardar el SCP actual;
 // layers: instantánea de las capas. w y h se miden en los ejes de la vista; twist: su giro (sólo en el modelo)
+/** @param {App} app @param {string} name @param {{pts?: Point[] | null, ucs?: boolean, layers?: boolean}} [o] @returns {NamedView} */
 export function captureView(app, name, { pts = null, ucs = true, layers = false } = {}) {
   const doc = app.doc, v = app.view;
   const space = app.tab === 'model' || app.vpActive ? 'model' : doc.layouts[app.tab].name;
   const rot = space === 'model' ? v.rot || 0 : 0, q = pts || (v.vp ? vpModelPoly(v.vp) : v.poly());
   const fs = q.map(p => toFrame(rot, p.x, p.y)), us = fs.map(f => f[0]), vs = fs.map(f => f[1]);
   const [cx, cy] = fromFrame(rot, (Math.min(...us) + Math.max(...us)) / 2, (Math.min(...vs) + Math.max(...vs)) / 2);
+  /** @type {import('./types').NamedView} */
   const rec = { name, space, cx, cy, w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs), ...(rot ? { twist: rot } : {}) };
   if (ucs && space === 'model' && doc.ucs) rec.ucs = { o: { ...doc.ucs.o }, ang: doc.ucs.ang, ...(doc.ucs.name ? { name: doc.ucs.name } : {}) };
   if (layers) rec.layers = Object.fromEntries(doc.layers.map(l => [l.name, { on: l.on, lock: l.lock }]));
   return rec;
 }
+/** @param {Doc} doc @param {NamedView} rec @returns {NamedView} */
 export function saveView(doc, rec) {
   const old = findView(doc, rec.name);
   if (old) { for (const k of Object.keys(old)) delete old[k]; Object.assign(old, rec); } else doc.views.push(rec);
   doc.changed();
   return old || rec;
 }
+/** @param {Doc} doc @param {string} name @returns {boolean} */
 export function deleteView(doc, name) {
   const v = findView(doc, name);
   if (!v) return false;
@@ -34,6 +47,7 @@ export function deleteView(doc, name) {
 }
 // Restituye una vista: cambia al espacio donde se guardó (o a la ventana gráfica activa si es del modelo), ajusta la vista
 // y, si se guardaron con ella, restituye el SCP y el estado de las capas. Devuelve false si la presentación ya no existe.
+/** @param {App} app @param {NamedView} rec @returns {boolean} */
 export function restoreView(app, rec) {
   const doc = app.doc;
   if (rec.space === 'model') { if (app.tab !== 'model' && !app.vpActive) app.switchTab('model'); }
@@ -44,7 +58,7 @@ export function restoreView(app, rec) {
   }
   const v = app.view, t = rec.twist || 0;
   v.push();
-  if (rec.space === 'model') { if (v.vp) setTwist(v.vp, t); else v.setRot(t); }
+  if (rec.space === 'model') { if (v.vp) setTwist(v.vp, t); else /** @type {import('./view.js').View} */ (v).setRot(t); }
   const [u0, w0] = toFrame(t, rec.cx, rec.cy);
   v.fitPts([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, j]) => { const [x, y] = fromFrame(t, u0 + i * rec.w / 2, w0 + j * rec.h / 2); return { x, y }; }), 0);
   if (rec.ucs) setUcs(doc, rec.ucs, rec.ucs.name);
@@ -59,8 +73,10 @@ export function restoreView(app, rec) {
 // ---------- Ventanas en mosaico ----------
 // Rectángulos en fracciones de la zona de dibujo (y hacia abajo, como en la pantalla)
 const R = (x1, y1, x2, y2) => ({ x1, y1, x2, y2 });
+/** Disposiciones de las ventanas en mosaico por número de ventanas. @type {Record<number, string[]>} */
 export const TILE_DIRS = { 2: ['Horizontal', 'Vertical'], 3: ['Horizontal', 'Vertical', 'ENcima', 'DEbajo', 'Izquierda', 'deRecha'] };
 // División de r en n ventanas; dir: disposición (con 3, «deRecha» deja la ventana grande a la derecha, como en AutoCAD)
+/** @param {BBox} r @param {number} n @param {string} dir @returns {BBox[]} */
 export function splitTile(r, n, dir) {
   const { x1, y1, x2, y2 } = r, xm = (x1 + x2) / 2, ym = (y1 + y2) / 2;
   if (n === 2) return dir === 'Horizontal' ? [R(x1, y1, x2, ym), R(x1, ym, x2, y2)] : [R(x1, y1, xm, y2), R(xm, y1, x2, y2)];
@@ -79,6 +95,7 @@ export function splitTile(r, n, dir) {
   return [R(x1, y1, x2, y2)];
 }
 // Unión de dos ventanas que comparten un lado entero, o null
+/** Unión de dos ventanas contiguas del mismo lado (o null). @param {BBox} a @param {BBox} b @returns {BBox | null} */
 export function joinTiles(a, b) {
   const eq = (u, v) => Math.abs(u - v) < 1e-9;
   const box = () => R(Math.min(a.x1, b.x1), Math.min(a.y1, b.y1), Math.max(a.x2, b.x2), Math.max(a.y2, b.y2));
@@ -87,8 +104,10 @@ export function joinTiles(a, b) {
   return null;
 }
 // División de un rectángulo del papel (y hacia arriba) con las mismas disposiciones
+/** @param {BBox} rc @param {number} n @param {string} dir @returns {BBox[]} */
 export function splitPaper(rc, n, dir) {
   return splitTile(R(rc.x1, -rc.y2, rc.x2, -rc.y1), n, dir).map(t => R(t.x1, -t.y2, t.x2, -t.y1));
 }
 
+/** @param {Doc} doc @param {string} name @returns {import('./types').VportConfig | undefined} */
 export const findVportConfig = (doc, name) => doc.vportConfigs.find(v => v.name.toLowerCase() === String(name).trim().toLowerCase());

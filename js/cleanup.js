@@ -1,9 +1,14 @@
 // Limpieza y comprobación del dibujo: objetos duplicados o solapados (OVERKILL) y revisión y reparación (AUDIT).
+/** @typedef {import('./document.js').Doc} Doc */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+// @ts-check
 import * as G from './geom.js';
 import { TYPES } from './entities.js';
 import { cleanGroups } from './groups.js';
 import { consValid } from './constraints.js';
 
+/** @type {Record<string, string>} */
 export const OK_PROPS = { color: 'Color', layer: 'Capa', ltype: 'Tipo de línea', lw: 'Grosor de línea', pstyle: 'Estilo de trazado' };
 export const OK_DEFAULTS = { tol: 1e-6, ignore: [], plines: true, overlap: true, endToEnd: false };
 const SKIP = new Set(['id', '_xf', 'assoc', 'seed', 'pathId']);
@@ -35,6 +40,8 @@ function plVariants(e) {
 }
 
 // OVERKILL sobre las entidades ids. Devuelve {dup, merged, verts}. Debe llamarse dentro de una transacción.
+/** OVERKILL: suprime duplicados y combina solapes. @param {Doc} doc @param {number[]} ids
+ * @param {{tol?: number, ignore?: string[], plines?: boolean, overlap?: boolean, endToEnd?: boolean}} [opts] @returns {{dup: number, merged: number, verts: number}} */
 export function overkill(doc, ids, opts = {}) {
   const o = { ...OK_DEFAULTS, ...opts }, tol = Math.max(o.tol, 1e-12), ignore = new Set(o.ignore);
   let ents = ids.map(id => doc.get(id)).filter(e => e && TYPES[e.type] && e.type !== 'vport');
@@ -64,7 +71,7 @@ export function overkill(doc, ids, opts = {}) {
     for (const e of lines) { const k = propKey(e); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(e); }
     for (const list of groups.values()) res.merged += mergeLines(doc, list, tol, o.endToEnd);
     // Arcos y círculos del mismo centro y radio
-    const arcs = ents.filter(e => (e.type === 'arc' || e.type === 'circle') && doc.get(e.id));
+    const arcs = /** @type {(import('./types').Arc | import('./types').Circle)[]} */ (ents.filter(e => (e.type === 'arc' || e.type === 'circle') && doc.get(e.id)));
     const ag = new Map();
     for (const e of arcs) { const k = `${propKey(e)}|${Math.round(e.c.x / tol)}|${Math.round(e.c.y / tol)}|${Math.round(e.r / tol)}`; if (!ag.has(k)) ag.set(k, []); ag.get(k).push(e); }
     for (const list of ag.values()) if (list.length > 1) res.merged += mergeArcs(doc, list, tol, o.endToEnd);
@@ -164,6 +171,7 @@ const label = e => `${TYPES[e.type]?.name || e.type || 'objeto'}${e.id != null ?
 
 // Revisa el dibujo y, con fix, corrige lo que encuentra. Devuelve la lista de errores (textos) y cuántos se corrigieron.
 // Debe llamarse dentro de una transacción si fix es verdadero.
+/** AUDIT: comprueba (y con fix, corrige) la estructura del dibujo. @param {Doc} doc @param {boolean} fix */
 export function audit(doc, fix) {
   const errs = [];
   let fixed = 0;

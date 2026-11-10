@@ -1,4 +1,5 @@
 // Núcleo de la aplicación: estado, entrada (ratón, táctil, teclado), motor de comandos y peticiones de datos.
+// @ts-check
 import * as G from './geom.js';
 import { Doc } from './document.js';
 import { View, VpView, toFrame, fromFrame } from './view.js';
@@ -26,7 +27,16 @@ const PREFS_KEY = 'trazocad.prefs';
 const strip = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
 const TOGGLE_NAMES = { grid: 'Rejilla', snap: 'Forzcursor', ortho: 'Orto', polar: 'Polar', osnap: 'Refent', otrack: 'Rastreo', dyn: 'Entrada dinámica', lwt: 'Grosor de línea', groups: 'Selección de grupos' };
 
-class App {
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').NewEntity} NewEntity */
+export class App {
+  // Campos que ponen otros módulos
+  /** @type {Record<string, FileSystemFileHandle> | undefined} archivos de las XREF elegidas en esta sesión (commands.js) */ xrefHandles;
+  /** @type {string | undefined} último guion grabado (ACTSTOP) */ lastRecording;
+  /** @type {number | undefined} guiones en ejecución (scripting.js) */ scriptDepth;
+  /** @type {boolean | undefined} Esc pide parar el guion (scripting.js) */ scriptStop;
+  /** @type {boolean | undefined} designar sin ampliar a los grupos (GROUPEDIT › Quitar) */ noGroupPick;
   constructor() {
     this.doc = new Doc();
     this.doc.verifyUndo = !!window.TC_VERIFY_UNDO; // comprobación del deshacer en las pruebas (tools/run.mjs)
@@ -34,12 +44,17 @@ class App {
     PAT_ENV.doc = this.doc;
     ANNO.doc = this.doc;
     ANNO.ctx = () => this.annoContext();
+    /** @type {View | VpView} vista activa: la del modelo, la del papel o la de la ventana gráfica activa */
     this.view = this.modelView = new View();
     this.vw = 800; this.vh = 600; // tamaño de la zona de dibujo
+    /** Ventanas en mosaico del modelo; vh: altura visible guardada, mientras se restituyen. @type {{r: import('./types').BBox, view: View, ucs?: import('./types').Ucs | null, vh?: number}[]} */
     this.tiles = [{ r: FULL, view: this.modelView }]; // ventanas en mosaico del espacio modelo (VPORTS); r en fracciones
     this.layoutViews = new WeakMap();
     this.spatial = new SpatialIndex();
-    this.tab = 'model'; this.vpActive = null;
+    /** @type {'model' | number} pestaña: modelo o índice de la presentación */
+    this.tab = 'model';
+    /** @type {number | null} ventana gráfica activa (MSPACE) */
+    this.vpActive = null;
     this.T = { grid: true, snap: false, ortho: false, polar: true, osnap: true, otrack: true, dyn: true, lwt: false, groups: true };
     this.osnapModes = { end: true, mid: true, cen: true, qua: true, int: true, per: true, nea: false, nod: true, ins: true };
     this.loadPrefs();
@@ -52,9 +67,9 @@ class App {
     this.ptrs = new Map(); this.panning = null; this.pinch = null; this.tap = null; this.touchMode = false; this.lastMid = 0;
     this.cmdHist = []; this.histIdx = -1; this.sugList = []; this.sugIdx = 0;
 
-    this.base = document.getElementById('cv-base');
-    this.over = document.getElementById('cv-over');
-    this.input = document.getElementById('cmd-input');
+    this.base = /** @type {HTMLCanvasElement} */ (document.getElementById('cv-base'));
+    this.over = /** @type {HTMLCanvasElement} */ (document.getElementById('cv-over'));
+    this.input = /** @type {HTMLInputElement} */ (document.getElementById('cmd-input'));
     this.renderer = new Renderer(this, this.base, this.over);
     this.snapper = new Snapper(this);
     this.ui = new UI(this);
@@ -134,7 +149,7 @@ class App {
   // Escala de anotación del contexto actual: la de la ventana gráfica activa, 1:1 en el papel o, en el modelo, CANNOSCALE (null)
   annoContext() {
     if (this.doc.bedit) return null;
-    if (this.vpActive) { const vp = this.doc.get(this.vpActive); if (vp) return vpScale(this.doc, vp); }
+    if (this.vpActive) { const vp = /** @type {import('./types').Viewport} */ (this.doc.get(this.vpActive)); if (vp) return vpScale(this.doc, vp); }
     return this.tab !== 'model' ? PAPER_SCALE : null;
   }
   // Los objetos nuevos con un estilo anotativo (de texto, cota o directriz) son anotativos con la escala actual
@@ -223,7 +238,7 @@ class App {
   }
   leaveVpUcs(restore = true) {
     const doc = this.doc, vp = this.vpActive && doc.get(this.vpActive);
-    if (vp && doc.settings.ucsvp !== 0) { if (doc.ucs) vp.ucs = { ...doc.ucs, o: { ...doc.ucs.o } }; else delete vp.ucs; }
+    if (vp && doc.settings.ucsvp !== 0) { const v = /** @type {import('./types').Viewport} */ (vp); if (doc.ucs) v.ucs = { ...doc.ucs, o: { ...doc.ucs.o } }; else delete v.ucs; }
     if (restore && doc.settings.ucsvp !== 0 && this.modelUcs !== undefined) doc.ucs = this.modelUcs;
   }
 
@@ -247,7 +262,7 @@ class App {
     } else if (!doc.bedit && this.beditView) {
       this.beditView = null;
       this.view = this.tab === 'model' ? this.modelView : this.paperView;
-      if (doc.space !== 'model' && doc.layouts[doc.space]) { this.tab = doc.space; this.view = this.paperView; }
+      if (doc.space !== 'model' && doc.layouts[doc.space]) { this.tab = /** @type {number} */ (doc.space); this.view = this.paperView; }
     } else return;
     this.sel.clear(); this.acquired = []; this.hover = null;
     this.renderer.invalidate(); this.ui.refresh(); this.ui.updateStatus();
@@ -307,7 +322,7 @@ class App {
     const base = { layer: '0', color: 'BYBLOCK', ltype: 'BYBLOCK', lw: 'BYBLOCK' };
     const label = (x, y, text) => ({ ...base, type: 'text', p: P(x, y), h: small, rot: 0, text, style: 'Standard' });
     const att = (x, y, h, tag, prompt, def) => ({ ...base, type: 'attdef', p: P(x, y), h, rot: 0, align: 'l', tag, prompt, def, style: 'Standard' });
-    doc.defineBlock(name, P(0, 0), [
+    doc.defineBlock(name, P(0, 0), /** @type {Entity[]} */ (/** @type {unknown} */ ([ // las entidades de los bloques no tienen identificador
       { ...base, type: 'pline', pts: [P(0, 0), P(tw, 0), P(tw, th), P(0, th)], closed: true, lw: 0.35 },
       { ...base, type: 'line', p1: P(0, th / 2), p2: P(tw, th / 2) },
       { ...base, type: 'line', p1: P(tw * 0.62, 0), p2: P(tw * 0.62, th / 2) },
@@ -318,7 +333,7 @@ class App {
       att(2, 3, 3, 'PRESENTACION', 'Nombre de la presentación', ''),
       att(tw * 0.62 + 2, 3, 3, 'ESCALA', 'Escala', '1:1'),
       att(tw * 0.81 + 2, 3, 2.6, 'FECHA', 'Fecha', ''),
-    ]);
+    ])));
     return name;
   }
   // Nueva presentación con marco, cajetín (bloque con atributos) y una ventana gráfica ajustada al modelo
@@ -352,7 +367,7 @@ class App {
     this.ui.updateStatus(); this.updateMouse(); this.renderer.invalidate();
   }
   cycleIsoPlane() {
-    const S = this.doc.settings, order = ['left', 'top', 'right'];
+    const S = this.doc.settings, order = /** @type {import('./types').Settings['isoPlane'][]} */ (['left', 'top', 'right']);
     S.isoPlane = order[(order.indexOf(S.isoPlane) + 1) % 3];
     this.print(`<Plano isométrico ${{ top: 'superior', left: 'izquierdo', right: 'derecho' }[S.isoPlane]}>`);
     this.ui.updateStatus(); this.updateMouse(); this.renderer.invalidate();
@@ -363,7 +378,7 @@ class App {
     this.doc.activeVp = this.vpActive;
     if (this.tab !== 'model' && !this.doc.layouts[this.tab]) this.switchTab('model');
     else if (this.vpActive && !this.doc.get(this.vpActive)) this.pspace();
-    else if (this.vpActive) this.view = new VpView(this.paperView, this.doc.get(this.vpActive));
+    else if (this.vpActive) this.view = new VpView(this.paperView, /** @type {import('./types').Viewport} */ (this.doc.get(this.vpActive)));
     else if (this.tab !== 'model') this.view = this.paperView;
     this.ui.updateStatus();
   }
@@ -396,6 +411,7 @@ class App {
     this.view.push();
     if (lay && !this.vpActive) { this.view.fit({ x1: -5, y1: -5, x2: lay.w + 5, y2: lay.h + 5 }, 0.03); this.renderer.invalidate(); return; }
     const b = this.doc.extents(this.doc.ents.filter(e => this.doc.visible(e)));
+    // @ts-expect-error con una ventana gráfica activa la vista es VpView, cuyos cx, cy y scale son de sólo lectura (docs/NOTAS_TIPOS.md)
     if (b) this.view.fit(b); else { this.view.cx = 210; this.view.cy = 148.5; this.view.scale = Math.min(this.view.w / 460, this.view.h / 330); }
     this.renderer.invalidate();
   }
@@ -424,7 +440,7 @@ class App {
     document.addEventListener('keydown', e => this.onKey(e));
     this.input.addEventListener('input', () => this.onInput());
     this.input.addEventListener('blur', () => setTimeout(() => { this.sugList = []; this.ui.showSuggest([]); }, 120));
-    document.addEventListener('pointerdown', e => { if (!e.target.closest('#ctxmenu')) this.ui.hideMenu(); }, true);
+    document.addEventListener('pointerdown', e => { if (!(/** @type {Element} */ (e.target)).closest('#ctxmenu')) this.ui.hideMenu(); }, true);
 
     const vp = document.getElementById('viewport');
     vp.addEventListener('dragover', e => { e.preventDefault(); vp.classList.add('drop'); });
@@ -441,7 +457,8 @@ class App {
       e.preventDefault();
       const b = document.getElementById('btn-install');
       b.hidden = false;
-      b.onclick = async () => { b.hidden = true; e.prompt(); await e.userChoice; };
+      const ip = /** @type {Event & {prompt(): void, userChoice: Promise<unknown>}} */ (e); // beforeinstallprompt
+      b.onclick = async () => { b.hidden = true; ip.prompt(); await ip.userChoice; };
     });
     if ('launchQueue' in window) {
       window.launchQueue.setConsumer(async p => {

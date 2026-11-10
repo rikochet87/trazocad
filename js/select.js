@@ -1,18 +1,26 @@
 // Selección por propiedades: condiciones de QSELECT y filtros de selección con nombre (FILTER).
+// @ts-check
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').SelCond} Cond */
+/** @typedef {import('./types').SelFilter} SelFilter */
 // Una condición es {type, prop, op, value}: type '*' (cualquier tipo) o un tipo de objeto; prop, una propiedad general
 // (Color, Capa…) o una de la paleta Propiedades de ese tipo; op, un operador de OPS.
 import * as G from './geom.js';
 import { TYPES, propsOf, COLORS, aciToHex } from './entities.js';
 
+/** @type {Record<string, string>} */
 export const OPS = { '=': 'Igual a', '<>': 'Distinto de', '>': 'Mayor que', '<': 'Menor que', '>=': 'Mayor o igual que', '<=': 'Menor o igual que', '*': 'Comodín (* ?)', 'all': 'Seleccionar todo' };
+/** Propiedades generales. @type {Record<string, (e: Entity) => unknown>} */
 const GENERAL = {
   Color: e => e.color, Capa: e => e.layer, 'Tipo de línea': e => e.ltype, 'Grosor de línea': e => e.lw, 'Estilo de trazado': e => e.pstyle || 'BYLAYER',
   Tipo: e => TYPES[e.type]?.name || e.type,
 };
 export const GENERAL_PROPS = Object.keys(GENERAL);
 
+/** Propiedad consultable (no sección, acción ni tabla). @param {import('./types').PropItem} pr */
 const usable = pr => !pr.sec && pr.type !== 'action' && pr.type !== 'table' && pr.get;
 // Propiedades que se pueden consultar en los objetos de un tipo ('*': sólo las generales)
+/** @param {Entity[]} ents @param {string} [type] @returns {string[]} */
 export function propNames(ents, type = '*') {
   const out = [...GENERAL_PROPS];
   if (type === '*') return out;
@@ -24,15 +32,17 @@ export function propNames(ents, type = '*') {
   return out;
 }
 // Valor de una propiedad (los ángulos, en grados) o undefined si el objeto no la tiene
+/** @param {Entity} e @param {string} prop @returns {unknown} */
 export function propValue(e, prop) {
   if (GENERAL[prop]) return GENERAL[prop](e);
   const pr = TYPES[e.type] && propsOf(e).find(q => usable(q) && q.label === prop);
   if (!pr) return undefined;
   const v = pr.get(e);
-  return pr.type === 'ang' ? G.deg(G.normAng(v)) : v;
+  return pr.type === 'ang' ? G.deg(G.normAng(/** @type {number} */ (v))) : v;
 }
 
 // Colores escritos por el usuario: «PorCapa», «PorBloque», nombres (rojo…), números ACI o #rrggbb
+/** @param {unknown} v @returns {string} */
 function colorKey(v) {
   const s = String(v).trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   if (/^(porcapa|bylayer)$/.test(s)) return 'BYLAYER';
@@ -41,11 +51,15 @@ function colorKey(v) {
   const named = COLORS.find(([, n]) => n.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '') === s);
   return named ? named[0] : s;
 }
+/** @param {unknown} v @returns {string} */
 const lwKey = v => { const s = String(v).trim().toLowerCase(); return /^(porcapa|bylayer)$/.test(s) ? 'BYLAYER' : /^(por defecto|defecto|default)$/.test(s) ? 'DEFAULT' : s; };
+/** @param {unknown} pat @returns {RegExp} */
 const wildRe = pat => new RegExp('^' + String(pat).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'is');
+/** @param {unknown} v @returns {number | null} */
 const numOf = v => (typeof v === 'number' ? v : typeof v === 'string' && /^\s*[-+]?(\d+[.,]?\d*|[.,]\d+)(e[-+]?\d+)?\s*$/i.test(v) ? parseFloat(v.replace(',', '.')) : null);
 
 // ¿Cumple el objeto la condición?
+/** @param {Entity} e @param {Cond} k @returns {boolean} */
 export function testCond(e, k) {
   if (k.type && k.type !== '*' && e.type !== k.type) return false;
   if (k.op === 'all') return true;
@@ -74,22 +88,28 @@ export function testCond(e, k) {
 }
 
 // Objetos en que se busca: los designables del espacio actual o los de la lista ids
+/** @param {import('./document.js').Doc} doc @param {number[] | null} [ids] @returns {Entity[]} */
 export function candidates(doc, ids) {
   const list = ids ? ids.map(id => doc.get(id)).filter(Boolean) : doc.ents;
   return list.filter(e => doc.visible(e) && !doc.locked(e));
 }
 // QSELECT. q: {type, prop, op, value, exclude} → identificadores
+/** @param {Entity[]} ents @param {Cond} q @returns {number[]} */
 export function qselect(ents, q) {
   return ents.filter(e => testCond(e, q) !== !!q.exclude).map(e => e.id);
 }
 
 // ---------- Filtros de selección con nombre ----------
 // {name, join: 'and'|'or', conds: [{type, prop, op, value, not}]}
+/** @param {import('./document.js').Doc} doc @param {string} name @returns {SelFilter | undefined} */
 export const findFilter = (doc, name) => doc.selFilters.find(f => f.name.toLowerCase() === String(name).trim().toLowerCase());
+/** @param {Entity} e @param {SelFilter} f @returns {boolean} */
 export function testFilter(e, f) {
   if (!f.conds.length) return true;
   const t = k => testCond(e, k) !== !!k.not;
   return f.join === 'or' ? f.conds.some(t) : f.conds.every(t);
 }
+/** @param {Entity[]} ents @param {SelFilter} f @returns {number[]} */
 export const applyFilter = (ents, f) => ents.filter(e => testFilter(e, f)).map(e => e.id);
+/** @param {Cond} k @returns {string} */
 export const condText = k => `${k.not ? 'NO ' : ''}${k.type && k.type !== '*' ? `${TYPES[k.type]?.name || k.type}: ` : ''}${k.op === 'all' ? 'todos' : `${k.prop} ${k.op === '*' ? '≈' : k.op} ${k.value}`}`;

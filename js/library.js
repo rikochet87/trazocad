@@ -1,4 +1,11 @@
 // Biblioteca de bloques para obras viales, generada por código (sin archivos externos): señalización vertical
+/** @typedef {import('./document.js').Doc} Doc */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** Bloque de la biblioteca: real (en metros, se escala con LIBUNITS) o anotativo (tamaño en el papel).
+ * make crea las entidades del bloque (sin identificador).
+ * @typedef {{name: string, cat: string, label: string, desc: string, real?: boolean, anno?: boolean, make: () => {base?: Point, ents: object[], dyn?: import('./types').DynDef}}} LibItem */
+// @ts-check
 // (reglamentaria, preventiva e informativa, con atributos y estados de visibilidad), planos tipo de alcantarillas
 // (caño y cajón con tabla de medidas), defensas metálicas, cordones y cunetas.
 // Las señales son bloques anotativos definidos en milímetros del papel (se ven del mismo tamaño en cualquier escala);
@@ -193,6 +200,7 @@ function triDitch() {
 
 // ---------- Catálogo ----------
 // cat: categoría; anno: anotativo (en mm del papel); real: a escala real en metros
+/** @type {LibItem[]} */
 export const LIBRARY = [
   { name: 'TC_SEÑAL_REGLAMENTARIA', cat: 'Señalización', label: 'Reglamentaria (con estados)', desc: 'Señal circular con aro rojo: velocidad máxima, prohibido adelantar, estacionar, girar, el paso o peso máximo', anno: true, make: regulatory },
   { name: 'TC_SEÑAL_PARE', cat: 'Señalización', label: 'Pare (Stop)', desc: 'Octógono rojo con leyenda editable', anno: true, make: stop },
@@ -213,17 +221,22 @@ export const LIBRARY = [
   { name: 'TC_CUNETA_TRIANGULAR', cat: 'Drenaje', label: 'Cuneta triangular (sección)', desc: 'Cuneta en V con taludes 1:3 y 1:1,5', real: true, make: triDitch },
 ];
 export const LIB_CATS = [...new Set(LIBRARY.map(l => l.cat))];
+/** @param {string} name @returns {LibItem | null} */
 export const libItem = name => LIBRARY.find(l => l.name === name) || null;
 // Factor de las unidades del dibujo para los bloques a escala real (definidos en metros)
+/** Factor de los bloques reales según las unidades del dibujo. @type {Record<string, number>} */
 export const LIB_UNITS = { m: 1, cm: 100, mm: 1000 };
+/** @param {Doc} doc @param {LibItem | null} it @returns {number} */
 export const libScale = (doc, it) => (it?.real ? LIB_UNITS[doc.settings.libUnits || 'm'] || 1 : 1);
 
 // Definición del bloque de la biblioteca (entidades, punto base y parámetros dinámicos)
+/** @param {LibItem} it @returns {{base: Point, ents: Entity[], extra: Partial<import('./types').Block>}} */
 export function libBlock(it) {
   const b = it.make();
-  return { base: b.base || P(0, 0), ents: b.ents.map(e => ({ ...e })), extra: { ...(b.dyn ? { dyn: b.dyn } : {}), ...(it.anno ? { annotative: true } : {}), lib: true, desc: it.desc } };
+  return { base: b.base || P(0, 0), ents: /** @type {Entity[]} */ (b.ents.map(e => ({ ...e }))), extra: { ...(b.dyn ? { dyn: b.dyn } : {}), ...(it.anno ? { annotative: true } : {}), lib: true, desc: it.desc } };
 }
 // Define en el dibujo el bloque de la biblioteca si no existe (devuelve true si lo ha creado)
+/** @param {Doc} doc @param {string} name @returns {boolean} lo ha creado */
 export function ensureLibBlock(doc, name) {
   if (doc.blocks[name]) return false;
   const it = libItem(name);
@@ -234,6 +247,7 @@ export function ensureLibBlock(doc, name) {
 }
 // Entidades para la vista previa: con estados de visibilidad, las del estado vis (o del primero); los atributos, con su
 // valor por defecto (los invisibles no se ven)
+/** @param {LibItem} it @param {string} [vis] estado de visibilidad @returns {Entity[]} */
 export function libPreview(it, vis) {
   const b = libBlock(it), d = b.extra.dyn, st = d?.vis?.states?.includes(vis) ? vis : d?.vis?.states?.[0];
   const hide = new Set(st ? d.vis.hide?.[st] || [] : []);

@@ -1,4 +1,14 @@
 // Ayudas de precisión: referencia a objetos (REFENT), rastreo, polar, orto y forzado a rejilla.
+// @ts-check
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').SnapKind} SnapKind */
+/** @typedef {import('./types').PointRef} PointRef */
+/** Lo que el Snapper usa de la aplicación (app.js).
+ * @typedef {{doc: import('./document.js').Doc, view: import('./types').View, osnapModes: Record<string, boolean>, T: Record<string, boolean>,
+ *   tab: string | number, acquired: Point[], idx(): {query(r: import('./types').BBox): import('./types').Entity[]}, considerAcquire(p: Point | null): void}} SnapHost */
+/** Posición del ratón: en pantalla (sx, sy, píxeles) y en el dibujo (w). @typedef {{sx: number, sy: number, w: Point}} Mouse */
+/** @typedef {{pt: Point, mode: SnapKind, ref: PointRef | null}} Snap */
+/** Líneas de rastreo desde puntos adquiridos. @typedef {{pt: Point, lines: {from: Point, vertical: boolean}[]}} Track */
 import * as G from './geom.js';
 import { snapsOf, primsOf } from './entities.js';
 import { ISO_AXES } from './render.js';
@@ -6,6 +16,7 @@ import { NO_ASSOC } from './assoc.js';
 import { ucsOf, toUcs, fromUcs } from './ucs.js';
 import { toFrame, fromFrame } from './view.js';
 
+/** @type {Record<SnapKind, string>} */
 export const OSNAP_MODES = {
   end: 'Punto final', mid: 'Punto medio', cen: 'Centro', qua: 'Cuadrante', int: 'Intersección',
   per: 'Perpendicular', nea: 'Cercano', nod: 'Punto', ins: 'Inserción',
@@ -15,14 +26,18 @@ const TRACK_TOL = 7;   // px
 const POLAR_TOL = 9;   // px
 
 export class Snapper {
+  /** @param {SnapHost} app */
   constructor(app) { this.app = app; }
 
+  /** Referencia a objetos más próxima a w (base: punto anterior, para Perpendicular). @param {Point} w @param {Point | null} [base] @returns {Snap | null} */
   osnap(w, base) {
     const app = this.app, doc = app.doc, modes = app.osnapModes, tol = APERTURE / app.view.scale;
     const near = app.idx().query({ x1: w.x - tol, y1: w.y - tol, x2: w.x + tol, y2: w.y + tol }).filter(e => doc.visible(e));
     if (!near.length) return null;
+    /** @type {{pt: Point, mode: SnapKind, score?: number, ref?: PointRef | null} | null} */
     let best = null;
     // ref: entidad y punto de referencia (para las cotas asociativas)
+    /** @param {Point} pt @param {SnapKind} mode @param {number} [bias] @param {PointRef | null} [ref] */
     const consider = (pt, mode, bias = 0, ref = null) => {
       const d = G.dist(pt, w);
       if (d > tol) return;
@@ -31,7 +46,7 @@ export class Snapper {
     };
     for (const e of near) {
       const s = snapsOf(e), assoc = !NO_ASSOC.has(e.type);
-      for (const k in s) if (modes[k]) s[k].forEach((p, i) => consider(p, k, k === 'mid' || k === 'qua' ? 0.05 : 0, assoc ? { id: e.id, snap: k, i } : null));
+      for (const k in s) if (modes[k]) s[k].forEach((p, i) => consider(p, /** @type {SnapKind} */ (k), k === 'mid' || k === 'qua' ? 0.05 : 0, assoc ? /** @type {PointRef} */ ({ id: e.id, snap: k, i }) : null));
     }
     if (modes.int || modes.per || modes.nea) {
       const prs = [], own = [];
@@ -39,7 +54,7 @@ export class Snapper {
       if (modes.int && prs.length < 400) {
         for (let i = 0; i < prs.length; i++)
           for (let j = i + 1; j < prs.length; j++) {
-            const ref = own[i] != null && own[j] != null ? { ids: [own[i], own[j]], snap: 'int' } : null;
+            const ref = own[i] != null && own[j] != null ? /** @type {PointRef} */ ({ ids: [own[i], own[j]], snap: 'int' }) : null;
             for (const p of G.primInt(prs[i], prs[j])) consider(p, 'int', 0.02, ref);
           }
       }
@@ -65,6 +80,7 @@ export class Snapper {
     return best ? { pt: best.pt, mode: best.mode, ref: best.ref || null } : null;
   }
 
+  /** @param {Mouse} m @returns {Track | null} */
   track(m) {
     const app = this.app, v = app.view;
     let vx = null, hy = null, bvx = TRACK_TOL, bhy = TRACK_TOL;
@@ -89,6 +105,8 @@ export class Snapper {
   }
 
   // Devuelve {pt, snap, track, polar}
+  /** Punto definitivo con referencias, rastreo, forzcursor, orto y polar. @param {Mouse} m @param {Point | null} [base] @param {boolean} [noSnap]
+   * @returns {{pt: Point, snap: Snap | null, track: Track | null, polar: {base: Point, ang: number, d: number} | null}} */
   resolve(m, base, noSnap) {
     const app = this.app, T = app.T, S = app.doc.settings;
     let pt = m.w, snap = null, track = null, polar = null;

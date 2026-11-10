@@ -1,4 +1,22 @@
 // Tipos de entidad: geometría, referencias, pinzamientos, transformaciones y propiedades.
+// @ts-check
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** @typedef {import('./types').Prim} Prim */
+/** @typedef {import('./types').SegPrim} SegPrim */
+/** @typedef {import('./types').Piece} Piece */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Pline} Pline */
+/** @typedef {import('./types').Ellipse} Ellipse */
+/** @typedef {import('./types').Text} Text */
+/** @typedef {import('./types').TextStyle} TextStyle */
+/** @typedef {import('./types').RenderCtx} RenderCtx */
+/** @typedef {import('./types').TypeRegistry} TypeRegistry */
+/** @typedef {import('./types').Document} Document */
+/** @typedef {import('./types').Layout} Layout */
+/** @typedef {import('./types').Hatch} Hatch */
+/** @typedef {import('./types').Insert} Insert */
+/** @template {Entity} E @typedef {import('./types').PropItem<E>} PropItem */
 import * as G from './geom.js';
 import { PATTERNS, famsOf, famLines, gradientSpec, GRADIENTS, GRAD_DEFAULT, USER_DEFAULT, stopsText, parseStops } from './patterns.js';
 import { splinePts, rebuild as rebuildSpline } from './spline.js';
@@ -8,6 +26,7 @@ import { annoEff, isAnno, ANNO_TYPES, setAnnotative, scaleEnt, factorOfName, cur
 import { clipActive, clipKeeps, clipPrims } from './xclip.js';
 const { P, Mx, TAU } = G;
 
+/** @type {import('./types').Env} */
 export const ENV = { doc: null, layout: null };
 const D = () => ENV.doc;
 
@@ -17,13 +36,16 @@ export const FONTS = ['Arial', 'Arial Narrow', 'Helvetica', 'Verdana', 'Tahoma',
 // Contexto para medir textos (en un Web Worker, como el que lee los DXF, no hay document)
 const mctx = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : new OffscreenCanvas(1, 1).getContext('2d');
 const fontCss = (style, px) => `${px}px "${style.font}", ${FONT}`;
+/** @param {string} [name] @returns {{font: string, width: number, oblique: number}} */
 const styleOf = name => (D()?.textStyle ? D().textStyle(name) : { font: 'Arial', width: 1, oblique: 0 });
+/** Anchura del texto en unidades de dibujo. @param {string} str @param {number} h @param {string} [style] @returns {number} */
 export function textWidth(str, h, style) {
   const st = styleOf(style);
   mctx.font = fontCss(st, 100);
   return mctx.measureText(str).width / 100 * h * TXT_K * (st.width || 1);
 }
 
+/** Tipos de línea: pat en mm de papel (positivo trazo, negativo hueco, 0 punto). @type {Record<string, {desc: string, pat: number[]}>} */
 export const LTYPES = {
   CONTINUOUS: { desc: 'Continua', pat: [] },
   DASHED: { desc: 'Trazos', pat: [12.7, -6.35] },
@@ -34,29 +56,37 @@ export const LTYPES = {
   DOT: { desc: 'Puntos', pat: [0, -6.35] },
 };
 export const LWEIGHTS = [0, 0.05, 0.09, 0.13, 0.15, 0.18, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.53, 0.6, 0.7, 0.8, 0.9, 1, 1.06, 1.2, 1.4, 1.58, 2, 2.11];
+/** @type {[string, number][]} */
 export const STD_SCALES = [['1:1', 1], ['1:2', 0.5], ['1:5', 0.2], ['1:10', 0.1], ['1:20', 0.05], ['1:25', 0.04], ['1:50', 0.02], ['1:100', 0.01], ['1:200', 0.005], ['1:500', 0.002], ['1:1000', 0.001], ['2:1', 2], ['5:1', 5], ['10:1', 10]];
 export const ARROWS = { closed: 'Cerrada rellena', open: 'Abierta', tick: 'Trazo oblicuo', dot: 'Punto', none: 'Ninguna' };
 
 export { aciToHex, hexToAci } from './colors.js';
+/** @type {[string, string][]} */
 export const COLORS = [
   ['#ff0000', 'Rojo'], ['#ffff00', 'Amarillo'], ['#00ff00', 'Verde'], ['#00ffff', 'Cian'],
   ['#0000ff', 'Azul'], ['#ff00ff', 'Magenta'], ['#ffffff', 'Blanco'], ['#808080', 'Gris'], ['#c0c0c0', 'Gris claro'],
 ];
 
 // ---------- Utilidades ----------
+/** @param {Iterable<Point>} pts @returns {BBox} */
 export function bbPts(pts) {
   let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
   for (const p of pts) { if (p.x < x1) x1 = p.x; if (p.y < y1) y1 = p.y; if (p.x > x2) x2 = p.x; if (p.y > y2) y2 = p.y; }
   return { x1, y1, x2, y2 };
 }
+/** @param {BBox | null | undefined} a @param {BBox | null | undefined} b @returns {BBox | null} */
 export const bbUnion = (a, b) => (!a ? b : !b ? a : { x1: Math.min(a.x1, b.x1), y1: Math.min(a.y1, b.y1), x2: Math.max(a.x2, b.x2), y2: Math.max(a.y2, b.y2) });
+/** @param {Point} c @param {number} r @param {number} a1 @param {number} a2 @returns {BBox} */
 export function arcBB(c, r, a1, a2) {
   const pts = [G.polar(c, a1, r), G.polar(c, a2, r)];
   for (let k = 0; k < 4; k++) { const a = k * Math.PI / 2; if (G.angIn(a, a1, a2)) pts.push(G.polar(c, a, r)); }
   return bbPts(pts);
 }
+/** @param {Prim} q @returns {BBox} */
 const primBBox = q => (q.k === 's' ? bbPts([q.a, q.b]) : arcBB(q.c, q.r, q.a1, q.a2));
+/** @param {Point[]} pts @returns {SegPrim[]} */
 const closedSegs = pts => pts.map((p, i) => ({ k: 's', a: p, b: pts[(i + 1) % pts.length] }));
+/** @param {{c: Point, rx: number, ry: number, rot: number}} e @param {number} [n] @returns {Point[]} */
 export function ellPts(e, n = 96) {
   const co = Math.cos(e.rot), si = Math.sin(e.rot), pts = [];
   for (let i = 0; i < n; i++) {
@@ -65,9 +95,11 @@ export function ellPts(e, n = 96) {
   }
   return pts;
 }
+/** @param {number} v @param {number} [d] @returns {string} */
 export const fmt = (v, d = 2) => (Math.abs(v) < 1e-12 ? 0 : v).toFixed(d);
 
 // ---------- Polilíneas con arcos (curvatura DXF) ----------
+/** @param {{pts: Point[], bulges?: number[], closed?: boolean}} e @returns {Piece[]} */
 export function plPieces(e) {
   const n = e.pts.length, closed = e.closed && n > 2, cnt = closed ? n : n - 1, out = [];
   for (let i = 0; i < cnt; i++) {
@@ -77,27 +109,36 @@ export function plPieces(e) {
   }
   return out;
 }
+/** @param {{pts: Point[], bulges?: number[], closed?: boolean}} e @returns {Prim[]} */
 export const plSegs = e => plPieces(e).map(p => p.prim);
+/** Arco de un tramo curvo (pc.bulge ≠ 0). @param {Piece} pc @returns {import('./types').ArcPrim} */
+export const arcOf = pc => /** @type {import('./types').ArcPrim} */ (pc.prim);
+/** @param {Piece} pc @param {number} t 0..1 @returns {Point} */
 export function pieceAt(pc, t) {
   if (!pc.bulge) return G.lerp(pc.a, pc.b, t);
-  const th = 4 * Math.atan(pc.bulge), c = pc.prim.c;
-  return G.polar(c, G.ang(c, pc.a) + th * t, pc.prim.r);
+  const th = 4 * Math.atan(pc.bulge), c = arcOf(pc).c;
+  return G.polar(c, G.ang(c, pc.a) + th * t, arcOf(pc).r);
 }
+/** @param {Piece} pc @param {Point} p @returns {number} */
 export function pieceParam(pc, p) {
   if (!pc.bulge) return G.nearSeg(p, pc.a, pc.b).t;
-  const th = 4 * Math.atan(pc.bulge), c = pc.prim.c, s = G.ang(c, pc.a), ap = G.ang(c, p);
+  const th = 4 * Math.atan(pc.bulge), c = arcOf(pc).c, s = G.ang(c, pc.a), ap = G.ang(c, p);
   const t = th > 0 ? G.normAng(ap - s) / th : G.normAng(s - ap) / -th;
   if (t <= 1 + 1e-9) return Math.min(1, t);
   return G.dist(p, pc.a) < G.dist(p, pc.b) ? 0 : 1;
 }
-export const pieceLen = pc => (pc.bulge ? pc.prim.r * Math.abs(4 * Math.atan(pc.bulge)) : G.dist(pc.a, pc.b));
+/** @param {Piece} pc @returns {number} */
+export const pieceLen = pc => (pc.bulge ? arcOf(pc).r * Math.abs(4 * Math.atan(pc.bulge)) : G.dist(pc.a, pc.b));
+/** @param {{pts: Point[], bulges?: number[], closed?: boolean}} e @returns {number} */
 export const plLength = e => plPieces(e).reduce((s, pc) => s + pieceLen(pc), 0);
+/** Área con signo. @param {{pts: Point[], bulges?: number[], closed?: boolean}} e @returns {number} */
 export function plArea(e) {
   let a = G.polyArea(e.pts);
-  for (const pc of plPieces(e)) if (pc.bulge) { const th = Math.abs(4 * Math.atan(pc.bulge)), r = pc.prim.r; a += Math.sign(pc.bulge) * r * r / 2 * (th - Math.sin(th)); }
+  for (const pc of plPieces(e)) if (pc.bulge) { const th = Math.abs(4 * Math.atan(pc.bulge)), r = arcOf(pc).r; a += Math.sign(pc.bulge) * r * r / 2 * (th - Math.sin(th)); }
   return a;
 }
 // Contorno de polilínea con los arcos discretizados
+/** @param {{pts: Point[], bulges?: number[], closed?: boolean}} e @param {number} [perCircle] @returns {Point[]} */
 export function plPolygon(e, perCircle = 96) {
   const out = [];
   for (const pc of plPieces(e)) {
@@ -116,6 +157,7 @@ export function plPolygon(e, perCircle = 96) {
 // %<Escala>%, %<Autor>%, %<Obj:id:Propiedad:decimales>%. ENV.layout: presentación que se está dibujando (si no, la activa).
 const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 export const DATE_FORMATS = ['dd/MM/yyyy', "d 'de' MMMM 'de' yyyy", 'yyyy-MM-dd', 'dd/MM/yyyy HH:mm', 'MMMM yyyy'];
+/** @param {Date} d @param {string} f @returns {string} */
 export function formatDate(d, f) {
   const pad = n => String(n).padStart(2, '0');
   return f.split(/('[^']*')/).map(part => (part.startsWith("'") ? part.slice(1, -1) : part.replace(/yyyy|yy|MMMM|MM|dd|d|HH|mm/g, t => ({
@@ -133,6 +175,7 @@ export const FIELD_PROPS = {
   'X': e => (e.p || e.c || e.p1)?.x ?? null,
   'Y': e => (e.p || e.c || e.p1)?.y ?? null,
 };
+/** @param {string} code @returns {string} */
 export function fieldValue(code) {
   const doc = D(), [kind, ...args] = code.split(':');
   const lay = ENV.layout || (doc && doc.space !== 'model' && doc.space !== 'bedit' ? doc.layouts[doc.space] : null);
@@ -152,13 +195,16 @@ export function fieldValue(code) {
 }
 const FIELD_RE = /%<([^%<>]*)>%/g;
 // Texto con los campos evaluados (rich: el valor se escapa para los códigos de formato de MTEXT)
+/** @param {string} s @param {boolean} [rich] @returns {string} */
 export function fieldText(s, rich = false) {
   if (typeof s !== 'string' || !s.includes('%<')) return s;
   return s.replace(FIELD_RE, (m, code) => { const v = fieldValue(code); return rich ? v.replace(/[\\{}]/g, x => '\\' + x) : v; });
 }
+/** @param {string[][]} cells @returns {string} */
 export const fieldsKey = cells => cells.flat().filter(s => typeof s === 'string' && s.includes('%<')).map(s => fieldText(s)).join('|');
 
 // ---------- Texto ----------
+/** Esquinas del rectángulo del texto. @param {{p: Point, h: number, rot?: number, align?: string, style?: string, text?: string, str?: string}} t @returns {Point[]} */
 export function textBox(t) {
   const str = fieldText(t.text ?? t.str), w = textWidth(str, t.h, t.style);
   const x0 = t.align === 'c' ? -w / 2 : t.align === 'r' ? -w : 0;
@@ -166,6 +212,7 @@ export function textBox(t) {
     .map(q => G.add(t.p, G.rot(q, t.rot || 0)));
 }
 
+/** @param {CanvasRenderingContext2D} c @param {RenderCtx} R @param {{p: Point, h: number, rot?: number, align?: string, style?: string, text?: string, str?: string}} t */
 export function drawText(c, R, t) {
   const px = t.h * R.scale * TXT_K;
   if (px < 0.8) return;
@@ -184,6 +231,7 @@ export function drawText(c, R, t) {
 }
 
 // ---------- Cotas ----------
+/** @type {import('./types').DimStyle} */
 export const DEFAULT_DIMSTYLE = { name: 'ISO-25', txt: 2.5, asz: 2.5, exo: 0.625, exe: 1.25, gap: 0.625, dec: 2, adec: 0, dli: 3.75, scale: 1, arrow: 'closed', textStyle: 'Standard', suffix: '',
   tol: 'none', tp: 0, tm: 0, tdec: 2, tfac: 1 };
 // Estilo efectivo de una cota: su estilo con las modificaciones propias (e.ov, como las de DIMOVERRIDE en AutoCAD)
@@ -428,7 +476,8 @@ export function insertMatrix(e, b) {
 export const blockAttdefs = name => D()?.blocks?.[name]?.ents.filter(x => x.type === 'attdef') || [];
 export const attVal = (ins, a) => ins.attribs?.[a.tag] ?? a.def ?? '';
 // Texto que representa una definición de atributo: la etiqueta, o el valor dentro de una referencia
-const attText = (a, str) => ({ type: 'text', p: a.p, h: a.h, rot: a.rot || 0, align: a.align || 'l', style: a.style, text: str, layer: a.layer, color: a.color, ltype: a.ltype, lw: a.lw });
+/** Texto con el que se dibuja y se mide un atributo. @param {import('./types').AttDef} a @param {string} str @returns {Text} */
+const attText = (a, str) => /** @type {Text} */ ({ type: 'text', p: a.p, h: a.h, rot: a.rot || 0, align: a.align || 'l', style: a.style, text: str, layer: a.layer, color: a.color, ltype: a.ltype, lw: a.lw });
 // Atributos de una referencia: {tag, value, invisible, t: texto ya situado en el dibujo}
 export function insertAttribs(e) {
   const b = D()?.blocks?.[e.name];
@@ -467,20 +516,28 @@ export function blockEnts(e) {
 }
 
 // ---------- Descriptores de propiedades ----------
+/** @typedef {import('./types').PropKind} PropKind */
+/** @template {Entity} E @typedef {import('./types').PropDef<E>} PropDef */
+/** @template {Entity} E @param {string} label @param {(e: E) => unknown} get @param {(e: E, v: number) => void} set @returns {import('./types').PropOf<E, 'num'>} */
 const num = (label, get, set) => ({ label, type: 'num', get, set });
+/** Ángulo en radianes (se muestra en grados). @template {Entity} E @param {string} label @param {(e: E) => unknown} get @param {(e: E, v: number) => void} set @returns {import('./types').PropOf<E, 'ang'>} */
 const angp = (label, get, set) => ({ label, type: 'ang', get, set });
+/** Propiedad de sólo lectura. @template {Entity} E @param {string} label @param {(e: E) => unknown} get @param {PropKind} [type] @returns {PropDef<E>} */
 const ro = (label, get, type = 'num') => ({ label, type, get, ro: true });
 // Coordenadas en las propiedades: las reales (con el origen local del modelo, origin.js)
 const ORG0 = { x: 0, y: 0 };
 const org = () => { const d = D(); return d?.origin && (d.space === 'model' || (d.activeVp != null && d.space !== 'bedit')) ? d.origin : ORG0; };
+/** X e Y del punto e[key], en coordenadas reales. @template {Entity} E @param {string} name @param {string} key @returns {PropDef<E>[]} */
 const ptProps = (name, key) => [
   num(`${name} X`, e => e[key].x + org().x, (e, v) => { e[key] = P(v - org().x, e[key].y); }),
   num(`${name} Y`, e => e[key].y + org().y, (e, v) => { e[key] = P(e[key].x, v - org().y); }),
 ];
+/** Lista de opciones [valor, texto]. @template {Entity} E @template {string} V @param {string} label @param {[V, string][] | (() => [V, string][]) | (() => string[][])} options @param {(e: E) => unknown} get @param {(e: E, v: V) => void} set @returns {import('./types').PropOf<E, 'select'>} */
 const sel = (label, options, get, set) => ({ label, type: 'select', options, get, set });
 
 // ---------- Tipos ----------
-export const TYPES = {};
+/** @type {TypeRegistry} */
+export const TYPES = /** @type {TypeRegistry} */ ({});
 
 TYPES.line = {
   name: 'Línea',
@@ -546,8 +603,8 @@ TYPES.arc = {
 TYPES.pline = {
   name: 'Polilínea',
   prims: plSegs,
-  bbox: e => plSegs(e).reduce((b, q) => bbUnion(b, primBBox(q)), null) || bbPts(e.pts),
-  snaps: e => { const pcs = plPieces(e); return { end: e.pts, mid: pcs.map(pc => pieceAt(pc, 0.5)), cen: pcs.filter(pc => pc.bulge).map(pc => pc.prim.c) }; },
+  bbox: e => plSegs(e).reduce((b, q) => bbUnion(b, primBBox(q)), /** @type {BBox | null} */ (null)) || bbPts(e.pts),
+  snaps: e => { const pcs = plPieces(e); return { end: e.pts, mid: pcs.map(pc => pieceAt(pc, 0.5)), cen: pcs.filter(pc => pc.bulge).map(pc => arcOf(pc).c) }; },
   grips: e => [...e.pts, ...plPieces(e).map(pc => pieceAt(pc, 0.5))],
   moveGrip(e, i, p) {
     const n = e.pts.length;
@@ -566,7 +623,7 @@ TYPES.pline = {
     c.moveTo(e.pts[0].x, e.pts[0].y);
     for (const pc of plPieces(e)) {
       if (!pc.bulge) c.lineTo(pc.b.x, pc.b.y);
-      else { const q = pc.prim; c.arc(q.c.x, q.c.y, q.r, G.ang(q.c, pc.a), G.ang(q.c, pc.b), pc.bulge < 0); }
+      else { const q = arcOf(pc); c.arc(q.c.x, q.c.y, q.r, G.ang(q.c, pc.a), G.ang(q.c, pc.b), pc.bulge < 0); }
     }
     if (e.closed) c.closePath();
   },
@@ -631,7 +688,7 @@ TYPES.spline = {
     ro('Grado', x => x.deg, 'int'),
     ro(e.fit ? 'Puntos de ajuste' : 'Vértices de control', x => (x.fit || x.cv || x.ctrl).length, 'int'),
     ro('Longitud', x => G.polyLen(splinePts(x), x.closed)),
-    ...(e.closed ? [ro('Área', x => Math.abs(G.polyArea(splinePts(x))))] : []),
+    ...(e.closed ? /** @type {PropItem<import('./types').Spline>[]} */ ([ro('Área', x => Math.abs(G.polyArea(splinePts(x))))]) : []),
   ],
 };
 
@@ -683,6 +740,7 @@ TYPES.text = {
 };
 
 // ---------- Texto de líneas múltiples ----------
+/** @type {[import('./types').MTextAttach, string][]} */
 export const MT_ATTACH = [['tl', 'Superior izquierda'], ['tc', 'Superior centro'], ['tr', 'Superior derecha'], ['ml', 'Centro izquierda'], ['mc', 'Centro'], ['mr', 'Centro derecha'], ['bl', 'Inferior izquierda'], ['bc', 'Inferior centro'], ['br', 'Inferior derecha']];
 const MT_PITCH = 5 / 3; // interlineado por defecto de AutoCAD: 5/3 de la altura (de la letra más alta de cada línea)
 const STK = 0.7;        // tamaño de las fracciones apiladas
@@ -822,8 +880,8 @@ TYPES.mtext = {
     let a = Math.atan2(v.y, v.x);
     if (Mx.det(m) < 0) { // simetría con el texto legible: se invierte la justificación en lugar de las letras
       const att = e.attach || 'tl';
-      if (Math.cos(a) < -1e-9) { a += Math.PI; e.attach = att[0] + { l: 'r', r: 'l', c: 'c' }[att[1]]; }
-      else e.attach = { t: 'b', b: 't', m: 'm' }[att[0]] + att[1];
+      if (Math.cos(a) < -1e-9) { a += Math.PI; e.attach = /** @type {import('./types').MTextAttach} */ (att[0] + { l: 'r', r: 'l', c: 'c' }[att[1]]); }
+      else e.attach = /** @type {import('./types').MTextAttach} */ ({ t: 'b', b: 't', m: 'm' }[att[0]] + att[1]);
     }
     e.p = Mx.ap(m, e.p); e.rot = a;
     if (Math.abs(s - 1) > 1e-12) {
@@ -848,7 +906,9 @@ TYPES.mtext = {
 // ---------- Directriz múltiple ----------
 // {pts: [punta, …, último vértice], content: 'mtext'|'block'|'none', text, rich?, h, asz, arrow, land (rellano), gap, w, style}
 // El rellano horizontal sale del último vértice hacia el lado del texto; content 'block' es un globo con número.
+/** @type {[import('./types').MLeader['content'], string][]} */
 export const ML_CONTENT = [['mtext', 'Texto'], ['block', 'Globo'], ['none', 'Ninguno']];
+/** @type {import('./types').MLeaderStyle} */
 export const DEFAULT_MLSTYLE = { name: 'Standard', h: 2.5, asz: 2.5, arrow: 'closed', land: 5, gap: 1.25, textStyle: 'Standard', content: 'mtext' };
 const ML_KEYS = ['h', 'asz', 'arrow', 'land', 'gap'];
 // Valores efectivos de una directriz: los de su estilo, sustituidos por los que la propia entidad modifica
@@ -939,7 +999,7 @@ TYPES.mleader = {
     { label: 'Estilo de texto', type: 'select', options: () => D().textStyles.map(s => [s.name, s.name]), get: x => mlEff(x).textStyle, set: (x, v) => { x.style = v; } },
     num('Altura de texto', x => mlEff(x).h, (x, v) => { if (v > 0) x.h = v; }),
     num('Anchura de texto (0 = libre)', x => x.w || 0, (x, v) => { if (v >= 0) x.w = v; }),
-    sel('Punta de flecha', () => Object.entries(ARROWS), x => mlEff(x).arrow, (x, v) => { x.arrow = v; }),
+    sel('Punta de flecha', () => /** @type {[import('./types').ArrowKind, string][]} */ (Object.entries(ARROWS)), x => mlEff(x).arrow, (x, v) => { x.arrow = v; }),
     num('Tamaño de flecha', x => mlEff(x).asz, (x, v) => { if (v >= 0) x.asz = v; }),
     num('Longitud del rellano', x => mlEff(x).land, (x, v) => { if (v >= 0) x.land = v; }),
     { label: 'Valores del estilo', type: 'action', get: () => 'Quitar modificaciones', set: x => { for (const k of [...ML_KEYS, 'style']) delete x[k]; } },
@@ -952,6 +1012,7 @@ TYPES.mleader = {
 //  title: la primera fila es un título que ocupa todas las columnas, header: la fila siguiente es de encabezados, style}
 // Las filas crecen para que quepa el texto, que se ajusta a la anchura de cada celda.
 const tgcache = new WeakMap();
+/** @type {import('./types').TableStyle} */
 export const DEFAULT_TBLSTYLE = { name: 'Standard', th: 2.5, textStyle: 'Standard', margin: 0.6, titleScale: 1.25, align: 'auto' };
 // Valores efectivos de una tabla (estilo + modificaciones propias)
 export function tblEff(e) {
@@ -1062,7 +1123,7 @@ TYPES.attdef = {
   snaps: e => ({ ins: [e.p] }),
   grips: e => [e.p],
   moveGrip(e, i, p) { e.p = p; },
-  xform(e, m) { e.text = e.tag; TYPES.text.xform(e, m); delete e.text; },
+  xform(e, m) { e.text = e.tag; TYPES.text.xform(/** @type {Text} */ (/** @type {unknown} */ (e)), m); delete e.text; }, // mismos campos que un texto
   draw(c, e, R) { drawText(c, R, attText(e, e.tag)); },
   props: [{ label: 'Etiqueta', type: 'text', get: e => e.tag, set: (e, v) => { if (v.trim()) e.tag = v.trim().toUpperCase().replace(/\s+/g, '_'); } },
     { label: 'Solicitud', type: 'text', get: e => e.prompt || '', set: (e, v) => { e.prompt = v; } },
@@ -1189,7 +1250,7 @@ TYPES.wipeout = {
   moveGrip(e, i, p) { e.pts[i] = p; },
   xform(e, m) { e.pts = e.pts.map(p => Mx.ap(m, p)); },
   draw(c, e, R, st) {
-    const path = () => { c.beginPath(); TYPES.pline.path(c, { pts: e.pts, closed: true }); };
+    const path = () => { c.beginPath(); TYPES.pline.path(c, /** @type {Pline} */ ({ pts: e.pts, closed: true })); };
     path();
     c.save();
     if (!st.hl) { c.fillStyle = wipeoutBg(); c.fill(); }
@@ -1258,7 +1319,7 @@ TYPES.image = {
   },
   draw(c, e, R, st) {
     const clip = e.clip?.pts?.length && !e.clip.off ? e.clip : null, loops = clip ? imageClipLoops(e) : [imageCorners(e)];
-    const outline = () => { c.beginPath(); for (const l of loops) TYPES.pline.path(c, { pts: l, closed: true }); c.stroke(); };
+    const outline = () => { c.beginPath(); for (const l of loops) TYPES.pline.path(c, /** @type {Pline} */ ({ pts: l, closed: true })); c.stroke(); };
     // Resaltado: sólo el contorno (volver a pintar el ráster sobre la escena ocultaría lo que tiene detrás)
     if (st.hl) { outline(); return; }
     if (clip) {
@@ -1360,11 +1421,11 @@ TYPES.hatch = {
   props: e => [
     sel('Patrón', () => [...Object.entries(PATTERNS).map(([k, v]) => [k, v.desc]), ...Object.entries(D()?.patterns || {}).map(([k, v]) => [k, `${k} · ${v.desc || 'personalizado'}`]), ['USER', 'Definido por el usuario'], ['GRADIENT', 'Degradado']],
       x => x.pattern, (x, v) => { x.pattern = v; if (v === 'GRADIENT') x.grad = { ...GRAD_DEFAULT, ...x.grad }; if (v === 'USER') { x.user = { ...USER_DEFAULT, ...x.user }; x.scale = 1; } }),
-    ...(e.pattern === 'USER' ? [
+    ...(e.pattern === 'USER' ? /** @type {PropItem<Hatch>[]} */ ([
       num('Separación', x => (x.user?.sp ?? USER_DEFAULT.sp) * (x.scale || 1), (x, v) => { if (v > 0) { x.user = { ...USER_DEFAULT, ...x.user, sp: v / (x.scale || 1) }; } }),
       { label: 'Doble (cruzado)', type: 'bool', get: x => !!x.user?.dbl, set: (x, v) => { x.user = { ...USER_DEFAULT, ...x.user, dbl: v }; } },
-    ] : []),
-    ...(e.pattern === 'GRADIENT' ? [
+    ]) : []),
+    ...(e.pattern === 'GRADIENT' ? /** @type {PropItem<Hatch>[]} */ ([
       sel('Tipo de degradado', () => Object.entries(GRADIENTS), x => x.grad?.type || 'LINEAR', (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, type: v }; }),
       { label: 'Color 1', type: 'color', get: x => x.grad?.c1 || GRAD_DEFAULT.c1, set: (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, c1: v, ...(x.grad?.stops ? { stops: x.grad.stops.map((s, i) => (i ? s : [s[0], v])) } : {}) }; } },
       { label: 'Color 2', type: 'color', get: x => x.grad?.c2 || GRAD_DEFAULT.c2, set: (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, c2: v, ...(x.grad?.stops ? { stops: x.grad.stops.map((s, i, l) => (i === l.length - 1 ? [s[0], v] : s)) } : {}) }; } },
@@ -1377,11 +1438,11 @@ TYPES.hatch = {
         x.grad = g;
       } },
       { label: 'Centrado', type: 'bool', get: x => x.grad?.centered !== false, set: (x, v) => { x.grad = { ...GRAD_DEFAULT, ...x.grad, centered: v }; } },
-    ] : e.pattern === 'USER' ? [] : [num('Escala', x => x.scale || 1, (x, v) => { if (v > 0) x.scale = v; })]),
+    ]) : e.pattern === 'USER' ? [] : /** @type {PropItem<Hatch>[]} */ ([num('Escala', x => x.scale || 1, (x, v) => { if (v > 0) x.scale = v; })])),
     num('Ángulo (°)', x => x.angle || 0, (x, v) => { x.angle = v; }),
     { label: 'Asociativo', type: 'bool', get: e => !!e.assoc, set: (e, v) => { if (!v) { delete e.assoc; delete e.seed; } } },
     // Estilo de islas: en los sombreados asociativos con punto interior se vuelve a detectar el contorno
-    sel('Detección de islas', () => [['normal', 'Normal'], ['outer', 'Exterior'], ['ignore', 'Ignorar']], x => x.islands || 'normal', (x, v) => {
+    sel('Detección de islas', () => /** @type {[import('./types').HatchIslands, string][]} */ ([['normal', 'Normal'], ['outer', 'Exterior'], ['ignore', 'Ignorar']]), x => x.islands || 'normal', (x, v) => {
       if (v === 'normal') delete x.islands; else x.islands = v;
       const srcs = x.seed && x.assoc ? x.assoc.map(id => D()?.get(id)) : null;
       const r = srcs && !srcs.some(s => !s) && ENV.assocLoops ? ENV.assocLoops(x, srcs) : null;
@@ -1431,14 +1492,15 @@ TYPES.insert = {
   draw() { /* lo dibuja render.js expandiendo blockEnts */ },
   props: e => {
     const xr = D()?.blocks?.[e.name]?.xref;
+    /** @type {PropItem<Insert>[]} */
     const base = [ro('Nombre', x => x.name, 'text'), ...(xr ? [ro('Referencia externa', () => xr.file, 'text')] : []), ...ptProps('Posición', 'p'),
       num('Escala', x => Math.abs(x.sx ?? 1), (x, v) => { if (v > 0) { x.sx = Math.sign(x.sx || 1) * v; x.sy = Math.sign(x.sy || 1) * v; } }),
       angp('Rotación', x => x.rot || 0, (x, v) => { x.rot = v; }),
-      ...(e.clip ? [{ label: 'Delimitación (XCLIP)', type: 'bool', get: x => !x.clip.off, set: (x, v) => { x.clip = { ...x.clip, off: !v }; } }] : [])];
+      ...(e.clip ? /** @type {PropItem<Insert>[]} */ ([{ label: 'Delimitación (XCLIP)', type: 'bool', get: x => !x.clip.off, set: (x, v) => { x.clip = { ...x.clip, off: !v }; } }]) : [])];
     const defs = blockAttdefs(e.name);
     const dyn = ENV.dynProps?.(e) || [];
     if (!defs.length) return [...base, ...dyn];
-    return [...base, ...dyn, { sec: 'Atributos' }, ...defs.map(a => ({ label: a.tag, type: 'text', get: x => attVal(x, a), set: (x, v) => { x.attribs = { ...x.attribs, [a.tag]: v }; } }))];
+    return [...base, ...dyn, { sec: 'Atributos' }, ...defs.map(a => /** @type {PropItem<Insert>} */ ({ label: a.tag, type: 'text', get: x => attVal(x, a), set: (x, v) => { x.attribs = { ...x.attribs, [a.tag]: v }; } }))];
   },
 };
 
@@ -1487,6 +1549,7 @@ export function simplePath(c, pts, R, closed) {
 const segs3 = (p, closed) => { const out = []; for (let i = 1; i < p.length; i++) out.push({ k: 's', a: p[i - 1], b: p[i] }); if (closed && p.length > 2) out.push({ k: 's', a: p[p.length - 1], b: p[0] }); return out; };
 const VSEL = new WeakMap(); // vértice que se edita en Propiedades
 const vsel = e => Math.min(VSEL.get(e) || 0, e.pts.length - 1);
+/** Coordenada del vértice actual de una polilínea 3D. @param {'x' | 'y' | 'z'} axis @param {string} [label] @returns {import('./types').PropOf<import('./types').Pline3d, 'num'>} */
 const vtxProp = (axis, label) => num(label, e => e.pts[vsel(e)][axis] ?? 0, (e, v) => {
   const i = vsel(e), q = e.pts[i];
   e.pts = e.pts.map((x, k) => (k === i ? p3(axis === 'x' ? { x: v, y: q.y } : axis === 'y' ? { x: q.x, y: v } : q, axis === 'z' ? v : q.z) : x));
@@ -1528,12 +1591,12 @@ TYPES.face3d = {
   xform(e, m) { e.pts = e.pts.map(q => p3(Mx.ap(m, q), q.z)); },
   path(c, e) { for (const s of faceSegs(e)) { c.moveTo(s.a.x, s.a.y); c.lineTo(s.b.x, s.b.y); } },
   props: [
-    ...[0, 1, 2, 3].flatMap(i => [
+    ...[0, 1, 2, 3].flatMap(i => /** @type {PropItem<import('./types').Face3d>[]} */ ([
       num(`Vértice ${i + 1} X`, e => e.pts[i].x + org().x, (e, v) => { e.pts = e.pts.map((q, k) => (k === i ? p3({ x: v - org().x, y: q.y }, q.z) : q)); }),
       num(`Vértice ${i + 1} Y`, e => e.pts[i].y + org().y, (e, v) => { e.pts = e.pts.map((q, k) => (k === i ? p3({ x: q.x, y: v - org().y }, q.z) : q)); }),
       num(`Vértice ${i + 1} Z`, e => e.pts[i].z || 0, (e, v) => { e.pts = e.pts.map((q, k) => (k === i ? p3(q, v) : q)); }),
-    ]),
-    ...[0, 1, 2, 3].map(i => ({ label: `Arista ${i + 1} visible`, type: 'bool', get: e => !e.hide?.[i], set: (e, v) => { const h = [0, 1, 2, 3].map(k => (k === i ? !v : !!e.hide?.[k])); if (h.some(Boolean)) e.hide = h; else delete e.hide; } })),
+    ])),
+    ...[0, 1, 2, 3].map(i => /** @type {PropItem<import('./types').Face3d>} */ ({ label: `Arista ${i + 1} visible`, type: 'bool', get: e => !e.hide?.[i], set: (e, v) => { const h = [0, 1, 2, 3].map(k => (k === i ? !v : !!e.hide?.[k])); if (h.some(Boolean)) e.hide = h; else delete e.hide; } })),
     ro('Área', e => { // en el espacio: dos triángulos
       const [a, b, c2, d] = e.pts, cr = (u, v, w) => { const x = [v.x - u.x, v.y - u.y, (v.z || 0) - (u.z || 0)], y = [w.x - u.x, w.y - u.y, (w.z || 0) - (u.z || 0)]; return Math.hypot(x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]) / 2; };
       return cr(a, b, c2) + cr(a, c2, d);
@@ -1612,16 +1675,17 @@ TYPES.mline = {
 
 // ---------- Región ----------
 // {loops: [{pts, bulges?}]}: contornos cerrados con el interior a su izquierda (exteriores antihorarios, huecos horarios)
-const loopPl = l => ({ pts: l.pts, bulges: l.bulges, closed: true });
+/** Contorno de región como polilínea cerrada. @param {import('./types').RegionLoop} l @returns {Pline} */
+const loopPl = l => /** @type {Pline} */ ({ pts: l.pts, bulges: l.bulges, closed: true });
 const regArea = e => e.loops.reduce((s, l) => s + plArea(loopPl(l)), 0);
 const regCentroid = e => { const b = bbPts(e.loops.flatMap(l => l.pts)); return P((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2); };
 TYPES.region = {
   name: 'Región',
   prims: e => e.loops.flatMap(l => plSegs(loopPl(l))),
-  bbox: e => e.loops.reduce((b, l) => bbUnion(b, TYPES.pline.bbox(loopPl(l))), null),
+  bbox: e => e.loops.reduce((b, l) => bbUnion(b, TYPES.pline.bbox(loopPl(l))), /** @type {BBox | null} */ (null)),
   snaps: e => {
     const pcs = e.loops.flatMap(l => plPieces(loopPl(l)));
-    return { end: e.loops.flatMap(l => l.pts), mid: pcs.map(pc => pieceAt(pc, 0.5)), cen: pcs.filter(pc => pc.bulge).map(pc => pc.prim.c) };
+    return { end: e.loops.flatMap(l => l.pts), mid: pcs.map(pc => pieceAt(pc, 0.5)), cen: pcs.filter(pc => pc.bulge).map(pc => arcOf(pc).c) };
   },
   grips: e => [regCentroid(e)],
   moveGrip(e, i, p) { const d = G.sub(p, regCentroid(e)); e.loops = e.loops.map(l => ({ ...l, pts: l.pts.map(q => G.add(q, d)) })); },
@@ -1649,9 +1713,9 @@ TYPES.region = {
 const arrEnts = e => ENV.arrayEnts?.(e) || [];
 TYPES.array = {
   name: 'Matriz asociativa',
-  prims: e => arrEnts(e).flatMap(v => TYPES[v.type].prims(v)),
-  selPrims: e => arrEnts(e).flatMap(v => { const T = TYPES[v.type]; return T.selPrims ? T.selPrims(v) : T.prims(v); }),
-  bbox: e => arrEnts(e).reduce((b, v) => bbUnion(b, bboxOf(v)), null) || bbPts([e.base]),
+  prims: e => arrEnts(e).flatMap(v => typeDef(v).prims(v)),
+  selPrims: e => arrEnts(e).flatMap(v => { const T = typeDef(v); return T.selPrims ? T.selPrims(v) : T.prims(v); }),
+  bbox: e => arrEnts(e).reduce((b, v) => bbUnion(b, bboxOf(v)), /** @type {BBox | null} */ (null)) || bbPts([e.base]),
   hit: (e, p) => arrEnts(e).reduce((d, v) => Math.min(d, hitDist(v, p)), Infinity),
   snaps: e => {
     const out = {};
@@ -1710,70 +1774,90 @@ TYPES.vport = {
 
 // ---------- API genérica ----------
 // Los objetos anotativos se consultan en su representación de la escala de anotación actual (annoscale.js)
-export const primsOf = e => { e = annoEff(e); return TYPES[e.type].prims(e); };
-export const bboxOf = e => { e = annoEff(e); return TYPES[e.type].bbox(e); };
-export const snapsOf = e => { e = annoEff(e); return TYPES[e.type].snaps(e); };
-export const gripsOf = e => { e = annoEff(e); return TYPES[e.type].grips(e); };
+/** Registro del tipo de una entidad cualquiera. @param {Entity} e @returns {import('./types').TypeDef<Entity>} */
+export const typeDef = e => /** @type {import('./types').TypeDef<Entity>} */ (/** @type {unknown} */ (TYPES[e.type]));
+/** @param {Entity} e @returns {Prim[]} */
+export const primsOf = e => { e = annoEff(e); return typeDef(e).prims(e); };
+/** @param {Entity} e @returns {BBox} */
+export const bboxOf = e => { e = annoEff(e); return typeDef(e).bbox(e); };
+/** @param {Entity} e @returns {import('./types').SnapPoints} */
+export const snapsOf = e => { e = annoEff(e); return typeDef(e).snaps(e); };
+/** @param {Entity} e @returns {Point[]} */
+export const gripsOf = e => { e = annoEff(e); return typeDef(e).grips(e); };
 // Rectángulo para el índice espacial: el de todas las representaciones de un objeto anotativo (cada ventana gráfica
 // lo dibuja con su escala)
+/** @param {Entity} e @returns {BBox} */
 export function bboxIndex(e) {
-  if (!isAnno(e)) return TYPES[e.type].bbox(e);
+  if (!isAnno(e)) return typeDef(e).bbox(e);
   const doc = ENV.doc, ks = new Set([...e.anno.map(n => factorOfName(doc, n)), curScale().k]);
   let b = null;
-  for (const k of ks) b = bbUnion(b, TYPES[e.type].bbox(scaleEnt(e, k)));
+  for (const k of ks) b = bbUnion(b, typeDef(e).bbox(scaleEnt(e, k)));
   return b;
 }
-export const xformEnt = (e, m) => { TYPES[e.type].xform(e, m); return e; };
+/** Transforma la entidad (también una aún sin añadir al documento) en su sitio y la devuelve.
+ * @template {Entity | import('./types').NewEntity} E @param {E} e @param {import('./types').Matrix} m @returns {E} */
+export const xformEnt = (e, m) => { const x = /** @type {Entity} */ (/** @type {unknown} */ (e)); typeDef(x).xform(x, m); return e; };
+/** Copia profunda (por JSON). @template T @param {T} e @returns {T} */
 export const cloneEnt = e => JSON.parse(JSON.stringify(e));
 
+/** Distancia del punto a la entidad (0 dentro de los rellenos y textos). @param {Entity} e @param {Point} p @returns {number} */
 export function hitDist(e, p) {
   e = annoEff(e);
-  const T = TYPES[e.type];
+  const T = typeDef(e);
   if (T.hit) return T.hit(e, p);
   let d = Infinity;
   for (const q of T.prims(e)) d = Math.min(d, G.dist(p, G.nearPrim(p, q)));
   return d;
 }
+/** @param {Entity} e @param {BBox} r @returns {boolean} */
 export function inWindow(e, r) {
   e = annoEff(e);
   const b = bboxOf(e);
   return b.x1 >= r.x1 && b.x2 <= r.x2 && b.y1 >= r.y1 && b.y2 <= r.y2;
 }
 // Con la vista girada, la ventana es un rectángulo en los ejes de la vista: la entidad se lleva a esos ejes (giro −rot)
+/** @param {Entity} e @param {BBox} r @param {number} rot @returns {boolean} */
 export const inWindowRot = (e, r, rot) => (rot ? inWindow(xformEnt(cloneEnt(e), Mx.R(-rot)), r) : inWindow(e, r));
+/** @param {Entity} e @param {BBox} r @param {number} rot @returns {boolean} */
 export const crossesRot = (e, r, rot) => (rot ? crosses(xformEnt(cloneEnt(e), Mx.R(-rot)), r) : crosses(e, r));
+/** @param {Entity} e @param {BBox} r @returns {boolean} */
 export function crosses(e, r) {
   e = annoEff(e);
   if (inWindow(e, r)) return true;
   if (!G.bbOverlap(bboxOf(e), r)) return false;
   if (e.type === 'point') return G.inRect(e.p, r);
-  const T = TYPES[e.type];
+  const T = typeDef(e);
   if (e.type === 'hatch' && T.hit(e, G.P((r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2)) === 0) return true;
   return (T.selPrims ? T.selPrims(e) : T.prims(e)).some(q => G.primCrossRect(q, r));
 }
 
 // Propiedades de escala de anotación de los tipos que pueden ser anotativos
+/** @type {PropItem<Entity>[]} */
 const ANNO_PROPS = [
   { label: 'Anotativo', type: 'bool', get: e => isAnno(e), set: (e, v) => setAnnotative(e, !!v) },
   ro('Escalas de anotación', e => (isAnno(e) ? e.anno.join(', ') : '—'), 'text'),
 ];
 // Cota Z: elevación de los objetos planos y Z de los extremos de las líneas (las polilíneas 3D y las caras 3D, en sus vértices)
+/** @type {Set<string>} */
 export const ELEV_TYPES = new Set(['circle', 'arc', 'pline', 'ellipse', 'spline', 'point', 'text', 'mtext', 'attdef', 'insert', 'hatch', 'mline', 'region']);
 const zNum = (label, k) => num(label, e => e[k] || 0, (e, v) => { if (v) e[k] = v; else delete e[k]; });
 const Z_PROPS = { line: [zNum('Inicio Z', 'z1'), zNum('Fin Z', 'z2')], other: [zNum('Elevación', 'elev')] };
+/** Propiedades de la entidad para la paleta Propiedades. @param {Entity} e @returns {PropItem<Entity>[]} */
 export const propsOf = e => {
-  const p = TYPES[e.type].props, list = typeof p === 'function' ? p(e) : p;
+  const p = typeDef(e).props, list = typeof p === 'function' ? p(e) : p;
   const z = e.type === 'line' ? Z_PROPS.line : ELEV_TYPES.has(e.type) ? Z_PROPS.other : [];
   return ANNO_TYPES.has(e.type) ? [...list, ...z, ...ANNO_PROPS] : [...list, ...z];
 };
 
+/** Líneas de LIST. @param {Entity} e @returns {string[]} */
 export function describe(e) {
-  const T = TYPES[e.type], out = [`${T.name}  Capa: "${e.layer}"`];
+  const T = typeDef(e), out = [`${T.name}  Capa: "${e.layer}"`];
   for (const pr of propsOf(e)) {
     if (pr.sec) { out.push(`  ${pr.sec}:`); continue; }
     let v = pr.get(e);
     if (pr.type === 'mtext') v = String(v).replace(/\n/g, ' ¶ ');
-    out.push(`   ${pr.label}: ${pr.type === 'num' ? fmt(v, 4) : pr.type === 'ang' || pr.type === 'deg' ? fmt(pr.type === 'ang' ? G.deg(G.normAng(v)) : v, 2) + '°' : v}`);
+    const n = /** @type {number} */ (v); // num, ang y deg dan números
+    out.push(`   ${pr.label}: ${pr.type === 'num' ? fmt(n, 4) : pr.type === 'ang' || pr.type === 'deg' ? fmt(pr.type === 'ang' ? G.deg(G.normAng(n)) : n, 2) + '°' : v}`);
   }
   return out;
 }

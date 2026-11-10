@@ -1,4 +1,11 @@
 // Escalas anotativas: lista de escalas del dibujo (SCALELISTEDIT), escala de anotación actual (CANNOSCALE en el modelo y
+/** El documento (lo que usa este módulo, para que sirva también ENV.doc). @typedef {import('./types').Document} Doc */
+/** @typedef {import('./types').Entity} Entity */
+/** @typedef {import('./types').Point} Point */
+/** @typedef {import('./types').BBox} BBox */
+/** Escala de la lista: unidades del papel : unidades del dibujo. @typedef {{name: string, paper: number, draw: number}} Scale */
+/** Escala de anotación en uso: nombre y factor (1:100 → 100). @typedef {{name: string, k: number}} AnnoScale */
+// @ts-check
 // la de cada ventana gráfica, que es la suya), objetos anotativos con una representación por escala (OBJECTSCALE) y
 // visibilidad de los que no tienen la escala actual (ANNOALLVISIBLE). Un objeto anotativo guarda sus tamaños en unidades
 // del papel y la lista de escalas que admite (e.anno); se dibuja con sus tamaños multiplicados por el factor de la escala
@@ -6,21 +13,27 @@
 
 // Contexto: doc (el dibujo), ctx (función de la aplicación que da la escala actual) y override (la de la ventana gráfica
 // que se está dibujando, o 1:1 para los objetos del papel)
+/** @type {{doc: Doc | null, ctx: (() => AnnoScale | null) | null, override: AnnoScale | null}} */
 export const ANNO = { doc: null, ctx: null, override: null };
 
 // Lista métrica de AutoCAD (unidades del papel : unidades del dibujo)
 export const DEFAULT_SCALES = [[1, 1], [1, 2], [1, 4], [1, 5], [1, 8], [1, 10], [1, 16], [1, 20], [1, 25], [1, 30], [1, 40], [1, 50], [1, 75], [1, 100], [1, 200], [1, 250], [1, 500],
   [1, 1000], [1, 1500], [1, 2000], [1, 2500], [1, 5000], [1, 10000], [1, 20000], [1, 25000], [1, 50000], [2, 1], [4, 1], [5, 1], [8, 1], [10, 1], [100, 1]]
   .map(([paper, draw]) => ({ name: `${paper}:${draw}`, paper, draw }));
+/** @returns {Scale[]} */
 export const defaultScales = () => DEFAULT_SCALES.map(s => ({ ...s }));
 
 // Tipos que pueden ser anotativos
+/** Tipos que pueden ser anotativos. @type {Set<string>} */
 export const ANNO_TYPES = new Set(['text', 'mtext', 'attdef', 'dim', 'mleader', 'hatch', 'insert']);
+/** @param {Entity | null | undefined} e @returns {boolean} */
 export const isAnno = e => Array.isArray(e?.anno) && e.anno.length > 0;
 
 const num = v => +(+v).toFixed(6);
+/** @param {{paper: number, draw: number}} s @returns {number} */
 export const factorOf = s => s.draw / s.paper;
 // "1:100", "1/100", "100" (= 1:100), "2:1"; devuelve {paper, draw} o null
+/** '1:100', '1/100', '1=100' o '100'. @param {unknown} t @returns {{paper: number, draw: number} | null} */
 export function parseScale(t) {
   const s = String(t).trim().replace(',', '.');
   let m = /^([\d.]+)\s*[:/=]\s*([\d.]+)$/.exec(s);
@@ -28,13 +41,18 @@ export function parseScale(t) {
   m = /^[\d.]+$/.exec(s);
   return m && +s > 0 ? { paper: 1, draw: +s } : null;
 }
+/** @param {number} paper @param {number} draw @returns {string} */
 export const scaleName = (paper, draw) => `${num(paper)}:${num(draw)}`;
 const key = n => String(n).trim().toLowerCase().replace(/\s+/g, '');
+/** @param {Doc} doc @returns {Scale[]} */
 export const scalesOf = doc => (doc.scales?.length ? doc.scales : (doc.scales = defaultScales()));
+/** @param {Doc} doc @param {string} name @returns {Scale | null} */
 export const findScale = (doc, name) => scalesOf(doc).find(s => key(s.name) === key(name)) || null;
 // Escala de la lista con el factor k (o null)
+/** @param {Doc} doc @param {number} k @returns {Scale | null} */
 export const scaleWithFactor = (doc, k) => scalesOf(doc).find(s => Math.abs(factorOf(s) - k) / k < 1e-6) || null;
 // Escala por nombre o por proporción ("1:100" aunque se llame de otro modo); con add, la añade a la lista si no está
+/** Escala de la lista por nombre o por factor (con add, la crea si no existe). @param {Doc} doc @param {string} t @param {boolean} [add] @returns {Scale | null} */
 export function resolveScale(doc, t, add = false) {
   const s = findScale(doc, t);
   if (s) return s;
@@ -47,14 +65,17 @@ export function resolveScale(doc, t, add = false) {
   scalesOf(doc).push(n);
   return n;
 }
+/** @param {Doc} doc @param {string} name @returns {number} */
 export const factorOfName = (doc, name) => { const s = findScale(doc, name) || (parseScale(name) && { ...parseScale(name) }); return s ? factorOf(s) : 1; };
 
 // Escala de anotación de una ventana gráfica: la de la lista que coincide con su escala (1/s), o una a medida
+/** @param {Doc} doc @param {import('./types').Viewport} vp @returns {AnnoScale} */
 export function vpScale(doc, vp) {
   const k = 1 / (vp.s || 1), s = scaleWithFactor(doc, k);
   return s ? { name: s.name, k } : { name: k >= 1 ? `1:${num(k)}` : `${num(1 / k)}:1`, k };
 }
 // Escala de anotación actual: {name, k}
+/** @returns {AnnoScale} */
 export function curScale() {
   if (ANNO.override) return ANNO.override;
   const c = ANNO.ctx?.();
@@ -64,13 +85,16 @@ export function curScale() {
 }
 export const PAPER_SCALE = Object.freeze({ name: '1:1', k: 1 });
 const has = (e, name) => e.anno.some(n => key(n) === key(name));
+/** @param {Entity} e @param {string} [name] @returns {boolean} */
 export const supports = (e, name = curScale().name) => isAnno(e) && has(e, name);
 // Oculto por no admitir la escala actual con ANNOALLVISIBLE = 0
+/** @param {Entity} e @returns {boolean} */
 export const annoHidden = e => isAnno(e) && ANNO.doc?.settings?.annoAllVisible === 0 && !has(e, curScale().name);
 
 // Copia de e con sus tamaños para el factor k (los del papel multiplicados)
+/** Copia de la entidad con sus tamaños multiplicados por k. @template {Entity} E @param {E} e @param {number} k @returns {E} */
 export function scaleEnt(e, k) {
-  const o = { ...e };
+  const o = /** @type {import('./types').LooseEntity} */ ({ ...e });
   switch (e.type) {
     case 'text': case 'attdef': o.h = e.h * k; break;
     case 'mtext': o.h = e.h * k; if (e.w) o.w = e.w * k; break;
@@ -83,11 +107,12 @@ export function scaleEnt(e, k) {
     case 'hatch': if (e.pattern !== 'SOLID' && e.pattern !== 'GRADIENT') { o.scale = (e.scale || 1) * k; if (e.user) o.user = { ...e.user, sp: (e.user.sp || 1) * k }; } break;
     case 'insert': o.sx = (e.sx ?? 1) * k; o.sy = (e.sy ?? 1) * k; break;
   }
-  return o;
+  return /** @type {E} */ (/** @type {unknown} */ (o));
 }
 
 // Representación de e con la escala actual (o la de su primera escala, marcada con _annoOff); e si no es anotativo
 const cache = new WeakMap();
+/** Representación de la entidad con la escala actual (la misma si no es anotativa). @template {Entity} E @param {E} e @returns {E} */
 export function annoEff(e) {
   if (!isAnno(e)) return e;
   const doc = ANNO.doc, c = curScale(), ok = has(e, c.name), k = ok ? c.k : factorOfName(doc, e.anno[0]);
@@ -100,6 +125,7 @@ export function annoEff(e) {
 }
 
 // Hace anotativo (on) o no a e conservando su tamaño en pantalla con la escala actual
+/** @param {Entity} e @param {boolean} on */
 export function setAnnotative(e, on) {
   const c = curScale();
   if (on) {
@@ -119,12 +145,14 @@ export function setAnnotative(e, on) {
   }
 }
 // Añade o quita escalas de un objeto anotativo; un objeto conserva siempre al menos una
+/** @param {Entity} e @param {string[]} names */
 export function addScales(e, names) {
   if (!isAnno(e)) return 0;
   let n = 0;
   for (const nm of names) if (!has(e, nm)) { e.anno.push(nm); n++; }
   return n;
 }
+/** @param {Entity} e @param {string[]} names */
 export function removeScales(e, names) {
   if (!isAnno(e)) return 0;
   const keep = e.anno.filter(n => !names.some(x => key(x) === key(n)));
@@ -134,6 +162,7 @@ export function removeScales(e, names) {
   return n;
 }
 // Escalas en uso por los objetos (para no suprimirlas de la lista)
+/** @param {Doc} doc @returns {Set<string>} */
 export function scalesInUse(doc) {
   const used = new Set();
   const walk = list => { for (const e of list) if (isAnno(e)) for (const n of e.anno) used.add(key(n)); };
@@ -141,4 +170,5 @@ export function scalesInUse(doc) {
   used.add(key(doc.settings.cannoscale || '1:1'));
   return used;
 }
+/** @param {Doc} doc @param {string} name @returns {boolean} */
 export const inUse = (doc, name) => scalesInUse(doc).has(key(name));
