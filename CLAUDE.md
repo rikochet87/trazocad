@@ -7,11 +7,12 @@ CAD 2D tipo AutoCAD hecho como PWA en JavaScript puro con módulos ES. Sin depen
 - El proyecto avanza por versiones. «Continúa con la versión N» significa implementar la sección **Hoja de ruta** del README de la versión anterior, completa y en el mismo estilo.
 - Todo en español: interfaz, mensajes de la línea de comandos, comentarios, README y mensajes de commit. Los nombres de comando son los de AutoCAD en inglés, con alias en español (`def('DIMCONTINUE', ['DCO', 'COTACONTINUA', …], …)` en `js/commands.js`).
 - La app no puede tener dependencias. Las de `tools/` son sólo para probar.
+- Tipos: JavaScript con JSDoc comprobado por TypeScript (`checkJs` en `jsconfig.json`; `sw.js` con `jsconfig.sw.json`). Los tipos comunes están en `js/types.d.ts`. El código nuevo lleva JSDoc en lo que exporta, sin `{any}` ni `@ts-ignore` (`@ts-expect-error` sólo con justificación). Los errores reales que muestre TypeScript y no se arreglen se apuntan en `docs/NOTAS_TIPOS.md`.
 - Commits sólo cuando el usuario los pide («haz el commit»), con mensaje del tipo `TrazoCAD v0.N: resumen de las novedades`. No hacer push salvo que lo pida.
 
 ## Al terminar una versión
 
-1. Pasar todas las pruebas (`tools/`) y añadir pruebas nuevas para lo implementado en `tools/tests/`.
+1. Pasar `npm run typecheck` y todas las pruebas (`tools/`), y añadir pruebas nuevas para lo implementado en `tools/tests/`.
 2. README: título `TrazoCAD — v0.N`, tabla «Novedades de la v0.N» con su captura, estructura de archivos, limitaciones conocidas y nueva «Hoja de ruta (v0.N+1+)».
 3. Captura nueva en `docs/` hecha con un guion como `tools/tests/captura-v05.js`.
 4. `sw.js`: subir `CACHE` (`trazocad-vN`) y añadir los módulos nuevos a `ASSETS`.
@@ -23,6 +24,7 @@ CAD 2D tipo AutoCAD hecho como PWA en JavaScript puro con módulos ES. Sin depen
 cd tools && npm install
 # si no hay Chrome instalado (p. ej. en la nube):
 npx @puppeteer/browsers install chrome@stable --path ~/.cache/puppeteer
+npm run typecheck                                 # chequeo de tipos (tsc, sin compilar)
 npm test                                          # todas las pruebas
 node run.mjs tests/restricciones.js               # una sola
 node run.mjs tests/captura-v05.js out/c.png 1500 900   # captura

@@ -25,7 +25,23 @@ arreglarlos hay que quitar esa marca, o `tsc` avisará de que ya no hay error).
 | `sw.js` | Se usa `sw` (el mismo `self` con el tipo `ServiceWorkerGlobalScope`) en vez de `self`. |
 | Varios | Algunas expresiones se partieron en una variable intermedia o se envolvieron en una conversión JSDoc (`/** @type {…} */ (x)`) para que TypeScript siguiera el tipo, p. ej. `arcOf(pc)` en vez de `pc.prim.c` en los tramos con arco de las polilíneas, o `typeDef(e)` en vez de `TYPES[e.type]` para una entidad cualquiera. |
 
-## Pendiente para la fase 4
+## Sin tipo todavía
 
 - Los resultados de los diálogos de `ui.js` (`modal`) no tienen un tipo común: cada diálogo devuelve su propia estructura, que se queda sin tipo.
 - Los parámetros de las funciones internas (no exportadas) de muchos módulos siguen sin anotar: con `strict` (`noImplicitAny`) aparecerán.
+
+## Modo `strict` (fase 4)
+
+`checkJs` está activado y no da errores. `strict` no está activado: con él salen **4516 errores** (y 1 en `sw.js`).
+Por opción:
+
+| Opción | Errores | Qué son |
+|---|---|---|
+| `noImplicitAny` | 3073 | Parámetros (2148, TS7006) y variables sin tipo, sobre todo de funciones internas y de los manejadores de la interfaz. Por módulo: commands 381, ui 300, dxf 257, entities 190, pdf 112, constraints 110… |
+| `strictNullChecks` | 1612 | Valores que pueden ser `null` o `undefined` sin comprobar: `doc.get(id)`, `find(…)`, `querySelector(…)`, resultados de las peticiones con Intro (`allowEnter`). |
+| `useUnknownInCatchVariables` | 17 | `catch (err)` con `err.message` (en `app.js`, `commands.js`, `constraints.js`, `dxfworker.js`…). |
+| `strictFunctionTypes` | 7 | Órdenes que declaran el tipo de su argumento (INSERT, LIBINSERT, CANNOSCALE, JSEVAL, PDFOUT, _GRIP, _GRIPVERTEX) frente a `arg?: unknown` de `def`. |
+| `noImplicitThis`, `strictBindCallApply`, `alwaysStrict` | 0 | — |
+
+Por módulo (todas las opciones): commands 1123, ui 558, dxf 415, entities 411, app 242, render 222, constraints 213, pdf 133; el resto, menos de 100 cada uno.
+Para avanzar hacia `strict` conviene activar las opciones de una en una (primero `useUnknownInCatchVariables` y `strictFunctionTypes`, luego `strictNullChecks` módulo a módulo) y anotar los parámetros del código nuevo desde ya.
