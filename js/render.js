@@ -182,6 +182,7 @@ export class Renderer {
     const k = vpLtk(this.app.doc, vp), vsty = k === 1 ? sty : e => { const s = sty(e); return { ...s, ltscale: (s.ltscale || 1) * k }; };
     const prev = ANNO.override;
     ANNO.override = vpScale(this.app.doc, vp); // escala de anotación de la ventana: la suya
+    this.app.basemap?.draw(c, vpR(R, vp), !!c.images);
     try { this.drawModel(c, vpR(R, vp), vpModelRect(vp), vsty, this.app.doc.visibleIn(vp)); } finally { ANNO.override = prev; }
     c.restore();
   }
@@ -243,9 +244,10 @@ export class Renderer {
         const v = t.view, Rt = makeR(v, d);
         c.save();
         c.setTransform(1, 0, 0, 1, 0, 0); c.beginPath(); c.rect(v.ox * d, v.oy * d, v.w * d, v.h * d); c.clip();
+        app.basemap?.draw(c, Rt);
         if (app.T.grid) this.drawGrid(c, Rt, v);
         this.drawModel(c, Rt, v.rect(), sty);
-        if (v === app.view) this.drawConstraints(c, Rt);
+        if (v === app.view) { this.drawConstraints(c, Rt); app.gps?.draw(c, Rt); }
         this.drawUCS(c, v);
         c.restore();
       }
@@ -254,10 +256,12 @@ export class Renderer {
       const v = app.view; c.strokeStyle = '#1e90d6'; c.lineWidth = 2; c.strokeRect(v.ox + 1, v.oy + 1, v.w - 2, v.h - 2);
       return;
     }
+    app.basemap?.draw(c, R);
     if (app.T.grid) this.drawGrid(c, R);
     if (TILES.on && app.doc.model.length >= TILES.min) this.drawModelTiles(c, sty);
     else this.drawModel(c, R, app.view.rect(), sty);
     this.drawConstraints(c, R);
+    app.gps?.draw(c, R);
     this.drawUCS(c);
   }
 

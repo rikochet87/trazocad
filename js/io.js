@@ -5,7 +5,7 @@ import { arrayEnts } from './arrays.js';
 import { splinePts } from './spline.js';
 import { writeDXF, readDXF } from './dxf.js';
 import { hatchSegments, gradientSpec } from './patterns.js';
-import { makeRV, setWorld, vpModelRect, vpLtk } from './render.js';
+import { makeRV, setWorld, vpR, vpModelRect, vpLtk } from './render.js';
 import { toFrame, fromFrame } from './view.js';
 import { annoEff, ANNO, vpScale, PAPER_SCALE } from './annoscale.js';
 import { PdfContext, buildPdf } from './pdf.js';
@@ -480,7 +480,7 @@ ${body.join('\n')}
   // Extensión del modelo en los ejes de la vista del modelo (girada o no): centro en el dibujo, ancho y alto
   modelFrame() {
     const doc = this.app.doc, b = doc.extents(doc.model.filter(e => doc.visible(e)));
-    if (!b) return null;
+    if (!b) { if (doc.geo && doc.basemap?.enabled) { const v = this.app.modelView; return { cx: v.cx, cy: v.cy, bw: v.w / v.scale, bh: v.h / v.scale, rot: v.rot || 0 }; } return null; }
     const rot = this.app.modelView.rot || 0;
     const fs = [[b.x1, b.y1], [b.x2, b.y1], [b.x2, b.y2], [b.x1, b.y2]].map(([x, y]) => toFrame(rot, x, y)), us = fs.map(q => q[0]), vs = fs.map(q => q[1]);
     const [cx, cy] = fromFrame(rot, (Math.min(...us) + Math.max(...us)) / 2, (Math.min(...vs) + Math.max(...vs)) / 2);
@@ -512,8 +512,8 @@ ${body.join('\n')}
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
     const c = cv.getContext('2d');
     c.fillStyle = '#ffffff'; c.fillRect(0, 0, W, H);
-    if (lay) app.renderer.drawLayout(c, R, lay, sty, true);
-    else { setWorld(c, R); app.renderer.paintList(c, R, doc.model, sty); }
+    if (lay) { for (const vp of lay.ents.filter(e => e.type === 'vport')) await app.basemap.prepare(vpR(R, vp)); app.renderer.drawLayout(c, R, lay, sty, true); }
+    else { await app.basemap.prepare(R); app.basemap.draw(c, R); setWorld(c, R); app.renderer.paintList(c, R, doc.model, sty); }
     const blob = await new Promise(res => cv.toBlob(res, 'image/png'));
     const h = await this.writeFile(blob, `${doc.name}${lay ? '-' + lay.name : ''}.png`, 'image/png', '.png', 'Imagen PNG', false);
     if (h) app.print(`Exportado a PNG (${W}×${H}).`);
@@ -523,19 +523,22 @@ ${body.join('\n')}
   // which: 'current' (presentación activa o modelo) o 'all' (todas las presentaciones, una por página)
   async buildPDF(which = 'current') {
     const app = this.app, doc = app.doc, K = 72 / 25.4; // puntos por mm
-    const pageOf = lay => {
+    const pageOf = async lay => {
       const W = lay.w * K, H = lay.h * K, ctx = new PdfContext(H);
-      app.renderer.drawLayout(ctx, makeRV(lay.w / 2, lay.h / 2, K, W, H, 1), lay, this.printSty(lay, lw => Math.max(0.1, lw) * K), true);
+      const R = makeRV(lay.w / 2, lay.h / 2, K, W, H, 1);
+      for (const vp of lay.ents.filter(e => e.type === 'vport')) await app.basemap.prepare(vpR(R, vp));
+      app.renderer.drawLayout(ctx, R, lay, this.printSty(lay, lw => Math.max(0.1, lw) * K), true);
       return { w: W, h: H, ctx };
     };
     const lay = app.layoutShown();
-    if (which === 'all' && doc.layouts.length) return doc.layouts.map(pageOf);
-    if (lay) return [pageOf(lay)];
+    if (which === 'all' && doc.layouts.length) return Promise.all(doc.layouts.map(pageOf));
+    if (lay) return [await pageOf(lay)];
     // Modelo: ajustado a una hoja A3 apaisada con 10 mm de margen
     const f = this.modelFrame();
     if (!f) return null;
     const W = 420 * K, H = 297 * K, s = Math.min((W - 20 * K) / f.bw, (H - 20 * K) / f.bh);
     const ctx = new PdfContext(H), R = makeRV(f.cx, f.cy, s, W, H, 1, 0, 0, f.rot);
+    await app.basemap.prepare(R); app.basemap.draw(ctx, R, true);
     setWorld(ctx, R);
     app.renderer.paintList(ctx, R, doc.model, this.printSty(null, lw => Math.max(0.1, lw) * K));
     return [{ w: W, h: H, ctx }];

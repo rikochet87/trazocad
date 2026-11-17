@@ -1,0 +1,20 @@
+const tick = () => new Promise(r => setTimeout(r, 20));
+let checks = 0; const assert = (v, msg) => { checks++; if (!v) throw Error(msg); };
+const root = document.getElementById('modal-root');
+assert([...document.querySelectorAll('#ribbon-tabs button')].some(b => b.textContent.includes('Geografía')), 'Pestaña Geografía');
+const task = app.run('GEOGRAPHICLOCATION'); await tick();
+const area = root.querySelector('textarea'); assert(!!area, 'Diálogo de ubicación');
+area.value = 'EPSG:999999'; root.querySelector('.btn.primary').click(); await tick();
+assert(!root.hidden && root.querySelector('[role=alert]').textContent.includes('catálogo'), 'Error EPSG conserva diálogo');
+area.value = 'EPSG:32721'; root.querySelector('.btn.primary').click(); await task;
+assert(root.hidden && app.doc.geo.crs.code === 32721, 'Guardar ubicación desde interfaz');
+const map = app.run('GEOMAP'); await tick();
+const url = root.querySelector('input[type=text]'); url.value = 'https://example.invalid/no-template'; root.querySelector('.btn.primary').click(); await tick();
+assert(!root.hidden && root.querySelector('[role=alert]').textContent.includes('{z}'), 'Error mapa conserva diálogo');
+url.value = location.origin + '/icons/icon-192.png?z={z}&x={x}&y={y}';
+// Se configura oculto para que la prueba no solicite servicios externos.
+root.querySelector('input[type=checkbox]').checked = false; root.querySelector('.btn.primary').click(); await map;
+assert(root.hidden && app.doc.basemap.enabled === false, 'Guardar mapa desde interfaz');
+const format = app.ui.geographicDialog(); await tick(); root.querySelector('.modal-head button').click();
+assert(await format === null && root.hidden, 'Cancelar diálogo');
+return { ok: true, checks };

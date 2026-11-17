@@ -69,6 +69,7 @@ export class Doc {
     this.layerFilters = []; // filtros de capa por propiedades y por grupos (layertools.js)
     this.layIso = null;    // estado de las capas antes de LAYISO
     this.scales = defaultScales(); // lista de escalas (SCALELISTEDIT)
+    this.geo = null; this.basemap = null; // georreferenciación y servicio de mapa del proyecto
     this.origin = { x: 0, y: 0 }; // origen local del modelo: coordenada real = coordenada interna + origen (origin.js)
     this.tiles = null;     // ventanas en mosaico leídas del archivo (la aplicación las restituye)
     this.space = 'model';
@@ -105,11 +106,11 @@ export class Doc {
   // decenas de MB por paso). Las entidades del modelo se cambian con add, remove y modify, o avisando antes con before(e).
   // state() es el estado completo (lo usa la comprobación del deshacer).
   state() {
-    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso, scales: this.scales });
+    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, geo: this.geo, basemap: this.basemap, layIso: this.layIso, scales: this.scales });
   }
   loadState(s) {
     const o = JSON.parse(s);
-    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {}, plotStyles: o.plotStyles || {}, ucs: o.ucs || null, ucsList: o.ucsList || [], views: o.views || [], vportConfigs: o.vportConfigs || [], selFilters: o.selFilters || [], layerFilters: o.layerFilters || [], layIso: o.layIso || null, scales: o.scales?.length ? o.scales : defaultScales() });
+    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {}, plotStyles: o.plotStyles || {}, ucs: o.ucs || null, ucsList: o.ucsList || [], views: o.views || [], vportConfigs: o.vportConfigs || [], selFilters: o.selFilters || [], layerFilters: o.layerFilters || [], geo: o.geo || null, basemap: o.basemap || null, layIso: o.layIso || null, scales: o.scales?.length ? o.scales : defaultScales() });
     if (this.bedit) this.space = 'bedit';
     else if (this.space === 'bedit') this.space = 'model';
     else if (this.space !== 'model' && this.space !== 'bedit' && !this.layouts[this.space]) this.space = 'model';
@@ -122,7 +123,7 @@ export class Doc {
     return JSON.stringify({ layers: this.layers, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, patterns: this.patterns, scales: this.scales, origin: this.origin });
   }
   restState() {
-    return JSON.stringify({ layouts: this.layouts, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso });
+    return JSON.stringify({ layouts: this.layouts, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, geo: this.geo, basemap: this.basemap, layIso: this.layIso });
   }
   *paperEnts() { for (const l of this.layouts) yield* l.ents; if (this.bedit) yield* this.bedit.ents; }
   loadMeta(geo, rest) {
@@ -136,7 +137,7 @@ export class Doc {
     if (rest) {
       const o = JSON.parse(rest);
       for (const e of this.paperEnts()) this.byId.delete(e.id);
-      Object.assign(this, { layouts: o.layouts, nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], plotStyles: o.plotStyles || {}, ucs: o.ucs || null, ucsList: o.ucsList || [], views: o.views || [], vportConfigs: o.vportConfigs || [], selFilters: o.selFilters || [], layerFilters: o.layerFilters || [], layIso: o.layIso || null });
+      Object.assign(this, { layouts: o.layouts, nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], plotStyles: o.plotStyles || {}, ucs: o.ucs || null, ucsList: o.ucsList || [], views: o.views || [], vportConfigs: o.vportConfigs || [], selFilters: o.selFilters || [], layerFilters: o.layerFilters || [], geo: o.geo || null, basemap: o.basemap || null, layIso: o.layIso || null });
       if (this.bedit) this.space = 'bedit';
       else if (this.space === 'bedit') this.space = 'model';
       else if (this.space !== 'model' && !this.layouts[this.space]) this.space = 'model';
@@ -568,9 +569,9 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 13, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      app: 'TrazoCAD', version: 14, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
       textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, cur: this.cur, settings: this.settings, nextId: this.nextId,
-      ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, layIso: this.layIso, scales: this.scales,
+      ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, geo: this.geo, basemap: this.basemap, layIso: this.layIso, scales: this.scales,
       ...(this.origin.x || this.origin.y ? { origin: this.origin } : {}),
       ...(this.viewState ? { tiles: this.viewState() } : {}),
     };
@@ -599,6 +600,7 @@ export class Doc {
     this.vportConfigs = o.vportConfigs || [];
     this.selFilters = o.selFilters || [];
     this.layerFilters = o.layerFilters || [];
+    this.geo = o.geo || null; this.basemap = o.basemap || null;
     this.layIso = o.layIso || null;
     this.scales = o.scales?.length ? o.scales : defaultScales();
     this.origin = o.origin ? { x: +o.origin.x || 0, y: +o.origin.y || 0 } : { x: 0, y: 0 };

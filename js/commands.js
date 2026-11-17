@@ -1,3 +1,6 @@
+import { CATALOG, resolveCRS } from './projections.js';
+import { validateGeo, toGeographic, formatGeographic } from './geographic.js';
+import { OSM, validateMap } from './basemap.js';
 // Comandos estilo AutoCAD. Cada comando es una función asíncrona que pide datos con el contexto `c`.
 import * as G from './geom.js';
 import { ELEV_TYPES, TYPES, cloneEnt, xformEnt, setTwist, crosses, bboxOf, bbPts, describe, fmt, dimParts, plArea, plLength, plPieces, pieceAt, plPolygon, hatchArea, blockAttdefs, mlEff, fieldText, FIELD_PROPS, DATE_FORMATS, insertMatrix, LTYPES, primsOf, ellPts, imageClipLoops, DIM_VARS, dimStyleOf, DEFAULT_DIMSTYLE } from './entities.js';
@@ -2437,6 +2440,7 @@ def('AREA', ['AA'], 'Calcula área y perímetro', async c => {
 
 def('ID', ['IDPUNTO'], 'Muestra las coordenadas de un punto', async c => {
   const p = await c.getPoint('Precise punto'), u = ucsOf(c.doc), q = toUcs(u, p), w = toUcs(wcsOf(c.doc), p);
+  if (c.doc.geo && (c.doc.space === 'model' || c.doc.activeVp)) c.print(formatGeographic(toGeographic(c.doc, p), c.doc.geo.format));
   const z = p.z ?? c.settings.elevation ?? 0; // la Z del punto designado (referencia a un vértice 3D o escrita) o la elevación actual
   c.print(`X = ${fmt(q.x, 4)}     Y = ${fmt(q.y, 4)}     Z = ${fmt(z, 4)}${isWorld(u) ? '' : `   (universal: ${fmt(w.x, 4)}, ${fmt(w.y, 4)})`}`);
 }, { group: 'Utilidades' });
@@ -3734,3 +3738,57 @@ def('_GRIPVERTEX', [], 'Edición de vértices de la línea múltiple por pinzami
   c.print(n ? `${n} vértice(s) ${g.refs[0]?.i < 0 ? 'añadido(s)' : 'suprimido(s)'}.` : 'No se ha podido editar el vértice.');
 }, { hidden: true, keepSel: true });
 
+
+// ================= GEOGRAFÍA (v0.14) =================
+def('GEOGRAPHICLOCATION', ['GEOUBICACION', 'GEORREFERENCIAR'], 'Sistema de coordenadas, referencia, unidades y norte del dibujo', async (c, arg) => {
+  if (c.doc.space !== 'model' || c.doc.bedit) throw Error('Configure la ubicación desde el espacio modelo.');
+  const value = arg || await c.app.ui.geographicDialog(); if (!value) return;
+  const g = validateGeo(value); c.app.gps.stop(); c.doc.geo = g; c.doc.changed();
+  c.print(`Georreferenciación: ${g.crs.name || g.crs.proj}; ${g.crs.axis === 'neu' ? 'X norte / Y este' : 'X este / Y norte'}.`);
+}, { group: 'Geografía' });
+def('-GEOGRAPHICLOCATION', ['-GEOUBICACION'], 'Configura la georreferenciación por línea de comandos', async c => {
+  if (c.doc.space !== 'model' || c.doc.bedit) throw Error('Configure la ubicación desde el espacio modelo.');
+  const crs = await c.getString('Sistema (EPSG:32721, definición PROJ o WKT)', { spaces: true, def: 'EPSG:3857' });
+  const axis = await c.getKeyword('Orden de ejes del sistema', ['EsteNorte', 'NorteEste'], 'EsteNorte');
+  const reference = await c.getPoint('Punto de referencia del dibujo (coordenadas reales)', { def: P(0, 0) });
+  const x = await c.getNumber('Coordenada X de la referencia en el sistema', { def: 0 }), y = await c.getNumber('Coordenada Y de la referencia en el sistema', { def: 0 });
+  const units = await c.getNumber('Unidades del sistema por unidad del dibujo', { min: 1e-12, def: 1 }), north = await c.getNumber('Giro al sistema (grados antihorarios)', { def: 0 });
+  const definition = resolveCRS(crs); definition.axis = axis === 'NorteEste' ? 'neu' : 'enu';
+  const g = validateGeo({ crs: definition, reference: ORG.toReal(c.doc, reference), projected: { x, y }, units, north });
+  c.app.gps.stop(); c.doc.geo = g; c.doc.changed(); c.print('Ubicación geográfica guardada.');
+}, { group: 'Geografía' });
+def('GEOCS', ['SISTEMAGEO', 'EPSG'], 'Consulta el catálogo EPSG, importa .prj o quita la georreferenciación', async c => {
+  const k = await c.getKeyword('Sistema de coordenadas', ['Catálogo', 'Importar', 'Quitar', 'Actual'], 'Actual');
+  if (k === 'Catálogo') { for (const p of CATALOG) c.print(`EPSG:${p.code} · ${p.name}`); }
+  else if (k === 'Importar') {
+    const picked = await c.app.io.pickFile('Definición de coordenadas', ['.prj', '.wkt', '.txt']); if (!picked) return;
+    const crs = resolveCRS(await picked.file.text()); c.doc.geo = validateGeo({ ...(c.doc.geo || {}), crs }); c.app.gps.stop(); c.doc.changed();
+  } else if (k === 'Quitar') { c.app.gps.stop(); c.doc.geo = null; c.doc.basemap = null; c.doc.changed(); }
+  else c.print(c.doc.geo ? JSON.stringify(c.doc.geo) : 'Dibujo sin georreferenciación.');
+}, { group: 'Geografía' });
+def('GEOFORMAT', ['FORMATOGEO'], 'Formato de latitud y longitud en la barra de estado e ID', async c => {
+  if (!c.doc.geo) throw Error('Configure primero GEOGRAPHICLOCATION.');
+  const k = await c.getKeyword('Formato geográfico', ['Decimal', 'Sexagesimal'], c.doc.geo.format === 'dms' ? 'Sexagesimal' : 'Decimal');
+  c.doc.geo = { ...c.doc.geo, format: k === 'Sexagesimal' ? 'dms' : 'decimal' }; c.doc.changed();
+}, { group: 'Geografía' });
+def('GEOMAP', ['MAPABASE'], 'Configura un mapa XYZ, WMS o WMTS bajo el dibujo', async (c, arg) => {
+  if (!c.doc.geo) throw Error('Configure primero GEOGRAPHICLOCATION.');
+  const value = arg || await c.app.ui.basemapDialog(); if (!value) return;
+  c.doc.basemap = validateMap(value); c.doc.changed(); c.app.basemap.warned = false;
+  c.print(`Mapa ${c.doc.basemap.type}: ${c.doc.basemap.enabled ? 'activado' : 'oculto'}.`);
+}, { group: 'Geografía' });
+def('-GEOMAP', ['-MAPABASE'], 'Activa OpenStreetMap u oculta el mapa por línea de comandos', async c => {
+  if (!c.doc.geo) throw Error('Configure primero GEOGRAPHICLOCATION.');
+  const k = await c.getKeyword('Mapa base', ['OpenStreetMap', 'Activar', 'Desactivar'], 'OpenStreetMap');
+  c.doc.basemap = k === 'OpenStreetMap' ? { ...OSM } : { ...(c.doc.basemap || OSM), enabled: k === 'Activar' }; c.doc.changed();
+}, { group: 'Geografía' });
+def('GEOMAPCACHE', ['CACHEMAPA'], 'Guarda la vista actual sin conexión o borra las teselas guardadas', async c => {
+  const k = await c.getKeyword('Caché del mapa', ['Guardar', 'Borrar'], 'Guardar');
+  if (k === 'Borrar') { await c.app.basemap.clear(); c.print('Caché de mapas borrada.'); }
+  else { if (!c.doc.geo || !c.doc.basemap?.enabled) throw Error('Active un mapa georreferenciado.'); const n = await c.app.basemap.prepare(c.app.renderer.R()); c.print(`${n} teselas de la vista disponibles sin conexión (sujetas al almacenamiento del navegador).`); }
+}, { noTx: true, group: 'Geografía' });
+def('GEOPOSITION', ['GPS', 'POSICIONGPS'], 'Muestra la posición GPS, precisión y seguimiento sobre el plano', async c => {
+  const k = await c.getKeyword('Posición del dispositivo', ['Mostrar', 'Seguir', 'Desactivar'], 'Mostrar');
+  if (k === 'Desactivar') c.app.gps.stop(); else c.app.gps.start(k === 'Seguir');
+  c.print(k === 'Desactivar' ? 'GPS desactivado.' : 'GPS activado; esperando posición y permiso del navegador.');
+}, { noTx: true, group: 'Geografía' });

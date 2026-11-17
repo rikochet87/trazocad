@@ -1,3 +1,5 @@
+import { fromGeographic, parseGeographic, GeoLocation } from './geographic.js';
+import { Basemap } from './basemap.js';
 // Núcleo de la aplicación: estado, entrada (ratón, táctil, teclado), motor de comandos y peticiones de datos.
 import * as G from './geom.js';
 import { Doc } from './document.js';
@@ -57,6 +59,8 @@ class App {
     this.input = document.getElementById('cmd-input');
     this.renderer = new Renderer(this, this.base, this.over);
     this.snapper = new Snapper(this);
+    this.basemap = new Basemap(this);
+    this.gps = new GeoLocation(this);
     this.ui = new UI(this);
     this.io = new IO(this);
     this.ui.build();
@@ -88,8 +92,9 @@ class App {
 
   // ---------- Estado ----------
   onDocChange(kind, data) {
+    if (this.gps?.watch != null && this.gps.geo !== this.doc.geo) this.gps.stop();
     if (kind === 'origin') { this.shiftViews(data.dx, data.dy); return; }
-    if (kind === 'reset') { this.sel.clear(); this.beditView = null; this.tiles = [{ r: FULL, view: this.modelView }]; this.layoutTiles(); if (this.tab !== 'model' || this.vpActive || this.view !== this.modelView) { this.tab = 'model'; this.vpActive = null; this.doc.activeVp = null; this.view = this.modelView; } }
+    if (kind === 'reset') { this.gps?.stop(); this.sel.clear(); this.beditView = null; this.tiles = [{ r: FULL, view: this.modelView }]; this.layoutTiles(); if (this.tab !== 'model' || this.vpActive || this.view !== this.modelView) { this.tab = 'model'; this.vpActive = null; this.doc.activeVp = null; this.view = this.modelView; } }
     if (kind === 'constraint-fail') this.print('Aviso: las restricciones no se pueden cumplir con esta modificación (están en conflicto o la geometría no lo permite).', 'err');
     // Los objetos designados que ya no existen se quitan de la designación una vez por tanda de cambios (con muchos
     // objetos, recorrerla en cada cambio sería cuadrático)
@@ -869,6 +874,9 @@ class App {
 
   // Coordenadas en el SCP actual; con * delante (*x,y o @*dx,dy), en el universal
   parsePoint(text, base) {
+    if (/^(GEO:|LL:)/i.test(text)) {
+      try { if (this.doc.space !== 'model' && !this.doc.activeVp) return null; const p = parseGeographic(text); return p && fromGeographic(this.doc, p); } catch { return null; }
+    }
     let t = text.replace(/\s+/g, ''), rel = false;
     if (t.startsWith('@')) { rel = true; t = t.slice(1); } else if (t.startsWith('#')) t = t.slice(1);
     const wcs = t.startsWith('*'), u = wcs ? wcsOf(this.doc) : ucsOf(this.doc);

@@ -1,4 +1,4 @@
-# TrazoCAD — v0.13
+# TrazoCAD — v0.14
 
 Software de dibujo técnico 2D inspirado en AutoCAD, hecho desde cero como **PWA** (aplicación web instalable y sin conexión). JavaScript puro con módulos ES: sin dependencias ni compilación.
 
@@ -11,6 +11,27 @@ node serve.mjs          # http://localhost:8080
 ```
 
 Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta tal cual a cualquier hosting estático con HTTPS (GitHub Pages, Netlify, Hostinger…). En Chrome/Edge aparece el botón **Instalar**.
+
+## Novedades de la v0.14
+
+![Corredor de estudio ilustrativo sobre un mapa sintético XYZ (sin datos cartográficos reales), georreferenciado en WGS 84 / UTM 21S, con origen local, progresivas y coordenadas geográficas sexagesimales en la barra de estado](docs/v14.png)
+
+| Función | Detalle |
+|---|---|
+| **Motor de proyecciones propio** | Transversa de Mercator con serie de Krüger de sexto orden, **UTM**, **Gauss-Krüger**, cónica conforme de **Lambert**, **Mercator**, **Web Mercator** y estereográficas polares y oblicuas (también esfera conforme de Gauss, `sterea`). Ángulos en grados, elipsoides WGS84, GRS80, International 1924 y Clarke 1866 o semiejes propios. Transformaciones de datum **Helmert de 3 y 7 parámetros** (convención de posición vectorial, rotaciones en segundos y escala en ppm), con inversa matricial. Catálogo incorporado: WGS84 geográficas, Web Mercator, Mercator mundial, UTM norte/sur, ETRS89 UTM 28–38N, Lambert-93, polares 3413/3031 y fajas argentinas POSGAR 2007 / Campo Inchauspe. Orden **X este / Y norte** o **X norte / Y este** configurable |
+| **Georreferenciación** (`GEOGRAPHICLOCATION`) | Diálogo para elegir el sistema del catálogo, pegar una definición **PROJ/WKT** o importar **.prj**, vincular un punto real del dibujo con una coordenada proyectada, fijar unidades por unidad del dibujo y giro hacia el sistema. No mueve los objetos y trabaja sobre las coordenadas **reales**, por encima del origen local de v0.13. Se guarda en `.tcad` y se deshace/rehace. `-GEOGRAPHICLOCATION` configura lo mismo por línea de comandos; `GEOCS` consulta el catálogo, importa definiciones o quita la ubicación |
+| **Coordenadas geográficas** | Latitud/longitud en la barra de estado y en **ID**, en grados decimales o sexagesimales (`GEOFORMAT`). En cualquier petición de punto del modelo, **`GEO:latitud,longitud[,altitud]`** o `LL:`: `GEO:-34.6,-58.4` o `GEO:34°36'0"S,58°24'0"O`. Se transforman desde WGS84 al sistema del dibujo, incluyendo datum, referencia, unidades, giro y origen local |
+| **Mapa base** (`GEOMAP`) | Bajo el modelo y en ventanas gráficas, con **OpenStreetMap por defecto**, o URL **XYZ**, **WMS 1.1.1** y **WMTS Web Mercator** configurables. Capa, matriz/prefijo WMTS, estilo, atribución, zoom máximo y opacidad. Reproyección mediante malla de triángulos al sistema del proyecto, también con vistas giradas. `-GEOMAP` activa OSM, muestra u oculta el mapa por línea de comandos |
+| **Mapa sin conexión y exportación** | Las teselas consultadas se guardan en **Cache Storage**, hasta 512 imágenes; cuatro descargas simultáneas y hasta 64 teselas por vista (se reduce el zoom si hace falta). `GEOMAPCACHE` guarda la vista actual o borra la caché. **PNG y PDF** esperan las teselas de su propia escala e incrustan el fondo reproyectado con atribución y opacidad; el dibujo del PDF sigue siendo vectorial. La actualización de la PWA conserva la caché de mapas |
+| **GPS** (`GEOPOSITION`) | Posición del dispositivo con **círculo de precisión en metros**, marcador y seguimiento del centro de vista. Mostrar, Seguir y Desactivar; errores de permiso, falta de posición y tiempo de espera en la línea de comandos. La posición se recalcula al cambiar el origen local y el seguimiento se detiene al cambiar de dibujo o georreferenciación. Requiere HTTPS/localhost, soporte de Geolocation y permiso del navegador |
+| **Otros** | Nueva pestaña **Geografía**, ayuda F1, archivos `.tcad` versión **14** compatibles con los anteriores y caché PWA `trazocad-v14`. Pruebas de control contra PROJ, georreferenciación/deshacer/GPS simulado y mapas con caché sin red y exportación. El ejecutor de pruebas devuelve un código de error ante excepciones, tiempos agotados o errores del navegador |
+
+### Georreferenciar un proyecto
+
+1. Ejecute `GEOGRAPHICLOCATION` en el modelo. Para un dibujo que ya tiene coordenadas UTM, elija su EPSG y deje referencias a cero, unidades 1 y giro 0. Para un dibujo local, vincule una coordenada real del dibujo con su coordenada en el sistema elegido. **Cambiar el sistema no reproyecta los objetos existentes**: cambia su interpretación geográfica.
+2. En Gauss-Krüger, compruebe si X significa norte o este y elija el orden correspondiente. Las referencias proyectadas usan ese mismo orden. Las referencias del dibujo siempre usan sus X/Y reales.
+3. Active `GEOMAP` o `-GEOMAP` → OpenStreetMap. Los servicios WMS/WMTS necesitan permitir **CORS**. Para WMTS se admiten matrices Web Mercator cuadradas, teselas de 256 píxeles, origen noroeste y niveles numéricos desde 0 (con prefijo configurable).
+4. Use `GEOFORMAT`, `ID`, puntos `GEO:` y `GEOPOSITION`. Antes de salir sin conexión, guarde la vista con `GEOMAPCACHE`. Las teselas no se incrustan en el `.tcad`: permanecen en el almacenamiento de ese navegador.
 
 ## Novedades de la v0.13
 
@@ -215,6 +236,9 @@ js/arrays.js     Matrices asociativas: rectangular (con niveles y ángulo de fil
 js/xclip.js      Delimitación de referencias (XCLIP): recorte de primitivas con el contorno
 js/assoc.js      Cotas asociativas y marcas/líneas de centro: referencias a la geometría y recálculo
 js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, grupos, estados de capa, patrones, deshacer incremental (diario de cambios del modelo), diario para el índice espacial, asociatividad (también matriz–recorrido)
+js/projections.js Proyecciones, catálogo EPSG, WKT/PROJ, elipsoides y transformaciones Helmert
+js/geographic.js Georreferenciación, entrada/formato geográfico y posición GPS
+js/basemap.js    XYZ/WMS/WMTS, reproyección por malla, caché sin conexión y fondo para PNG/PDF
 js/origin.js     Origen local del dibujo: coordenadas reales ↔ internas, cambio de origen, origen automático y copia con las coordenadas reales para el DXF
 js/dxfworker.js  Lectura de DXF en segundo plano (Web Worker) con avisos de progreso
 js/xref.js       Referencias externas: lectura, prefijos, recarga, desenlace, unión y archivos recordados (IndexedDB)
@@ -250,6 +274,10 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 ```
 
 ## Limitaciones conocidas
+
+- **Geografía (v0.14):** el catálogo EPSG es un subconjunto incorporado, no una consulta a una base EPSG completa. WKT1/WKT2 admiten los métodos y parámetros implementados; los no admitidos se rechazan. No hay rejillas NTv2, geoide, épocas ni transformaciones dependientes del tiempo: sin `TOWGS84` se usa una transformación nula entre el elipsoide elegido y WGS84, que es una **aproximación**, no una garantía de precisión geodésica. Para un datum local, proporcione sus parámetros oficiales y compruebe puntos de control. La altura es elipsoidal cuando interviene Helmert; no se transforma a cota ortométrica. El cambio de sistema no reproyecta los objetos existentes, y la georreferenciación todavía no viaja en DXF.
+- La transversa de Mercator se limita a ±30° del meridiano central; se rechazan los polos exactos. El mapa base se limita a la cobertura Web Mercator (±85,0511°), sin continuidad de vistas que cruzan el antimeridiano. La reproyección de imágenes es aproximada (malla de 8×8 por tesela), no un ortomosaico para medición. Las coordenadas geográficas sólo se introducen en el modelo (incluido MSPACE), no en papel ni en el editor de bloques.
+- WMS usa 1.1.1 y EPSG:3857; WMTS sólo matrices compatibles con Web Mercator, no cualquier TileMatrixSet. No se consulta GetCapabilities ni se manejan credenciales de servicios. Los proveedores deben permitir CORS. La disponibilidad, licencia y atribución del servicio dependen del proveedor; la caché sólo guarda las vistas consultadas, no descarga regiones completas. El navegador puede desalojarla por cuota. No hay actualización automática de teselas ya guardadas: `GEOMAPCACHE` → Borrar permite renovarlas. El mapa no se exporta a DXF/SVG ni a la impresión basada en SVG; sí a PNG/PDF, con las teselas disponibles si alguna descarga falla. El GPS puede no estar disponible en un equipo de escritorio y su precisión depende del dispositivo.
 
 - La asociatividad de cotas y sombreados no se exporta a DXF: AutoCAD los abre como cotas y sombreados normales (las cotas sí como entidades DIMENSION editables). Una cota asociada a un punto de una polilínea sigue al vértice por su número; si se recorta o parte el objeto, la cota pierde la asociación.
 - En DXF 2000 las directrices se exportan como LEADER + MTEXT (ese formato no tiene MULTILEADER) y los globos como círculo y texto; en DXF 2007, como MULTILEADER. Las flechas abiertas, de trazo oblicuo y de punto se exportan como cerradas en los MULTILEADER. En DXF 2007 las tablas se exportan como ACAD_TABLE con sus estilos (sólo celdas de texto, sin formato por celda); en DXF 2000 y R12, descompuestas en líneas y MTEXT.
@@ -296,9 +324,11 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 - El origen local sólo afecta al espacio modelo (el papel y los bloques tienen sus propias coordenadas). Los objetos que devuelven `tc.get` y `tc.all` tienen las coordenadas internas (`tc.real` las pasa a reales), y un cambio hecho directamente en ellos, sin `tc.modify`, no se puede deshacer. Las líneas de los patrones de sombreado pasan por el origen interno, de modo que con un origen local quedan desplazadas respecto a las de AutoCAD (el sombreado es el mismo).
 - La imagen en caché del modelo se usa en la vista única del modelo con 3000 objetos o más; las ventanas en mosaico, las presentaciones y el editor de bloques se dibujan enteros en cada fotograma. Cambiar la escala, el giro, las capas o un estilo vuelve a dibujarlo todo (en varios fotogramas). La apertura en segundo plano necesita Web Workers de módulo (navegadores actuales); si no, el DXF se lee en el hilo principal.
 
-## Hoja de ruta (v0.14+)
+## Hoja de ruta (v0.15+)
 
-**SIG 1: georreferenciación y mapa base** (v0.14): **motor de proyecciones** propio (transversa de Mercator y UTM, Gauss-Krüger con el orden de ejes configurable, cónica conforme de Lambert, Mercator y Web Mercator, estereográficas) con **datums** y transformaciones de Helmert de 3 y 7 parámetros, definiciones WKT/PROJ/`.prj` y un catálogo EPSG incorporado con los sistemas más usados; **georreferenciación del dibujo** (`GEOGRAPHICLOCATION`): sistema de coordenadas, punto de referencia, unidades y norte, guardados en el `.tcad` y relacionados con el origen local de la v0.13; **coordenadas geográficas** (latitud y longitud, en grados sexagesimales o decimales) en la barra de estado e `ID`, y entrada de puntos en geográficas; **mapa base** bajo el dibujo con teselas XYZ, WMS y WMTS configurables (OpenStreetMap por defecto), reproyectado al sistema del dibujo, con transparencia, caché sin conexión y exportación a PNG/PDF; y **posición GPS** del dispositivo sobre el plano (Geolocation API) con su precisión y seguimiento.
+**SIG 2: formatos y atributos** (v0.15): importar y exportar **GeoJSON**, **Shapefile** (`.shp`, `.shx`, `.dbf`, `.prj`), **KML/KMZ** y **GeoTIFF** con reproyección al sistema del dibujo; **tabla de atributos** por objeto con campos tipados, consulta y edición; **simbología temática** y etiquetas por atributo; datos catastrales (parcelas, titulares y nomenclatura) configurables por proyecto. Mantener el motor y los formatos sin dependencias de producción.
+
+**Pendientes de la v0.14**: ampliar catálogo/métodos WKT y PROJ, rejillas de datum, lectura de GetCapabilities y matrices WMTS adicionales, continuidad en el antimeridiano, control adaptativo del error de reproyección de imágenes, georreferenciación en DXF y mapa en SVG/impresión.
 
 **Pendientes de la v0.13**: desfase, recorte, alargamiento, unión y partición de polilíneas 3D; referencias a objetos con la Z interpolada a lo largo de cualquier objeto; caras 3D con relleno según la cota; exportar mallas policara; la caché de dibujo en las ventanas en mosaico y gráficas.
 
@@ -324,7 +354,7 @@ El objetivo final es un programa con las capacidades de AutoCAD, orientado a la 
 | **v0.11** | CAD | Terminada: SCP (UCS) con nombre, por objeto y por tres puntos, vistas con nombre, ventanas en mosaico del modelo, QSELECT, FILTER, FIND, OVERKILL, AUDIT y herramientas de capas (aislar, recorrer, fusionar, filtros) |
 | **v0.12** | CAD | Terminada: vistas y ventanas gráficas giradas (PLAN, DVIEW, Giro, VPROTATEASSOC, UCSVP), escalas anotativas, guiones `.scr` con grabación de acciones, API en JavaScript, paletas de herramientas, biblioteca de bloques viales y DesignCenter |
 | **v0.13** | Base | Terminada: cota Z en los objetos, polilíneas y caras 3D (con mallas TIN de DXF), **coordenadas grandes** sin pérdida de precisión (origen local de dibujo) y rendimiento con más de 100 000 objetos (deshacer e índice espacial incrementales, dibujo en caché, DXF en segundo plano) |
-| **v0.14** | SIG 1 | Motor de proyecciones y datums, georreferenciación del dibujo (sistema de coordenadas, punto de referencia, norte), coordenadas geográficas en la barra de estado, **mapa base** sobre el dibujo (teselas XYZ, WMS y WMTS configurables, con OpenStreetMap por defecto y caché sin conexión) y posición GPS del dispositivo |
+| **v0.14** | SIG 1 | Terminada: motor de proyecciones y datums, georreferenciación del dibujo (sistema de coordenadas, punto de referencia, norte), coordenadas geográficas en la barra de estado, **mapa base** sobre el dibujo (teselas XYZ, WMS y WMTS configurables, con OpenStreetMap por defecto y caché sin conexión) y posición GPS del dispositivo |
 | **v0.15** | SIG 2 | Importar y exportar GeoJSON, Shapefile (`.shp` + `.dbf` + `.prj`), KML/KMZ y GeoTIFF con reproyección al vuelo; **tabla de atributos** por objeto, simbología temática y etiquetas por atributo; datos catastrales (parcelas, titulares, nomenclatura) |
 | **v0.16** | SIG 3 | Geoprocesos vectoriales: área de influencia, intersección, recorte, unión, diferencia, disolución, unión espacial, consultas por atributo y por ubicación; sobre modelos digitales de terreno, pendientes, orientaciones y sombreado |
 | **v0.17** | Topografía | **Puntos** (importación de libretas CSV/TXT con formatos PNEZD configurables, grupos de puntos y claves de descripción que asignan capa, símbolo y etiqueta), poligonales con compensación, **superficie TIN** con líneas de quiebre, contornos y zonas excluidas, curvas de nivel con intervalos mayor y menor, análisis de cotas y pendientes, superficie desde un MDT |

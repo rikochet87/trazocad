@@ -52,7 +52,9 @@ try {
   await page.waitForFunction(() => window.app, { timeout: 5000 });
   if (testFile) {
     const body = readFileSync(testFile, 'utf8');
-    const res = await Promise.race([new Promise(r => setTimeout(() => r('TIMEOUT'), 30000)), page.evaluate(`(async () => { const app = window.app; try { ${body} } catch (e) { return "ERROR: " + e.stack; } })()`)]);
+    let timer;
+    const res = await Promise.race([new Promise(r => { timer = setTimeout(() => r('TIMEOUT'), 30000); }), page.evaluate(`(async () => { const app = window.app; try { ${body} } catch (e) { return "ERROR: " + e.stack; } })()`)]).finally(() => clearTimeout(timer));
+    if (res === 'TIMEOUT' || typeof res === 'string' && res.startsWith('ERROR:')) process.exitCode = 1;
     if (res === 'TIMEOUT') console.log('TIMEOUT; orden pendiente:', await page.evaluate(() => window.app.req && window.app.req.prompt));
     // Archivos binarios o grandes que devuelve la prueba: se guardan en tools/out
     if (res && typeof res === 'object') {
@@ -66,7 +68,8 @@ try {
   }
   await new Promise(r => setTimeout(r, 300));
   if (shot) await page.screenshot({ path: shot });
-} catch (e) { console.log('FALLO:', e.message); }
+} catch (e) { console.log('FALLO:', e.message); process.exitCode = 1; }
 if (errs.length) console.log('CONSOLA:\n' + errs.join('\n'));
+if (errs.some(s => s.startsWith('[pageerror]'))) process.exitCode = 1;
 await browser.close();
 srv.kill();

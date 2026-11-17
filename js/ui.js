@@ -1,3 +1,6 @@
+import { CATALOG, resolveCRS } from './projections.js';
+import { OSM, validateMap } from './basemap.js';
+import { toGeographic, formatGeographic } from './geographic.js';
 // Interfaz: cinta de opciones, paletas (propiedades y capas), barra de estado, línea de comandos y diálogos.
 import { icon } from './icons.js';
 import { CMDS, loadPatterns } from './commands.js';
@@ -74,6 +77,11 @@ const RIBBON = [
       ['GCPERPENDICULAR', 'Perpend.', 'gcperp'], ['GCHORIZONTAL', 'Horizontal', 'gchoriz'], ['GCVERTICAL', 'Vertical', 'gcvert'], ['GCTANGENT', 'Tangente', 'gctan'], ['GCEQUAL', 'Igual', 'gcequal']] },
     { name: 'De cota', items: [['DCLINEAR', 'Lineal', 'dcon'], ['DCALIGNED', 'Alineada', 'dimali'], ['DCANGULAR', 'Angular', 'dimang'], ['DCRADIUS', 'Radio', 'dimrad'], ['DCDIAMETER', 'Diámetro', 'dimdia']] },
     { name: 'Administrar', items: [['DELCONSTRAINT', 'Suprimir', 'delcon'], ['PARAMETERS', 'Parámetros', 'params'], ['CONSTRAINTBAR', 'Mostrar/ocultar', 'cbar']] },
+  ] },
+  { tab: 'Geografía', groups: [
+    { name: 'Ubicación del proyecto', items: [['GEOGRAPHICLOCATION', 'Georreferenciar', 'ucs'], ['GEOCS', 'Sistema de coordenadas', 'origin'], ['GEOFORMAT', 'Formato geográfico', 'settings']] },
+    { name: 'Mapa base', items: [['GEOMAP', 'Configurar mapa', 'image'], ['GEOMAPCACHE', 'Caché sin conexión', 'save']] },
+    { name: 'Posición', items: [['GEOPOSITION', 'GPS', 'snap']] },
   ] },
   { tab: 'Vista', groups: [
     { name: 'Navegar', items: [['!zoomext', 'Extensión', 'zoomext'], ['!zoomwin', 'Ventana', 'zoomwin'], ['!zoomprev', 'Previo', 'zoomprev'], ['PAN', 'Encuadre', 'pan'], ['REGEN', 'Regenerar', 'regen']] },
@@ -337,7 +345,7 @@ export class UI {
   }
   // Coordenadas del cursor en el SCP actual
   // Coordenadas del cursor (reales, con el origen local) y Z: la del punto de referencia 3D o la elevación actual
-  updateCoords(p) { const S = this.app.doc.settings, d = S.coordDec, q = toUcs(ucsOf(this.app.doc), p); this.coordsEl.textContent = `${fmt(q.x, d)}, ${fmt(q.y, d)}, ${fmt(p.z ?? S.elevation ?? 0, d)}`; }
+  updateCoords(p) { const S = this.app.doc.settings, d = S.coordDec, q = toUcs(ucsOf(this.app.doc), p); this.coordsEl.textContent = `${fmt(q.x, d)}, ${fmt(q.y, d)}, ${fmt(p.z ?? S.elevation ?? 0, d)}`; if (this.app.doc.geo && (this.app.doc.space === 'model' || this.app.doc.activeVp)) { try { this.coordsEl.textContent += ' · ' + formatGeographic(toGeographic(this.app.doc, p), this.app.doc.geo.format); } catch { this.coordsEl.textContent += ' · fuera del dominio geográfico'; } } }
 
   // ---------- Paleta lateral ----------
   buildPalette() {
@@ -838,13 +846,13 @@ export class UI {
       const box = h('div', { class: 'modal', role: 'dialog', 'aria-label': title },
         h('div', { class: 'modal-head' }, h('span', {}, title), h('button', { class: 'ib', html: icon('close', 16), onclick: () => close(null) })),
         h('div', { class: 'modal-body' }, content),
-        h('div', { class: 'modal-foot' }, ...buttons.map(b => h('button', { class: 'btn' + (b.primary ? ' primary' : ''), onclick: () => close(typeof b.value === 'function' ? b.value() : b.value) }, b.label))));
+        h('div', { class: 'modal-foot' }, ...buttons.map(b => h('button', { class: 'btn' + (b.primary ? ' primary' : ''), onclick: () => { if (!b.validate || b.validate()) close(typeof b.value === 'function' ? b.value() : b.value); } }, b.label))));
       root.replaceChildren(h('div', { class: 'modal-back', onmousedown: e => { if (e.target === e.currentTarget) close(null); } }, box));
       root.hidden = false;
       box.addEventListener('keydown', e => {
         e.stopPropagation();
         if (e.key === 'Escape') close(null);
-        if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') { const p = buttons.find(b => b.primary); if (p) close(typeof p.value === 'function' ? p.value() : p.value); }
+        if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') { const p = buttons.find(b => b.primary); if (p && (!p.validate || p.validate())) close(typeof p.value === 'function' ? p.value() : p.value); }
       });
       setTimeout(() => (box.querySelector('textarea,input,select') || box.querySelector('.btn.primary'))?.focus(), 30);
     });
@@ -1732,6 +1740,49 @@ export class UI {
 
   // ---------- SCP y vistas ----------
   // Administrador de SCP. Devuelve {action: 'set'|'save'|'rename'|'delete', name} o null.
+  async geographicDialog() {
+    const g = this.app.doc.geo || {}, fields = {};
+    const inp = (key, label, value, type = 'number') => { const el = h('input', { type, step: 'any', value: value ?? '' }); fields[key] = el; return h('label', { class: 'fld' }, label, el); };
+    const crs = h('textarea', { rows: 3, spellcheck: 'false', 'aria-label': 'Sistema EPSG, WKT o PROJ' });
+    crs.value = g.crs ? g.crs.code ? `EPSG:${g.crs.code}` : JSON.stringify(g.crs) : 'EPSG:3857';
+    const catalog = h('select', { onchange: () => { if (catalog.value) crs.value = `EPSG:${catalog.value}`; } }, h('option', { value: '' }, 'Elegir del catálogo EPSG…'), ...CATALOG.map(c => h('option', { value: c.code }, `EPSG:${c.code} · ${c.name}`)));
+    const axis = h('select', {}, h('option', { value: 'enu' }, 'X = este, Y = norte'), h('option', { value: 'neu' }, 'X = norte, Y = este')); axis.value = g.crs?.axis || 'enu';
+    const error = h('p', { class: 'hint', role: 'alert' });
+    const file = h('input', { type: 'file', accept: '.prj,.wkt,.txt', onchange: async () => { if (file.files[0]) crs.value = await file.files[0].text(); } });
+    const box = h('div', {}, h('p', { class: 'hint' }, 'La referencia vincula un punto real del dibujo con un punto del sistema elegido. No desplaza los objetos. Para coordenadas ya proyectadas deje ambas referencias a cero, escala 1 y norte 0.'),
+      h('label', { class: 'fld' }, 'Sistema de coordenadas', catalog, crs), h('label', { class: 'fld' }, 'Importar definición .prj / WKT', file), h('label', { class: 'fld' }, 'Orden de ejes del sistema', axis),
+      h('div', { class: 'grid2' }, inp('rx', 'Referencia del dibujo · X real', g.reference?.x ?? 0), inp('ry', 'Referencia del dibujo · Y real', g.reference?.y ?? 0), inp('px', 'Referencia proyectada · X', g.projected?.x ?? 0), inp('py', 'Referencia proyectada · Y', g.projected?.y ?? 0), inp('units', 'Unidades del sistema por unidad de dibujo', g.units ?? 1), inp('north', 'Giro hacia el sistema (grados antihorarios)', g.north ?? 0)), error);
+    // La validación se hace antes de cerrar; los errores mantienen todos los campos editables.
+    let result = null;
+    const check = () => {
+      try {
+        const definition = crs.value.trim().startsWith('{') ? JSON.parse(crs.value) : crs.value;
+        const c = resolveCRS(definition); c.axis = axis.value;
+        const val = { crs: c, reference: { x: +fields.rx.value, y: +fields.ry.value }, projected: { x: +fields.px.value, y: +fields.py.value }, units: +fields.units.value, north: +fields.north.value, format: g.format || 'decimal' };
+        if (Object.values(fields).some(f => !f.value.trim()) || !(val.units > 0) || Object.values(fields).some(f => !Number.isFinite(+f.value))) throw Error('Complete los valores numéricos con unidades mayores que cero.');
+        result = val; error.textContent = 'Configuración válida.'; return true;
+      } catch (e) { result = null; error.textContent = e.message; return false; }
+    };
+    const ok = await this.modal('Ubicación geográfica del dibujo', box, [{ label: 'Cancelar', value: false }, { label: 'Aceptar', validate: check, value: true, primary: true }]);
+    return ok ? result : null;
+  }
+  async basemapDialog() {
+    const m = this.app.doc.basemap || OSM, f = {};
+    const inp = (k, label, val, type = 'text') => { const el = h('input', { type, value: val ?? '', step: 'any' }); f[k] = el; return h('label', { class: 'fld' }, label, el); };
+    const type = h('select', {}, ...['XYZ', 'WMS', 'WMTS'].map(t => h('option', { value: t }, t))); type.value = m.type;
+    const enabled = h('input', { type: 'checkbox', checked: m.enabled !== false });
+    const box = h('div', {}, h('label', { class: 'fld' }, 'Tipo de servicio', type), inp('url', 'URL XYZ con {z}/{x}/{y}, o dirección del servicio', m.url),
+      h('div', { class: 'grid2' }, inp('layer', 'Capa WMS / WMTS', m.layer), inp('matrixSet', 'WMTS · conjunto Web Mercator', m.matrixSet), inp('matrixPrefix', 'WMTS · prefijo de nivel (opcional)', m.matrixPrefix), inp('style', 'Estilo del servicio (opcional)', m.style), inp('maxZoom', 'Zoom máximo (0–22)', m.maxZoom, 'number'), inp('opacity', 'Opacidad (0–1)', m.opacity, 'number')),
+      inp('attribution', 'Atribución del proveedor', m.attribution), h('label', { class: 'chk' }, enabled, 'Mostrar mapa base'), h('p', { class: 'hint' }, 'WMS: versión 1.1.1, EPSG:3857. WMTS: matriz cuadrada Web Mercator de 256 píxeles, origen noroeste, niveles 0–22. El servidor debe permitir CORS. Las teselas consultadas quedan en caché, hasta 512 imágenes.'));
+    const error = h('p', { class: 'hint', role: 'alert' }); box.append(error); let result = null;
+    const check = () => {
+      try { result = validateMap({ ...m, ...Object.fromEntries(Object.entries(f).map(([k, el]) => [k, ['maxZoom', 'opacity'].includes(k) ? +el.value : el.value.trim()])), type: type.value, enabled: enabled.checked }); return true; }
+      catch (e) { error.textContent = e.message; return false; }
+    };
+    const ok = await this.modal('Mapa base', box, [{ label: 'Cancelar', value: false }, { label: 'Aceptar', validate: check, value: true, primary: true }]);
+    return ok ? result : null;
+  }
+
   ucsManager() {
     const app = this.app, doc = app.doc, S = doc.settings;
     const desc = u => (u ? `${fmt(u.o.x, 4)}, ${fmt(u.o.y, 4)}` : '0, 0');
@@ -2014,6 +2065,7 @@ export class UI {
     const box = h('div', { class: 'help' });
     box.append(h('div', { class: 'help-intro', html: `
       <p><b>TrazoCAD</b> es un programa de dibujo 2D de precisión inspirado en AutoCAD. Escriba un comando (o su alias) en la línea de comandos y pulse <kbd>Intro</kbd> o <kbd>Espacio</kbd>. <kbd>Intro</kbd> en vacío repite el último comando; <kbd>Esc</kbd> cancela.</p>
+      <h4>Geografía y mapas (v0.14)</h4><p><b>GEOGRAPHICLOCATION</b> configura EPSG, WKT o PROJ, referencia, unidades y norte sin mover los objetos; <b>GEOCS</b> lista el catálogo o importa un .prj. <b>GEOFORMAT</b> elige grados decimales o sexagesimales. En cualquier petición de punto del modelo escriba <code>GEO:latitud,longitud[,altitud]</code>, por ejemplo <code>GEO:34°36'0&quot;S,58°24'0&quot;O</code>. ID y la barra de estado muestran las geográficas. <b>GEOMAP</b> configura XYZ, WMS 1.1.1 o WMTS Web Mercator, transparencia y atribución. <b>GEOMAPCACHE</b> guarda las teselas visibles o borra la caché. Los servicios deben permitir CORS; las teselas disponibles se incluyen en PNG y PDF. <b>GEOPOSITION</b> muestra GPS con precisión y seguimiento; necesita HTTPS y permiso del navegador.</p>
       <h4>Entrada de coordenadas</h4>
       <ul>
         <li><code>x,y</code> absoluta · <code>@dx,dy</code> relativa · <code>@dist&lt;ángulo</code> polar relativa · <code>dist&lt;ángulo</code> polar absoluta</li>
