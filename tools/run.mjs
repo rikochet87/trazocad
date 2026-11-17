@@ -44,12 +44,13 @@ const page = await browser.newPage();
 await page.setViewport({ width: +W, height: +H, deviceScaleFactor: 1 });
 const errs = [];
 page.on('console', async m => { if (m.type() === 'error' || m.type() === 'warning') { let t = m.text(); try { t = (await Promise.all(m.args().map(a => a.evaluate(v => v instanceof Error ? v.stack : String(v))))).join(' '); } catch {} errs.push(`[${m.type()}] ${t}`); } });
+page.on('requestfailed', req => errs.push(`[red] ${new URL(req.url()).pathname}: ${req.failure()?.errorText}`));
 page.on('pageerror', e => errs.push(`[pageerror] ${e.message}`));
 // TC_VERIFY_UNDO=1: la app comprueba en cada transacción que deshacer y rehacer devuelven el estado exacto
 if (process.env.TC_VERIFY_UNDO) await page.evaluateOnNewDocument(() => { window.TC_VERIFY_UNDO = true; });
 try {
   await page.goto(`http://localhost:${port}/?nuevo`, { waitUntil: 'networkidle0' });
-  await page.waitForFunction(() => window.app, { timeout: 5000 });
+  await page.waitForFunction(() => window.app, { timeout: 15000 });
   if (testFile) {
     const body = readFileSync(testFile, 'utf8');
     let timer;

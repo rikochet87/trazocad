@@ -1,3 +1,4 @@
+import { labelEntity } from './gis.js';
 // Archivos: nuevo, abrir, guardar (.tcad), exportar DXF/SVG/PNG, imprimir y autoguardado.
 import * as G from './geom.js';
 import { dimParts, ellPts, TXT_K, FONT, plPieces, blockEnts, bbPts, bboxOf, mtextGeom, mleaderGeom, tableGeom, fieldText, ENV, insertClip, mlGeom, LTYPES, imageAlpha, imageClipLoops, dimTexts } from './entities.js';
@@ -291,7 +292,7 @@ export class IO {
   plotFor(lay) { this.plot = plotStyler(this.app.doc, lay); this.ltk = 1; return this.plot; }
   printSty(lay, px) { // función entidad → estilo de pintado de render.js para PNG y PDF
     const doc = this.app.doc, ps = plotStyler(doc, lay);
-    return e => { const s = doc.style(e), st = ps ? ps(e, s) : s; return { color: ps ? st.color : printColor(st.color), px: px(st.lw), pat: st.pat, ltscale: doc.settings.ltscale }; };
+    return e => { const s = doc.style(e), st = ps ? ps(e, s) : s; return { gisFill: s.gisFill, color: ps ? st.color : printColor(st.color), px: px(st.lw), pat: st.pat, ltscale: doc.settings.ltscale }; };
   }
   svgEnts(ents, lwScale, out, vis = e => this.app.doc.layer(e.layer).on) {
     const doc = this.app.doc;
@@ -299,7 +300,7 @@ export class IO {
       const st = this.plotSt(e), col = this.plot ? st.color : printColor(st.color);
       const dash = st.pat.length ? ` stroke-dasharray="${st.pat.map(v => n5(Math.abs(v) * doc.settings.ltscale * (this.ltk || 1)) || 0.2).join(' ')}"` : '';
       const w = lwScale ? `stroke-width="${n5(Math.max(0.13, st.lw) * lwScale)}"` : `stroke-width="${n5(Math.max(0.25, st.lw) * 3.78 / 3)}" vector-effect="non-scaling-stroke"`;
-      return `stroke="${col}" ${w} fill="none" stroke-linecap="round" stroke-linejoin="round"${dash}`;
+      return `stroke="${col}" ${w} fill="${st.gisFill && (e.type === 'region' || e.type === 'pline' && e.closed) ? col : 'none'}" fill-opacity="0.22" fill-rule="evenodd" stroke-linecap="round" stroke-linejoin="round"${dash}`;
     };
     const textEl = (t, col) => {
       const st = doc.textStyle(t.style), anchor = t.align === 'c' ? 'middle' : t.align === 'r' ? 'end' : 'start';
@@ -334,6 +335,7 @@ export class IO {
       if (!vis(e)) continue;
       e = annoEff(e); // representación de la escala de anotación (la de la ventana gráfica, 1:1 en el papel)
       const s = stroke(e), col = this.plot ? this.plotSt(e).color : printColor(doc.style(e).color);
+      const label = e.data && labelEntity(doc, e); if (label) out.push(textEl(label, printColor(label.color)));
       switch (e.type) {
         case 'line': out.push(`<line x1="${n5(e.p1.x)}" y1="${n5(e.p1.y)}" x2="${n5(e.p2.x)}" y2="${n5(e.p2.y)}" ${s}/>`); break;
         case 'center': out.push(`<path d="${(e.lines || []).map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}" ${s}/>`); break;

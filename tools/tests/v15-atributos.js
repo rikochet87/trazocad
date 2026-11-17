@@ -1,0 +1,28 @@
+const G = await import('./js/gis.js'), { validateGeo } = await import('./js/geographic.js'), { Doc } = await import('./js/document.js');
+let checks = 0; const assert = (v, m) => { checks++; if (!v) throw Error(m); }, tick = () => new Promise(r => setTimeout(r, 20));
+const doc = app.doc; doc.geo = validateGeo({ crs: 'EPSG:3857' });
+const ids = G.importFeatures(doc, { type: 'FeatureCollection', features: Array.from({ length: 105 }, (_, i) => ({ type: 'Feature', properties: { nombre: `Parcela ${i}`, valor: i, uso: i % 2 ? 'Urbano' : 'Rural' }, geometry: { type: 'Polygon', coordinates: [[[i * .0002, 0], [i * .0002 + .0001, 0], [i * .0002 + .0001, .0001], [i * .0002, .0001], [i * .0002, 0]]] } })) }, { layer: 'Parcelas' });
+doc.begin(); G.addField(doc, 'Parcelas', { name: 'fecha', type: 'fecha', default: '2026-11-17' }); doc.commit();
+doc.begin(); G.setValue(doc, [ids[0]], 'valor', '999'); doc.commit(); assert(doc.get(ids[0]).data.valor === 999, 'Editar entero'); doc.undo(); assert(doc.get(ids[0]).data.valor === 0, 'Deshacer atributo'); doc.redo();
+let bad = false; try { G.setValue(doc, [ids[0]], 'valor', 'abc'); } catch { bad = true; } assert(bad && doc.get(ids[0]).data.valor === 999, 'Rechazar dato inválido sin modificar');
+assert(G.queryRows(doc, { layer: 'Parcelas', field: 'valor', op: '>', value: 100 }).length === 5, 'Consulta numérica');
+assert(G.queryRows(doc, { layer: 'Parcelas', field: 'uso', op: '=', value: 'Urbano' }).length === 52, 'Consulta categoría');
+await app.run('MAPTHEME', { layer: 'Parcelas', theme: { mode: 'categorias', field: 'uso', rules: [{ value: 'Rural', color: '#67b681' }, { value: 'Urbano', color: '#66a9dc' }] } });
+assert(doc.style(doc.get(ids[0])).color === '#67b681', 'Color temático');
+await app.run('MAPLABEL', { layer: 'Parcelas', label: { field: 'nombre', height: 2, color: '#ffffff' } });
+assert(G.labelEntity(doc, doc.get(ids[0])).text === 'Parcela 0', 'Etiqueta dinámica');
+doc.begin(); G.setValue(doc, [ids[0]], 'nombre', 'Nueva parcela'); doc.commit(); assert(G.labelEntity(doc, doc.get(ids[0])).text === 'Nueva parcela', 'Etiqueta sigue dato');
+await app.run('MAPCADASTRE', { layer: 'Parcelas', fields: [{ name: 'titular_local', type: 'texto' }, { name: 'nomenclatura', type: 'texto' }] }); assert(doc.gis.schemas.Parcelas.some(f => f.name === 'titular_local'), 'Catastro configurable');
+const copy = new Doc(); copy.fromJSON(JSON.parse(JSON.stringify(doc.toJSON()))); assert(copy.gis.themes.Parcelas.rules.length === 2 && copy.get(ids[0]).data.valor === 999, 'Persistencia reglas y atributos');
+// Los campos acompañan a los objetos al cambiar de capa, incluso sin esquema explícito de destino.
+doc.begin(); doc.addLayer('TRASLADO', '#ffffff'); doc.modify(ids[0], e => { e.layer = 'TRASLADO'; }); doc.commit();
+assert(G.schemaFor(doc, 'TRASLADO').some(f => f.name === 'nombre'), 'Campos inferidos después de cambiar capa'); doc.undo();
+const svg = app.io.buildSVG().svg; assert(svg.includes('Nueva parcela') && svg.includes('#67b681'), 'SVG con etiquetas y colores');
+const pages = await app.io.buildPDF(); assert(pages[0].ctx.ops.some(s => s.includes('Nueva parcela')), 'PDF con etiqueta');
+const promise = app.run('MAPTABLE', 'Parcelas'); await tick();
+const root = document.getElementById('modal-root'); assert(root.querySelectorAll('tbody tr').length === 100, 'Tabla paginada');
+[...root.querySelectorAll('button')].find(b => b.textContent === 'Siguiente').click(); assert(root.querySelectorAll('tbody tr').length === 5, 'Segunda página');
+const search = root.querySelector('input[placeholder]'); search.value = 'Nueva parcela'; search.dispatchEvent(new Event('input')); assert(root.querySelectorAll('tbody tr').length === 1, 'Búsqueda');
+[...root.querySelectorAll('button')].find(b => b.textContent === 'Designar resultados').click(); assert(app.sel.has(ids[0]) && app.sel.size === 1, 'Selección sincronizada');
+root.querySelector('.modal-foot button').click(); await promise;
+return { ok: true, checks, objetos: ids.length };

@@ -1,3 +1,4 @@
+import { registerGIS } from './giscommands.js';
 import { CATALOG, resolveCRS } from './projections.js';
 import { validateGeo, toGeographic, formatGeographic } from './geographic.js';
 import { OSM, validateMap } from './basemap.js';
@@ -3792,3 +3793,5 @@ def('GEOPOSITION', ['GPS', 'POSICIONGPS'], 'Muestra la posición GPS, precisión
   if (k === 'Desactivar') c.app.gps.stop(); else c.app.gps.start(k === 'Seguir');
   c.print(k === 'Desactivar' ? 'GPS desactivado.' : 'GPS activado; esperando posición y permiso del navegador.');
 }, { noTx: true, group: 'Geografía' });
+
+registerGIS(def);

@@ -1,0 +1,1 @@
+Fixtures independientes de TrazoCAD, generados con pyshp 3.1.9, tifffile 2026.11.16 y zipfile de Python. Polígono Z con hueco, atributos UTF-8, fecha/lógico, GeoTIFF Float32 con NoData, deflate, big-endian y teselas Uint16 con predictor horizontal, LZW, PackBits y KMZ deflate. EPSG:32721. No requieren esas bibliotecas para ejecutar las pruebas.

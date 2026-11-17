@@ -1,3 +1,4 @@
+import { labelEntity } from './gis.js';
 // Dibujado en canvas: capa base (rejilla, modelo, presentaciones) y capa superpuesta (cursor, selección, vistas previas).
 import * as G from './geom.js';
 import { TYPES, gripsOf, blockEnts, ENV, textBox, dimParts, bboxOf, bbUnion, insertClip, applyDash } from './entities.js';
@@ -132,8 +133,10 @@ export function paintEntity(c, e, R, st, sty, vis) {
   c.lineWidth = st.px / R.scale;
   applyDash(c, st.pat, st.ltscale || 1, R);
   const T = TYPES[e.type];
+  if (st.gisFill && !st.hl && (e.type === 'region' || e.type === 'pline' && e.closed)) { c.save(); c.globalAlpha = 0.22; c.beginPath(); T.path(c, e, R); c.fill('evenodd'); c.restore(); }
   if (T.draw) T.draw(c, e, R, st);
   else { c.beginPath(); T.path(c, e, R); c.stroke(); }
+  if (!st.hl && e.data) { const label = labelEntity(ENV.doc, e); if (label) paintEntity(c, label, R, sty ? sty(label) : { ...st, color: label.color, gisFill: false }, sty, vis); }
 }
 
 export class Renderer {

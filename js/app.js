@@ -113,7 +113,7 @@ class App {
     const st = ps ? ps(e, this.doc.style(e)) : this.doc.style(e);
     const color = paper && st.color.toLowerCase() === '#ffffff' ? '#000000' : st.color;
     const px = this.T.lwt ? Math.max(1, st.lw * (paper ? this.paperView.scale : 4)) : 1;
-    return { color, px, pat: st.pat, ltscale: this.doc.settings.ltscale, paper };
+    return { color, px, gisFill: st.gisFill, pat: st.pat, ltscale: this.doc.settings.ltscale, paper };
   }
   idx() { return this.spatial.of(this.doc.ents, this.doc); }
   layoutShown() { return this.tab === 'model' ? null : this.doc.layouts[this.tab] || null; }

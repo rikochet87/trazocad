@@ -1,4 +1,4 @@
-# TrazoCAD — v0.14
+# TrazoCAD — v0.15
 
 Software de dibujo técnico 2D inspirado en AutoCAD, hecho desde cero como **PWA** (aplicación web instalable y sin conexión). JavaScript puro con módulos ES: sin dependencias ni compilación.
 
@@ -11,6 +11,28 @@ node serve.mjs          # http://localhost:8080
 ```
 
 Una PWA necesita `http://localhost` o HTTPS. Para publicarla, sube la carpeta tal cual a cualquier hosting estático con HTTPS (GitHub Pages, Netlify, Hostinger…). En Chrome/Edge aparece el botón **Instalar**.
+
+## Novedades de la v0.15
+
+![Plano catastral sintético en UTM 21S: parcelas como regiones CAD editables con colores por uso, etiquetas de parcela y tabla de atributos filtrada por titular. Los datos son de demostración.](docs/v15.png)
+
+| Función | Detalle |
+|---|---|
+| **Intercambio vectorial SIG** (`MAPIMPORT`, `MAPEXPORT`) | Importar y exportar **GeoJSON**, **Shapefile**, **KML** y **KMZ**. Puntos, líneas, polígonos con huecos, multipartes y colecciones geométricas; puntos y líneas conservan Z. Los datos se convierten en puntos, polilíneas 3D y regiones CAD editables, con atributos. Se reproyectan al sistema del dibujo usando su referencia, unidades, norte y origen local; GeoJSON y KML/KMZ se exportan siempre en WGS84 |
+| **Shapefile completo** | Lectura de `.shp` junto con `.dbf`, `.prj` y `.cpg`, o un **ZIP** que los contiene. Puntos/multipuntos, líneas y polígonos, variantes Z, huecos clasificados por inclusión, DBF con texto, números, lógicos y fechas, y codificación configurable mediante CPG. La exportación escribe **SHP + SHX + DBF + PRJ + CPG** en un ZIP, con un mapa de nombres de campo. Cada archivo contiene una sola familia geométrica |
+| **GeoTIFF y modelos de terreno** | Lectura de TIFF clásico, little/big-endian, tiras y teselas, sin compresión, **Deflate, LZW y PackBits**, predictor horizontal entero, georreferenciación afín o escala/punto de enlace, claves EPSG y NoData. Grises/MDT de 8, 16 o 32 bits y RGB/RGBA de 8 bits. Se reproyecta como imagen incrustada en el dibujo; los valores originales del MDT se conservan **sin convertirlos a colores** en el archivo original adjunto. Exportación del **original numérico** o de la **imagen CAD actual** como GeoTIFF en el EPSG del dibujo |
+| **Tabla de atributos** (`MAPTABLE`) | Consulta y edición por capa, búsqueda de texto, condiciones por campo (=, ≠, >, <, contiene), selección sincronizada con el dibujo, doble clic para ampliar el objeto y **páginas de 100 filas**. Campos de texto, entero, real, lógico y fecha, con validación antes de modificar y deshacer/rehacer. Los atributos acompañan a los objetos CAD al copiarlos y moverlos; los campos de objetos cambiados de capa se pueden consultar mediante inferencia |
+| **Campos y catastro** (`MAPFIELD`, `MAPCADASTRE`) | Añadir campos con tipo y valor inicial, o suprimirlos junto con las reglas que los usan. `MAPCADASTRE` crea campos configurables para parcela, titular, nomenclatura y superficie declarada. No impone una convención catastral de país ni completa datos de propiedad o superficies automáticamente |
+| **Simbología temática** (`MAPTHEME`) | Reglas por **categorías** o por **rangos numéricos**, con colores editables, relleno translúcido de polígonos con huecos y opción de desactivar. Las reglas no cambian el color base del objeto; se recalculan al editar sus atributos y se guardan con el proyecto |
+| **Etiquetas por atributo** (`MAPLABEL`) | Campo, altura en unidades del dibujo y color configurables por capa. El texto se actualiza al editar el atributo y acompaña a la geometría, sin crear textos CAD independientes. Colores, rellenos y etiquetas se conservan también en **SVG, PNG y PDF** |
+| **Otros** | Grupo **Datos SIG** en Geografía, módulos independientes para formatos/atributos/interfaz/órdenes, **sin dependencias de producción**. `.tcad` versión **15**, lectura de versiones anteriores y caché PWA `trazocad-v15`. Pruebas con archivos de referencia externos generados por pyshp/tifffile/zipfile; exportaciones verificadas con lectores independientes |
+
+### Trabajar con datos SIG
+
+1. Configure `GEOGRAPHICLOCATION`. Ejecute `MAPIMPORT`, elija el archivo o los compañeros de un Shapefile y una capa de destino. El PRJ o EPSG del archivo tiene prioridad; puede forzar el sistema indicado si necesita corregirlo. GeoJSON y KML se interpretan según sus estándares, en WGS84.
+2. Abra `MAPTABLE` para consultar, filtrar, seleccionar o editar. Cada cambio válido se puede deshacer. Añada campos con el botón de la tabla o con `MAPFIELD`. Use `MAPCADASTRE` si necesita una estructura catastral inicial.
+3. Configure `MAPTHEME` y `MAPLABEL` para representar los datos. Se guardan en el `.tcad`; no se exportan como reglas de estilo a los formatos de intercambio.
+4. Ejecute `MAPEXPORT` y elija formato, capa y/o designación. Shapefile permite elegir EPSG de salida; GeoJSON y KML/KMZ usan WGS84. Para GeoTIFF designe una sola imagen: el original conserva valores y EPSG de origen; la imagen actual conserva la posición y edición CAD en el EPSG del dibujo.
 
 ## Novedades de la v0.14
 
@@ -236,6 +258,12 @@ js/arrays.js     Matrices asociativas: rectangular (con niveles y ángulo de fil
 js/xclip.js      Delimitación de referencias (XCLIP): recorte de primitivas con el contorno
 js/assoc.js      Cotas asociativas y marcas/líneas de centro: referencias a la geometría y recálculo
 js/document.js   Capas, modelo, presentaciones, bloques, editor de bloques, estilos, grupos, estados de capa, patrones, deshacer incremental (diario de cambios del modelo), diario para el índice espacial, asociatividad (también matriz–recorrido)
+js/gis.js        Geometrías SIG ↔ CAD, atributos tipados, esquemas, consultas, simbología y etiquetas
+js/gisformats.js GeoJSON, KML con SchemaData, ZIP/KMZ, CRC y escritura WKT/PRJ
+js/shapefile.js  SHP/SHX/DBF/CPG: lectura y escritura, Z, multipartes y huecos
+js/geotiff.js    TIFF/GeoTIFF: compresión, georreferenciación, MDT, reproyección y exportación
+js/gisui.js      Tabla de atributos paginada y diálogos SIG
+js/giscommands.js Órdenes SIG y coordinación de archivos sin lógica geométrica en la interfaz
 js/projections.js Proyecciones, catálogo EPSG, WKT/PROJ, elipsoides y transformaciones Helmert
 js/geographic.js Georreferenciación, entrada/formato geográfico y posición GPS
 js/basemap.js    XYZ/WMS/WMTS, reproyección por malla, caché sin conexión y fondo para PNG/PDF
@@ -274,6 +302,12 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 ```
 
 ## Limitaciones conocidas
+
+- **SIG (v0.15):** se importa una capa o imagen por operación. Las multipartes se separan en objetos CAD con copia de sus atributos; la exportación usa la geometría CAD actual y no recompone la identidad multiparte original. Los polígonos son regiones planas (no conservan una Z independiente por vértice). Las curvas de polilínea se aproximan por segmentos al exportar. Sólo se exportan puntos, líneas, polilíneas y regiones: los demás tipos se omiten con aviso. No hay importación de reglas de estilo externas ni conservación de atributos SIG en DXF.
+- GeoJSON sigue RFC 7946: WGS84, orden longitud/latitud y atributos escalares (texto, número, lógico o nulo). No se admiten miembros `crs` antiguos ni atributos con objetos/arrays anidados. KML admite Placemark, Point, LineString, Polygon con huecos, MultiGeometry, ExtendedData y SchemaData numérico/lógico; no carga enlaces de red, estilos, modelos 3D ni superposiciones. Las alturas no se convierten según altitudeMode o geoide. KMZ usa ZIP almacenado o Deflate; no ZIP64, cifrado o archivos divididos; límite descomprimido 128 MiB.
+- Cada Shapefile contiene una sola familia geométrica; M se ignora. SHX se genera al exportar; al importar se recorren los registros SHP. DBF admite C/N/F/L/D (no memorandos ni variantes de base de datos), UTF-8 con CPG y Windows-1252 por defecto. Sus nombres se reducen a 10 caracteres con sufijos para evitar colisiones; `campos.json` documenta los nombres originales, pero no se aplica automáticamente al reimportar. Los textos tienen un máximo de 254 bytes; los reales se escriben con 10 decimales. Los tipos enteros de la aplicación requieren precisión segura de JavaScript.
+- GeoTIFF se limita a **TIFF clásico**, máximo 16 777 216 píxeles, muestras entrelazadas por píxel; MDT/grises enteros de 8/16/32 bits o Float32, paleta, RGB y RGBA no premultiplicado de 8 bits. No admite BigTIFF, JPEG, predictor flotante 3, Float64, planos separados, RGB de 16 bits ni operaciones de terreno. Lee la primera imagen, no pirámides. El EPSG debe estar en el catálogo o sustituirse explícitamente. La vista reproyectada usa vecino más próximo, hasta **2 millones de píxeles**, y cede tiempo a la interfaz por filas; el archivo original se conserva íntegro. Exporta TIFF sin compresión con claves EPSG del catálogo, X este/Y norte; la imagen CAD actual es RGBA, y el original conserva muestras/NoData. En sistemas personalizados se puede conservar/exportar el original, pero para generar una nueva imagen GeoTIFF se necesita un EPSG admitido.
+- Esquemas, simbología y etiquetas se configuran por capa y se guardan en `.tcad`. Las etiquetas se anclan al centro de la extensión del objeto, sin evitar solapes ni garantizar un punto interior en polígonos cóncavos o con huecos. Las consultas de la tabla combinan búsqueda de texto y una condición; los geoprocesos y las consultas espaciales corresponden a v0.16. Las reglas de rangos se evalúan en orden: si dos intervalos incluyen el mismo límite, se aplica el primero.
 
 - **Geografía (v0.14):** el catálogo EPSG es un subconjunto incorporado, no una consulta a una base EPSG completa. WKT1/WKT2 admiten los métodos y parámetros implementados; los no admitidos se rechazan. No hay rejillas NTv2, geoide, épocas ni transformaciones dependientes del tiempo: sin `TOWGS84` se usa una transformación nula entre el elipsoide elegido y WGS84, que es una **aproximación**, no una garantía de precisión geodésica. Para un datum local, proporcione sus parámetros oficiales y compruebe puntos de control. La altura es elipsoidal cuando interviene Helmert; no se transforma a cota ortométrica. El cambio de sistema no reproyecta los objetos existentes, y la georreferenciación todavía no viaja en DXF.
 - La transversa de Mercator se limita a ±30° del meridiano central; se rechazan los polos exactos. El mapa base se limita a la cobertura Web Mercator (±85,0511°), sin continuidad de vistas que cruzan el antimeridiano. La reproyección de imágenes es aproximada (malla de 8×8 por tesela), no un ortomosaico para medición. Las coordenadas geográficas sólo se introducen en el modelo (incluido MSPACE), no en papel ni en el editor de bloques.
@@ -324,9 +358,11 @@ tools/           Pruebas en Chrome sin interfaz (run.mjs, tests/); sólo para de
 - El origen local sólo afecta al espacio modelo (el papel y los bloques tienen sus propias coordenadas). Los objetos que devuelven `tc.get` y `tc.all` tienen las coordenadas internas (`tc.real` las pasa a reales), y un cambio hecho directamente en ellos, sin `tc.modify`, no se puede deshacer. Las líneas de los patrones de sombreado pasan por el origen interno, de modo que con un origen local quedan desplazadas respecto a las de AutoCAD (el sombreado es el mismo).
 - La imagen en caché del modelo se usa en la vista única del modelo con 3000 objetos o más; las ventanas en mosaico, las presentaciones y el editor de bloques se dibujan enteros en cada fotograma. Cambiar la escala, el giro, las capas o un estilo vuelve a dibujarlo todo (en varios fotogramas). La apertura en segundo plano necesita Web Workers de módulo (navegadores actuales); si no, el DXF se lee en el hilo principal.
 
-## Hoja de ruta (v0.15+)
+## Hoja de ruta (v0.16+)
 
-**SIG 2: formatos y atributos** (v0.15): importar y exportar **GeoJSON**, **Shapefile** (`.shp`, `.shx`, `.dbf`, `.prj`), **KML/KMZ** y **GeoTIFF** con reproyección al sistema del dibujo; **tabla de atributos** por objeto con campos tipados, consulta y edición; **simbología temática** y etiquetas por atributo; datos catastrales (parcelas, titulares y nomenclatura) configurables por proyecto. Mantener el motor y los formatos sin dependencias de producción.
+**SIG 3: geoprocesos** (v0.16): operaciones vectoriales de **área de influencia**, intersección, recorte, unión, diferencia, disolución y unión espacial; consultas combinadas por atributo y ubicación, con tratamiento de unidades y sistemas de coordenadas del proyecto; análisis sobre modelos digitales de terreno de **pendiente, orientación y sombreado**. Mantener precisión, deshacer, conservación de atributos y operaciones largas que no bloqueen la interfaz.
+
+**Pendientes de la v0.15**: geometrías multipartes con identidad compartida, más variantes TIFF/DBF, pirámides y trabajo por bloques para rásteres grandes, formatos con atributos anidados, exportación de estilos temáticos, etiquetas con resolución de solapes, ampliación de consultas y preservación de datos SIG en DXF.
 
 **Pendientes de la v0.14**: ampliar catálogo/métodos WKT y PROJ, rejillas de datum, lectura de GetCapabilities y matrices WMTS adicionales, continuidad en el antimeridiano, control adaptativo del error de reproyección de imágenes, georreferenciación en DXF y mapa en SVG/impresión.
 
@@ -355,7 +391,7 @@ El objetivo final es un programa con las capacidades de AutoCAD, orientado a la 
 | **v0.12** | CAD | Terminada: vistas y ventanas gráficas giradas (PLAN, DVIEW, Giro, VPROTATEASSOC, UCSVP), escalas anotativas, guiones `.scr` con grabación de acciones, API en JavaScript, paletas de herramientas, biblioteca de bloques viales y DesignCenter |
 | **v0.13** | Base | Terminada: cota Z en los objetos, polilíneas y caras 3D (con mallas TIN de DXF), **coordenadas grandes** sin pérdida de precisión (origen local de dibujo) y rendimiento con más de 100 000 objetos (deshacer e índice espacial incrementales, dibujo en caché, DXF en segundo plano) |
 | **v0.14** | SIG 1 | Terminada: motor de proyecciones y datums, georreferenciación del dibujo (sistema de coordenadas, punto de referencia, norte), coordenadas geográficas en la barra de estado, **mapa base** sobre el dibujo (teselas XYZ, WMS y WMTS configurables, con OpenStreetMap por defecto y caché sin conexión) y posición GPS del dispositivo |
-| **v0.15** | SIG 2 | Importar y exportar GeoJSON, Shapefile (`.shp` + `.dbf` + `.prj`), KML/KMZ y GeoTIFF con reproyección al vuelo; **tabla de atributos** por objeto, simbología temática y etiquetas por atributo; datos catastrales (parcelas, titulares, nomenclatura) |
+| **v0.15** | SIG 2 | Terminada: importar y exportar GeoJSON, Shapefile (`.shp` + `.dbf` + `.prj`), KML/KMZ y GeoTIFF con reproyección al vuelo; **tabla de atributos** por objeto, simbología temática y etiquetas por atributo; datos catastrales (parcelas, titulares, nomenclatura) |
 | **v0.16** | SIG 3 | Geoprocesos vectoriales: área de influencia, intersección, recorte, unión, diferencia, disolución, unión espacial, consultas por atributo y por ubicación; sobre modelos digitales de terreno, pendientes, orientaciones y sombreado |
 | **v0.17** | Topografía | **Puntos** (importación de libretas CSV/TXT con formatos PNEZD configurables, grupos de puntos y claves de descripción que asignan capa, símbolo y etiqueta), poligonales con compensación, **superficie TIN** con líneas de quiebre, contornos y zonas excluidas, curvas de nivel con intervalos mayor y menor, análisis de cotas y pendientes, superficie desde un MDT |
 | **v0.18** | Eje | **Alineaciones horizontales** por elementos (rectas, curvas circulares, clotoides y curvas compuestas) controladas por el archivo de criterios con avisos de incumplimiento, progresivas y ecuaciones de progresiva, puntos singulares (TE, EC, CE, ET o sus equivalentes), planilla de curvas y de vértices, replanteo, intercambio **LandXML** |

@@ -1,3 +1,4 @@
+import { renameGISLayer } from './gis.js';
 import { CATALOG, resolveCRS } from './projections.js';
 import { OSM, validateMap } from './basemap.js';
 import { toGeographic, formatGeographic } from './geographic.js';
@@ -81,6 +82,7 @@ const RIBBON = [
   { tab: 'Geografía', groups: [
     { name: 'Ubicación del proyecto', items: [['GEOGRAPHICLOCATION', 'Georreferenciar', 'ucs'], ['GEOCS', 'Sistema de coordenadas', 'origin'], ['GEOFORMAT', 'Formato geográfico', 'settings']] },
     { name: 'Mapa base', items: [['GEOMAP', 'Configurar mapa', 'image'], ['GEOMAPCACHE', 'Caché sin conexión', 'save']] },
+    { name: 'Datos SIG', items: [['MAPIMPORT', 'Importar SIG', 'open'], ['MAPEXPORT', 'Exportar SIG', 'save'], ['MAPTABLE', 'Atributos', 'table'], ['MAPTHEME', 'Simbología', 'hatch'], ['MAPLABEL', 'Etiquetas', 'text'], ['MAPCADASTRE', 'Catastro', 'layers']] },
     { name: 'Posición', items: [['GEOPOSITION', 'GPS', 'snap']] },
   ] },
   { tab: 'Vista', groups: [
@@ -721,7 +723,7 @@ export class UI {
             const n = await this.prompt('Renombrar capa', 'Nuevo nombre', l.name);
             if (!n || n === l.name) return;
             if (doc.layers.some(x => x.name.toLowerCase() === n.toLowerCase())) return app.print(`La capa "${n}" ya existe.`);
-            tx(() => { for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (e.layer === l.name) { doc.before(e); e.layer = n; } if (doc.cur.layer === l.name) doc.cur.layer = n; renameLayerInStates(doc, l.name, n); l.name = n; });
+            tx(() => { for (const e of [...doc.allEnts(), ...Object.values(doc.blocks).flatMap(b => b.ents)]) if (e.layer === l.name) { doc.before(e); e.layer = n; } if (doc.cur.layer === l.name) doc.cur.layer = n; renameLayerInStates(doc, l.name, n); renameGISLayer(doc, l.name, n); l.name = n; });
           } }, l.name),
         h('button', { class: 'ib' + (l.on ? '' : ' off'), title: l.on ? 'Desactivar' : 'Activar', html: icon(l.on ? 'eye' : 'eyeoff', 16), onclick: ev => { ev.stopPropagation(); tx(() => { l.on = !l.on; }); } }),
         h('button', { class: 'ib' + (l.lock ? ' off' : ''), title: l.lock ? 'Desbloquear' : 'Bloquear', html: icon(l.lock ? 'lock' : 'unlock', 16), onclick: ev => { ev.stopPropagation(); tx(() => { l.lock = !l.lock; }); } }),
@@ -2065,6 +2067,7 @@ export class UI {
     const box = h('div', { class: 'help' });
     box.append(h('div', { class: 'help-intro', html: `
       <p><b>TrazoCAD</b> es un programa de dibujo 2D de precisión inspirado en AutoCAD. Escriba un comando (o su alias) en la línea de comandos y pulse <kbd>Intro</kbd> o <kbd>Espacio</kbd>. <kbd>Intro</kbd> en vacío repite el último comando; <kbd>Esc</kbd> cancela.</p>
+      <h4>Formatos y atributos SIG (v0.15)</h4><p><b>MAPIMPORT</b> / <b>MAPEXPORT</b>: GeoJSON, Shapefile (ZIP o archivos compañeros), KML/KMZ y GeoTIFF. <b>MAPTABLE</b> consulta y edita atributos tipados con selección y zoom. <b>MAPFIELD</b> añade o suprime campos. <b>MAPTHEME</b> configura colores por categorías o rangos; <b>MAPLABEL</b> muestra etiquetas por atributo. <b>MAPCADASTRE</b> añade un esquema catastral configurable. Se guardan en .tcad con deshacer; la representación se conserva en PNG/PDF/SVG.</p>
       <h4>Geografía y mapas (v0.14)</h4><p><b>GEOGRAPHICLOCATION</b> configura EPSG, WKT o PROJ, referencia, unidades y norte sin mover los objetos; <b>GEOCS</b> lista el catálogo o importa un .prj. <b>GEOFORMAT</b> elige grados decimales o sexagesimales. En cualquier petición de punto del modelo escriba <code>GEO:latitud,longitud[,altitud]</code>, por ejemplo <code>GEO:34°36'0&quot;S,58°24'0&quot;O</code>. ID y la barra de estado muestran las geográficas. <b>GEOMAP</b> configura XYZ, WMS 1.1.1 o WMTS Web Mercator, transparencia y atribución. <b>GEOMAPCACHE</b> guarda las teselas visibles o borra la caché. Los servicios deben permitir CORS; las teselas disponibles se incluyen en PNG y PDF. <b>GEOPOSITION</b> muestra GPS con precisión y seguimiento; necesita HTTPS y permiso del navegador.</p>
       <h4>Entrada de coordenadas</h4>
       <ul>

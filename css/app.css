@@ -342,3 +342,12 @@ input.full { width: 100%; }
 .prog-title { font-size: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; gap: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .prog-bar { height: 8px; background: var(--bg3); border-radius: 4px; overflow: hidden; }
 .prog-fill { width: 0; height: 100%; background: var(--accent); transition: width .15s; }
+
+/* Tabla SIG: edición paginada y desplazamiento sin aumentar el tamaño del diálogo. */
+.modal:has(.gis-table) { width: min(1200px, 96vw); max-width: 96vw; }
+.gis-scroll { overflow: auto; max-height: 45vh; border: 1px solid #465160; }
+.gis-scroll table { min-width: 100%; border-collapse: collapse; }
+.gis-scroll th { position: sticky; top: 0; background: #29333f; white-space: nowrap; z-index: 1; }
+.gis-scroll td input { min-width: 120px; width: 140px; padding: 5px; }
+.gis-scroll tr.sel { background: #285375; }
+.gis-actions { display: flex; gap: 8px; flex-wrap: wrap; }

@@ -56,7 +56,7 @@ export function applyPlot(doc, t, e, st) {
   if (s.gray) color = grayOf(color);
   color = screenOf(color, s.screen ?? 100);
   const lt = s.ltype && LTYPES[s.ltype] ? LTYPES[s.ltype].pat : st.pat;
-  return { color, lw: s.lw != null ? s.lw : st.lw, pat: lt };
+  return { ...st, color, lw: s.lw != null ? s.lw : st.lw, pat: lt };
 }
 // Función entidad → estilo de impresión ({color, lw, pat}) para la tabla de la presentación (null si no tiene)
 export function plotStyler(doc, lay) {

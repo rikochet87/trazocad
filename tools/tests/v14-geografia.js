@@ -12,7 +12,7 @@ const q = geo.fromGeographic(doc, { lon: -58.4, lat: -34.6, h: 12 }); near(q.x, 
 const ll = geo.toGeographic(doc, { x: 1120, y: -450 }); const back = geo.fromGeographic(doc, ll); near(back.x, 1120, 1e-4); near(back.y, -450, 1e-4);
 const pp = geo.toProjected(doc, { x: 1100, y: 200 }); near(pp.x - config.projected.x, Math.cos(Math.PI / 6), 1e-6); near(pp.y - config.projected.y, 0.5, 1e-6);
 doc.undo(); assert(doc.geo === null, 'Deshacer georreferenciación'); doc.redo(); assert(doc.geo.crs.proj === 'tmerc', 'Rehacer');
-const json = JSON.parse(JSON.stringify(doc.toJSON())), copy = new Doc(); copy.fromJSON(json); near(geo.toGeographic(copy, q).lat, -34.6); assert(json.version === 14, 'Formato 14');
+const json = JSON.parse(JSON.stringify(doc.toJSON())), copy = new Doc(); copy.fromJSON(json); near(geo.toGeographic(copy, q).lat, -34.6); assert(json.version >= 14, 'Formato compatible con v14');
 const old = new Doc(); old.fromJSON({ version: 13, model: [] }); assert(old.geo === null, 'Compatibilidad v13');
 const parse = app.parsePoint('GEO:34°36\'0"S,58°24\'0"O,12'); near(parse.x, 100, 0.001); near(parse.y, 200, 0.001); near(parse.z, 12, 0.001);
 assert(app.parsePoint('GEO:91,0') === null, 'Latitud inválida'); assert(app.parsePoint('GEO:34°70\'S,58O') === null, 'Minutos inválidos');

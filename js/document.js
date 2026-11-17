@@ -1,3 +1,4 @@
+import { emptyGIS, thematic, labelEntity } from './gis.js';
 // Documento: capas, espacio modelo, presentaciones, bloques, estilos, grupos, estados de capa, patrones,
 // deshacer/rehacer, sombreados asociativos y serialización.
 import { bboxOf, bbUnion, cloneEnt, LTYPES, DEFAULT_DIMSTYLE, DEFAULT_MLSTYLE, DEFAULT_TBLSTYLE } from './entities.js';
@@ -69,7 +70,7 @@ export class Doc {
     this.layerFilters = []; // filtros de capa por propiedades y por grupos (layertools.js)
     this.layIso = null;    // estado de las capas antes de LAYISO
     this.scales = defaultScales(); // lista de escalas (SCALELISTEDIT)
-    this.geo = null; this.basemap = null; // georreferenciación y servicio de mapa del proyecto
+    this.gis = emptyGIS(); this.geo = null; this.basemap = null; // georreferenciación y servicio de mapa del proyecto
     this.origin = { x: 0, y: 0 }; // origen local del modelo: coordenada real = coordenada interna + origen (origin.js)
     this.tiles = null;     // ventanas en mosaico leídas del archivo (la aplicación las restituye)
     this.space = 'model';
@@ -106,11 +107,11 @@ export class Doc {
   // decenas de MB por paso). Las entidades del modelo se cambian con add, remove y modify, o avisando antes con before(e).
   // state() es el estado completo (lo usa la comprobación del deshacer).
   state() {
-    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, geo: this.geo, basemap: this.basemap, layIso: this.layIso, scales: this.scales });
+    return JSON.stringify({ layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, gis: this.gis, geo: this.geo, basemap: this.basemap, layIso: this.layIso, scales: this.scales });
   }
   loadState(s) {
     const o = JSON.parse(s);
-    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {}, plotStyles: o.plotStyles || {}, ucs: o.ucs || null, ucsList: o.ucsList || [], views: o.views || [], vportConfigs: o.vportConfigs || [], selFilters: o.selFilters || [], layerFilters: o.layerFilters || [], geo: o.geo || null, basemap: o.basemap || null, layIso: o.layIso || null, scales: o.scales?.length ? o.scales : defaultScales() });
+    Object.assign(this, { layers: o.layers, model: o.model, layouts: o.layouts, blocks: o.blocks, textStyles: o.textStyles, dimStyles: o.dimStyles, mleaderStyles: o.mleaderStyles, tableStyles: o.tableStyles, mlineStyles: o.mlineStyles?.length ? o.mlineStyles : [newMlStyle()], nextId: o.nextId, cur: o.cur, bedit: o.bedit || null, constraints: o.constraints || [], params: o.params || [], groups: o.groups || [], layerStates: o.layerStates || [], patterns: o.patterns || {}, plotStyles: o.plotStyles || {}, ucs: o.ucs || null, ucsList: o.ucsList || [], views: o.views || [], vportConfigs: o.vportConfigs || [], selFilters: o.selFilters || [], layerFilters: o.layerFilters || [], gis: o.gis || emptyGIS(), geo: o.geo || null, basemap: o.basemap || null, layIso: o.layIso || null, scales: o.scales?.length ? o.scales : defaultScales() });
     if (this.bedit) this.space = 'bedit';
     else if (this.space === 'bedit') this.space = 'model';
     else if (this.space !== 'model' && this.space !== 'bedit' && !this.layouts[this.space]) this.space = 'model';
@@ -120,7 +121,7 @@ export class Doc {
   // Estado salvo las entidades del modelo: «geo» afecta al aspecto y al tamaño de los objetos (capas, bloques, estilos,
   // escalas); «rest», lo demás (presentaciones con sus objetos, editor de bloques, SCP, vistas, grupos…)
   geoState() {
-    return JSON.stringify({ layers: this.layers, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, patterns: this.patterns, scales: this.scales, origin: this.origin });
+    return JSON.stringify({ layers: this.layers, blocks: this.blocks, textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, patterns: this.patterns, scales: this.scales, gis: this.gis, origin: this.origin });
   }
   restState() {
     return JSON.stringify({ layouts: this.layouts, nextId: this.nextId, cur: this.cur, bedit: this.bedit, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, plotStyles: this.plotStyles, ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, geo: this.geo, basemap: this.basemap, layIso: this.layIso });
@@ -129,7 +130,7 @@ export class Doc {
   loadMeta(geo, rest) {
     if (geo) {
       const g = JSON.parse(geo), o0 = this.origin;
-      Object.assign(this, { layers: g.layers, blocks: g.blocks, textStyles: g.textStyles, dimStyles: g.dimStyles, mleaderStyles: g.mleaderStyles, tableStyles: g.tableStyles, mlineStyles: g.mlineStyles?.length ? g.mlineStyles : [newMlStyle()], patterns: g.patterns || {}, scales: g.scales?.length ? g.scales : defaultScales(), origin: g.origin || { x: 0, y: 0 } });
+      Object.assign(this, { layers: g.layers, blocks: g.blocks, textStyles: g.textStyles, dimStyles: g.dimStyles, mleaderStyles: g.mleaderStyles, tableStyles: g.tableStyles, mlineStyles: g.mlineStyles?.length ? g.mlineStyles : [newMlStyle()], patterns: g.patterns || {}, scales: g.scales?.length ? g.scales : defaultScales(), gis: g.gis || emptyGIS(), origin: g.origin || { x: 0, y: 0 } });
       this.markFull();
       const o1 = this.origin; // el origen local cambió: la aplicación desplaza sus vistas (origin.js)
       if (o0 && (o0.x !== o1.x || o0.y !== o1.y)) this.emit('origin', { dx: o0.x - o1.x, dy: o0.y - o1.y });
@@ -294,7 +295,7 @@ export class Doc {
   verifyRec(rec, before) {
     const after = this.state(), q = this.quiet, tx = this.tx;
     // los objetos que no son del modelo se recrean al cargar su estado: al terminar se vuelven a poner los mismos
-    const META = ['layers', 'blocks', 'textStyles', 'dimStyles', 'mleaderStyles', 'tableStyles', 'mlineStyles', 'patterns', 'scales', 'origin', 'layouts', 'nextId', 'cur', 'bedit', 'constraints', 'params', 'groups', 'layerStates', 'plotStyles', 'ucs', 'ucsList', 'views', 'vportConfigs', 'selFilters', 'layerFilters', 'layIso', 'space'];
+    const META = ['layers', 'blocks', 'textStyles', 'dimStyles', 'mleaderStyles', 'tableStyles', 'mlineStyles', 'patterns', 'scales', 'origin', 'layouts', 'nextId', 'cur', 'bedit', 'constraints', 'params', 'groups', 'layerStates', 'plotStyles', 'ucs', 'ucsList', 'views', 'vportConfigs', 'selFilters', 'layerFilters', 'layIso', 'space', 'geo', 'basemap', 'gis'];
     const keep = Object.fromEntries(META.map(k => [k, this[k]]));
     this.quiet = true; this.tx = null;
     try {
@@ -549,11 +550,11 @@ export class Doc {
     let lw = e.lw === 'BYLAYER' || e.lw === 'BYBLOCK' ? L.lw : e.lw;
     if (lw === 'DEFAULT') lw = 0.25;
     const lt = e.ltype === 'BYLAYER' || e.ltype === 'BYBLOCK' ? L.ltype : e.ltype;
-    return { color, lw, pat: (LTYPES[lt] || LTYPES.CONTINUOUS).pat };
+    return thematic(this, e, { color, lw, pat: (LTYPES[lt] || LTYPES.CONTINUOUS).pat });
   }
   extents(ents = this.ents.filter(e => this.visible(e))) {
     let b = null;
-    for (const e of ents) b = bbUnion(b, bboxOf(e));
+    for (const e of ents) { b = bbUnion(b, bboxOf(e)); const label = e.data && labelEntity(this, e); if (label) b = bbUnion(b, bboxOf(label)); }
     return b;
   }
 
@@ -569,9 +570,9 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 14, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      app: 'TrazoCAD', version: 15, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
       textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, cur: this.cur, settings: this.settings, nextId: this.nextId,
-      ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, geo: this.geo, basemap: this.basemap, layIso: this.layIso, scales: this.scales,
+      ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, gis: this.gis, geo: this.geo, basemap: this.basemap, layIso: this.layIso, scales: this.scales,
       ...(this.origin.x || this.origin.y ? { origin: this.origin } : {}),
       ...(this.viewState ? { tiles: this.viewState() } : {}),
     };
@@ -600,7 +601,7 @@ export class Doc {
     this.vportConfigs = o.vportConfigs || [];
     this.selFilters = o.selFilters || [];
     this.layerFilters = o.layerFilters || [];
-    this.geo = o.geo || null; this.basemap = o.basemap || null;
+    this.gis = o.gis || emptyGIS(); this.geo = o.geo || null; this.basemap = o.basemap || null;
     this.layIso = o.layIso || null;
     this.scales = o.scales?.length ? o.scales : defaultScales();
     this.origin = o.origin ? { x: +o.origin.x || 0, y: +o.origin.y || 0 } : { x: 0, y: 0 };

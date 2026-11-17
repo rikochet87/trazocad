@@ -1,8 +1,8 @@
 // Service worker: precarga la aplicación para uso sin conexión (cache-first con actualización en segundo plano).
-const CACHE = 'trazocad-v14';
+const CACHE = 'trazocad-v15';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
-  './js/projections.js', './js/geographic.js', './js/basemap.js', './js/app.js', './js/commands.js', './js/document.js', './js/dxf.js', './js/entities.js', './js/geom.js', './js/hatch.js', './js/patterns.js', './js/spatial.js',
+  './js/gis.js', './js/gisformats.js', './js/shapefile.js', './js/geotiff.js', './js/gisui.js', './js/giscommands.js', './js/projections.js', './js/geographic.js', './js/basemap.js', './js/app.js', './js/commands.js', './js/document.js', './js/dxf.js', './js/entities.js', './js/geom.js', './js/hatch.js', './js/patterns.js', './js/spatial.js',
   './js/icons.js', './js/io.js', './js/ops.js', './js/render.js', './js/snap.js', './js/spline.js', './js/ui.js', './js/view.js',
   './js/assoc.js', './js/colors.js', './js/richtext.js', './js/xref.js', './js/pdf.js', './js/dynblock.js', './js/constraints.js',
   './js/groups.js', './js/layerstates.js', './js/mline.js', './js/region.js', './js/arrays.js', './js/xclip.js', './js/plotstyles.js',
