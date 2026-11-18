@@ -1,3 +1,4 @@
+import { pointMarker } from './survey.js';
 import { labelEntity } from './gis.js';
 // Dibujado en canvas: capa base (rejilla, modelo, presentaciones) y capa superpuesta (cursor, selección, vistas previas).
 import * as G from './geom.js';
@@ -134,7 +135,10 @@ export function paintEntity(c, e, R, st, sty, vis) {
   applyDash(c, st.pat, st.ltscale || 1, R);
   const T = TYPES[e.type];
   if (st.gisFill && !st.hl && (e.type === 'region' || e.type === 'pline' && e.closed)) { c.save(); c.globalAlpha = 0.22; c.beginPath(); T.path(c, e, R); c.fill('evenodd'); c.restore(); }
-  if (T.draw) T.draw(c, e, R, st);
+  if (e.topoAnalysis && !st.hl) { c.save(); c.globalAlpha=.65; c.beginPath(); e.pts.forEach((p,i)=>i?c.lineTo(p.x,p.y):c.moveTo(p.x,p.y)); c.closePath(); c.fill(); c.restore(); }
+  const marker = e.topoPoint && pointMarker(ENV.doc, e);
+  if (marker) { c.beginPath(); TYPES[marker.type].path(c, marker, R); c.stroke(); }
+  else if (T.draw) T.draw(c, e, R, st);
   else { c.beginPath(); T.path(c, e, R); c.stroke(); }
   if (!st.hl && e.data) { const label = labelEntity(ENV.doc, e); if (label) paintEntity(c, label, R, sty ? sty(label) : { ...st, color: label.color, gisFill: false }, sty, vis); }
 }

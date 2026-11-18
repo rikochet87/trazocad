@@ -356,3 +356,10 @@ input.full { width: 100%; }
 .geo-progress progress { width: 180px; }
 .geo-condition { display: flex; gap: 8px; margin: 8px 0; }
 .geo-condition input { min-width: 90px; }
+
+/* Topografía: libretas y reglas de puntos legibles en pantallas estrechas. */
+.topo-dialog > .fld { margin-bottom: 9px; }
+.topo-dialog textarea { width: 100%; box-sizing: border-box; resize: vertical; padding: 8px; background: var(--bg1); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; }
+.topo-dialog .topo-rule { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.topo-rule .fld { min-width: 0; }
+.topo-rule input, .topo-rule select { width: 100%; min-width: 0; box-sizing: border-box; }

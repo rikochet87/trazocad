@@ -1,3 +1,4 @@
+import { surveyLabel } from './survey.js';
 // Datos SIG del documento. Geometría CAD editable, atributos tipados y reglas de representación por capa.
 import { transform, resolveCRS } from './projections.js';
 import { fromProjected, toProjected } from './geographic.js';
@@ -44,6 +45,7 @@ export function thematic(doc, e, st) {
   return rule ? { ...st, color: rule.color, gisFill: rule.fill !== false } : st;
 }
 export function labelEntity(doc, e) {
+  if (e.topoPoint) return surveyLabel(doc, e);
   const l = doc.gis?.labels?.[e.layer], v = l && !l.off && e.data?.[l.field];
   if (v == null || v === '') return null;
   const b = bboxOf(e); if (!b || !(l.height > 0)) return null;

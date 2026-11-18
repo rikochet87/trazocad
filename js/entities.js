@@ -1,3 +1,4 @@
+import { pointAppearance } from './survey.js';
 // Tipos de entidad: geometría, referencias, pinzamientos, transformaciones y propiedades.
 import * as G from './geom.js';
 import { PATTERNS, famsOf, famLines, gradientSpec, GRADIENTS, GRAD_DEFAULT, USER_DEFAULT, stopsText, parseStops } from './patterns.js';
@@ -638,7 +639,7 @@ TYPES.spline = {
 TYPES.point = {
   name: 'Punto',
   prims: () => [],
-  bbox: e => bbPts([e.p]),
+  bbox: e => { const size=e.topoPoint ? +pointAppearance(ENV.doc||{},e).size || 1 : 0; return bbPts([{x:e.p.x-size,y:e.p.y-size},{x:e.p.x+size,y:e.p.y+size}]); },
   hit: (e, p) => G.dist(e.p, p),
   snaps: e => ({ nod: [e.p] }),
   grips: e => [e.p],

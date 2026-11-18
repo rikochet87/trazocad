@@ -4,7 +4,7 @@ import { rasterEntity, rasterBounds } from './geotiff.js';
 import { terrainColor } from './terrain.js';
 import { inferSchema } from './gis.js';
 const abortError = () => new DOMException('Proceso cancelado sin modificar el dibujo.', 'AbortError');
-function jobControl(app, title, options) {
+export function jobControl(app, title, options) {
   if (app.processingCancel) throw Error('Ya hay un geoproceso en curso.');
   if (app.doc.space !== 'model' || app.doc.bedit || app.doc.tx) throw Error('Ejecute los geoprocesos desde el espacio modelo, fuera de otra operación.');
   const doc = app.doc, version = doc.ver, controller = new AbortController(), stop = () => controller.abort(); app.processingCancel = stop;
@@ -19,10 +19,10 @@ function jobControl(app, title, options) {
     close: () => { panel.remove(); options.signal?.removeEventListener('abort', stop); if (app.processingCancel === stop) app.processingCancel = null; },
   };
 }
-function compute(payload, control) {
+export function compute(payload, control, workerURL = new URL('./geoworker.js', import.meta.url)) {
   return new Promise((resolve, reject) => {
     if (control.signal.aborted) { reject(abortError()); return; }
-    let worker; try { worker = new Worker(new URL('./geoworker.js', import.meta.url), { type: 'module' }); } catch { reject(Error('Este navegador no permite iniciar el worker de geoprocesos.')); return; }
+    let worker; try { worker = new Worker(workerURL, { type: 'module' }); } catch { reject(Error('Este navegador no permite iniciar el worker de geoprocesos.')); return; }
     const end = (fn, value) => { worker.terminate(); control.signal.removeEventListener('abort', abort); fn(value); };
     const abort = () => end(reject, abortError()); control.signal.addEventListener('abort', abort, { once: true });
     worker.onerror = event => end(reject, Error(event.message || 'Error al cargar el worker SIG.'));

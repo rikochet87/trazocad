@@ -1,3 +1,4 @@
+import { pointMarker } from './survey.js';
 import { labelEntity } from './gis.js';
 // Archivos: nuevo, abrir, guardar (.tcad), exportar DXF/SVG/PNG, imprimir y autoguardado.
 import * as G from './geom.js';
@@ -300,7 +301,7 @@ export class IO {
       const st = this.plotSt(e), col = this.plot ? st.color : printColor(st.color);
       const dash = st.pat.length ? ` stroke-dasharray="${st.pat.map(v => n5(Math.abs(v) * doc.settings.ltscale * (this.ltk || 1)) || 0.2).join(' ')}"` : '';
       const w = lwScale ? `stroke-width="${n5(Math.max(0.13, st.lw) * lwScale)}"` : `stroke-width="${n5(Math.max(0.25, st.lw) * 3.78 / 3)}" vector-effect="non-scaling-stroke"`;
-      return `stroke="${col}" ${w} fill="${st.gisFill && (e.type === 'region' || e.type === 'pline' && e.closed) ? col : 'none'}" fill-opacity="0.22" fill-rule="evenodd" stroke-linecap="round" stroke-linejoin="round"${dash}`;
+      return `stroke="${col}" ${w} fill="${e.topoAnalysis || st.gisFill && (e.type === 'region' || e.type === 'pline' && e.closed) ? col : 'none'}" fill-opacity="${e.topoAnalysis ? .65 : .22}" fill-rule="evenodd" stroke-linecap="round" stroke-linejoin="round"${dash}`;
     };
     const textEl = (t, col) => {
       const st = doc.textStyle(t.style), anchor = t.align === 'c' ? 'middle' : t.align === 'r' ? 'end' : 'start';
@@ -335,12 +336,15 @@ export class IO {
       if (!vis(e)) continue;
       e = annoEff(e); // representación de la escala de anotación (la de la ventana gráfica, 1:1 en el papel)
       const s = stroke(e), col = this.plot ? this.plotSt(e).color : printColor(doc.style(e).color);
-      const label = e.data && labelEntity(doc, e); if (label) out.push(textEl(label, printColor(label.color)));
+      const label = e.data && labelEntity(doc, e); if (label) out.push(textEl(label, printColor(this.plotSt(label).color)));
+      const marker=e.topoPoint && pointMarker(doc,e); if(marker) e={...e,...marker};
       switch (e.type) {
         case 'line': out.push(`<line x1="${n5(e.p1.x)}" y1="${n5(e.p1.y)}" x2="${n5(e.p2.x)}" y2="${n5(e.p2.y)}" ${s}/>`); break;
         case 'center': out.push(`<path d="${(e.lines || []).map(([a, b]) => `M${n5(a.x)} ${n5(a.y)}L${n5(b.x)} ${n5(b.y)}`).join('')}" ${s}/>`); break;
         case 'circle': out.push(`<circle cx="${n5(e.c.x)}" cy="${n5(e.c.y)}" r="${n5(e.r)}" ${s}/>`); break;
         case 'arc': { const a = G.polar(e.c, e.a1, e.r), b = G.polar(e.c, e.a2, e.r); out.push(`<path d="M${n5(a.x)} ${n5(a.y)} A${n5(e.r)} ${n5(e.r)} 0 ${G.sweep(e.a1, e.a2) > Math.PI ? 1 : 0} 1 ${n5(b.x)} ${n5(b.y)}" ${s}/>`); break; }
+        case 'pline3d': out.push(`<polyline points="${pts(e.pts)}${e.closed ? ' '+pts([e.pts[0]]) : ''}" ${s}/>`); break;
+        case 'face3d': out.push(`<polygon points="${pts(e.pts)}" ${s}/>`); break;
         case 'pline': out.push(`<path d="${plD(e)}" ${s}/>`); break;
         case 'wipeout': {
           const d = `${e.pts.map(p => `${n5(p.x)} ${n5(p.y)}`).join('L').replace(/^/, 'M')}Z`;
