@@ -75,19 +75,24 @@ export function writeGeoTIFF(r) {
   tags.forEach(([tag, t, a], i) => { const at = 10 + i * 12; v.setUint16(at, tag, true); v.setUint16(at + 2, t, true); v.setUint32(at + 4, a.length, true); const pos = positions[i] ?? at + 8; if (positions[i] != null) v.setUint32(at + 8, pos, true); if (tag === 273) a = [rasterAt]; for (let j = 0; j < a.length; j++) { const p = pos + j * sizeOf(t); if (t === 12) v.setFloat64(p, a[j], true); else if (t === 4) v.setUint32(p, a[j], true); else if (t === 3) v.setUint16(p, a[j], true); else out[p] = a.charCodeAt(j); } });
   for (let i = 0; i < r.data.length; i++) { const at = rasterAt + i * bits / 8, n = r.data[i]; if (format === 3) v.setFloat32(at, n, true); else if (bits === 8) out[at] = n; else if (bits === 16) v.setUint16(at, n, true); else v.setUint32(at, n, true); } return out;
 }
-export async function rasterEntity(doc, raster) {
-  if (!doc.geo) throw Error('Configure la georreferenciación del dibujo.');
-  const r = raster, boundary = [];
+export function rasterBounds(doc, r) {
+  const boundary = [];
   for (let i = 0; i <= 16; i++) for (const p of [[r.width * i / 16, 0], [r.width * i / 16, r.height], [0, r.height * i / 16], [r.width, r.height * i / 16]]) boundary.push(fromProjected(doc, transform(pixelToWorld(r.transform, ...p), r.crs, doc.geo.crs)));
   const xs = boundary.map(p => p.x), ys = boundary.map(p => p.y), x1 = Math.min(...xs), y1 = Math.min(...ys), w = Math.max(...xs) - x1, h = Math.max(...ys) - y1;
+  return { x1, y1, w, h };
+}
+export async function rasterEntity(doc, raster, options = {}) {
+  if (!doc.geo) throw Error('Configure la georreferenciación del dibujo.');
+  const r = raster, { x1, y1, w, h } = rasterBounds(doc, r);
   const factor = Math.min(1, Math.sqrt(2e6 / (r.width * r.height))), width = Math.max(1, Math.round(r.width * factor)), height = Math.max(1, Math.round(r.height * factor));
   const cv = document.createElement('canvas'); cv.width = width; cv.height = height; const c = cv.getContext('2d'), image = c.createImageData(width, height);
   let min = Infinity, max = -Infinity; if (r.samples === 1) for (const v of r.data) if (Number.isFinite(v) && v !== r.nodata) { min = Math.min(min, v); max = Math.max(max, v); }
-  for (let y = 0; y < height; y++) { for (let x = 0; x < width; x++) {
+  for (let y = 0; y < height; y++) { if (options.signal?.aborted) throw new DOMException('Proceso cancelado.', 'AbortError'); for (let x = 0; x < width; x++) {
     let p; try { p = worldToPixel(r.transform, transform(toProjected(doc, { x: x1 + (x + 0.5) * w / width, y: y1 + h - (y + 0.5) * h / height }), doc.geo.crs, r.crs)); } catch { continue; }
     const px = Math.floor(p.x), py = Math.floor(p.y); if (px < 0 || py < 0 || px >= r.width || py >= r.height) continue;
     const at = (py * r.width + px) * r.samples, k = (y * width + x) * 4, v = r.data[at]; if (!Number.isFinite(v) || v === r.nodata) continue;
-    if (r.photo === 3 && r.palette) { const n = r.palette.length / 3; for (let j = 0; j < 3; j++) image.data[k + j] = r.palette[v + j * n] / 257; }
+    if (options.colorize) { const rgb = options.colorize(v); image.data[k] = rgb[0]; image.data[k + 1] = rgb[1]; image.data[k + 2] = rgb[2]; }
+    else if (r.photo === 3 && r.palette) { const n = r.palette.length / 3; for (let j = 0; j < 3; j++) image.data[k + j] = r.palette[v + j * n] / 257; }
     else if (r.samples === 1) { const gray = r.bits === 8 && r.format === 1 ? r.photo === 0 ? 255 - v : v : 255 * (v - min) / ((max - min) || 1); image.data[k] = image.data[k + 1] = image.data[k + 2] = gray; }
     else for (let j = 0; j < 3; j++) image.data[k + j] = r.data[at + j]; image.data[k + 3] = r.samples === 4 ? r.data[at + 3] : 255;
   } if (y % 16 === 0) await new Promise(resolve => setTimeout(resolve, 0)); }

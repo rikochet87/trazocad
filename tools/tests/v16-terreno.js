@@ -1,0 +1,13 @@
+const { terrainAnalysis }=await import('./js/terrain.js');
+let checks=0;const assert=(v,m)=>{checks++;if(!v)throw Error(m);},near=(a,b,e=1e-5)=>assert(Math.abs(a-b)<e,`${a} ≠ ${b}`);
+const raster=(g,crs='EPSG:3857',scale=1)=>{const data=new Float32Array(81);for(let y=0;y<9;y++)for(let x=0;x<9;x++){const E=g[0]+g[1]*(x+.5)+g[2]*(y+.5),N=g[3]+g[4]*(x+.5)+g[5]*(y+.5);data[y*9+x]=(.1*E+.2*N)/scale;}return{width:9,height:9,samples:1,bits:32,format:3,photo:1,data,transform:g,crs,nodata:-9999};};
+const r=raster([0,10,0,100,0,-10]),slope=terrainAnalysis(r,{mode:'pendiente'}),aspect=terrainAnalysis(r,{mode:'orientacion'}),shade=terrainAnalysis(r,{mode:'sombreado'}),percent=terrainAnalysis(r,{mode:'pendiente',percent:true});
+near(slope.data[40],Math.atan(Math.hypot(.1,.2))*180/Math.PI);near(percent.data[40],Math.hypot(.1,.2)*100);near(aspect.data[40],206.565051177,2e-5);
+near(shade.data[40],255*(.05-.1+Math.SQRT1_2)/Math.sqrt(1.05),2e-5);assert(slope.data[0]===-9999&&slope.nodata===-9999,'Bordes NoData');
+const rotated=raster([20,8,4,60,3,-11]);near(terrainAnalysis(rotated).data[40],slope.data[40]);near(terrainAnalysis(rotated,{mode:'orientacion'}).data[40],aspect.data[40],2e-5);
+const feet=raster([0,10,0,100,0,-10],'+proj=tmerc +lon_0=0 +units=ft',1);near(terrainAnalysis(feet,{verticalScale:.3048}).data[40],slope.data[40]);
+const flat={...r,data:new Float32Array(81).fill(10)};near(terrainAnalysis(flat).data[40],0);near(terrainAnalysis(flat,{mode:'orientacion'}).data[40],-1);
+const missing={...r,data:r.data.slice()};missing.data[40]=-9999;const m=terrainAnalysis(missing);assert([30,31,32,39,40,41,48,49,50].every(i=>m.data[i]===-9999),'Propagación de NoData 3×3');
+const floatNoData={...r,data:r.data.slice(),nodata:-3.4e38};floatNoData.data[40]=Math.fround(-3.4e38);assert(terrainAnalysis(floatNoData).data[40]===-9999,'NoData redondeado al tipo Float32');
+let refused=false;try{terrainAnalysis({...r,samples:3});}catch{refused=true;}assert(refused,'No analizar imagen RGB como MDT');
+return{ok:true,checks};

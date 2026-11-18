@@ -35,15 +35,22 @@ function findChrome() {
 const executablePath = findChrome();
 if (!executablePath) { console.log('No se encontró Chrome: define CHROME_PATH o ejecuta `npx @puppeteer/browsers install chrome@stable --path ~/.cache/puppeteer`.'); process.exit(1); }
 
-const port = 8000 + Math.floor(Math.random() * 900);
-const srv = spawn(process.execPath, [join(ROOT, 'serve.mjs'), String(port)], { stdio: 'ignore' });
-await new Promise(r => setTimeout(r, 600));
+// El sistema elige un puerto libre. Esperar a listen evita colisiones y arranques a medias en pruebas paralelas.
+const srv = spawn(process.execPath, [join(ROOT, 'serve.mjs'), '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
+const port = await new Promise((resolve, reject) => {
+  let stderr = ''; const timer = setTimeout(() => { srv.kill(); reject(Error('El servidor de pruebas no inició en 10 s.')); }, 10000);
+  srv.stderr.on('data', data => { stderr += data; });
+  srv.on('error', e => { clearTimeout(timer); reject(e); });
+  srv.on('exit', code => { clearTimeout(timer); reject(Error(`Servidor de pruebas cerrado (${code}): ${stderr}`)); });
+  srv.stdout.on('data', data => { const m = String(data).match(/http:\/\/localhost:(\d+)/); if (m) { clearTimeout(timer); resolve(+m[1]); } });
+});
 
 const browser = await puppeteer.launch({ executablePath, headless: true, args: ['--no-sandbox'] });
 const page = await browser.newPage();
 await page.setViewport({ width: +W, height: +H, deviceScaleFactor: 1 });
 const errs = [];
-page.on('console', async m => { if (m.type() === 'error' || m.type() === 'warning') { let t = m.text(); try { t = (await Promise.all(m.args().map(a => a.evaluate(v => v instanceof Error ? v.stack : String(v))))).join(' '); } catch {} errs.push(`[${m.type()}] ${t}`); } });
+page.on('console', async m => { if (m.type() === 'error' || m.type() === 'warning') { let t = m.text(); try { if (m.args().length) t = (await Promise.all(m.args().map(a => a.evaluate(v => v instanceof Error ? v.stack : String(v))))).join(' '); } catch {} errs.push(`[${m.type()}] ${t}`); } });
+page.on('response', res => { if (res.status() >= 400) errs.push(`[HTTP ${res.status()}] ${new URL(res.url()).pathname}`); });
 page.on('requestfailed', req => errs.push(`[red] ${new URL(req.url()).pathname}: ${req.failure()?.errorText}`));
 page.on('pageerror', e => errs.push(`[pageerror] ${e.message}`));
 // TC_VERIFY_UNDO=1: la app comprueba en cada transacción que deshacer y rehacer devuelven el estado exacto

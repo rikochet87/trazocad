@@ -351,3 +351,8 @@ input.full { width: 100%; }
 .gis-scroll td input { min-width: 120px; width: 140px; padding: 5px; }
 .gis-scroll tr.sel { background: #285375; }
 .gis-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.geo-progress { position: fixed; bottom: 92px; left: 24px; z-index: 2000; display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #293747; border: 1px solid #6499bf; border-radius: 7px; box-shadow: 0 4px 20px #0008; }
+.geo-progress progress { width: 180px; }
+.geo-condition { display: flex; gap: 8px; margin: 8px 0; }
+.geo-condition input { min-width: 90px; }

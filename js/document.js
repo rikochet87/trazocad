@@ -570,7 +570,7 @@ export class Doc {
   // ----- Serialización -----
   toJSON() {
     return {
-      app: 'TrazoCAD', version: 15, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
+      app: 'TrazoCAD', version: 16, name: this.name, layers: this.layers, model: this.model, layouts: this.layouts, blocks: this.blocks,
       textStyles: this.textStyles, dimStyles: this.dimStyles, mleaderStyles: this.mleaderStyles, tableStyles: this.tableStyles, mlineStyles: this.mlineStyles, constraints: this.constraints, params: this.params, groups: this.groups, layerStates: this.layerStates, patterns: this.patterns, plotStyles: this.plotStyles, cur: this.cur, settings: this.settings, nextId: this.nextId,
       ucs: this.ucs, ucsList: this.ucsList, views: this.views, vportConfigs: this.vportConfigs, selFilters: this.selFilters, layerFilters: this.layerFilters, gis: this.gis, geo: this.geo, basemap: this.basemap, layIso: this.layIso, scales: this.scales,
       ...(this.origin.x || this.origin.y ? { origin: this.origin } : {}),

@@ -1,0 +1,25 @@
+const {runVectorJob,runTerrainJob}=await import('./js/geojobs.js'),{validateGeo}=await import('./js/geographic.js'),{regionArea}=await import('./js/region.js'),{readGeoTIFF}=await import('./js/geotiff.js'),{importFiles}=await import('./js/giscommands.js');
+let checks=0;const assert=(v,m)=>{checks++;if(!v)throw Error(m);},near=(a,b,t=.1)=>assert(Math.abs(a-b)<t,`${a} ≠ ${b}`);
+const doc=app.doc;doc.geo=validateGeo({crs:'EPSG:3857'});doc.begin();doc.addLayer('PUNTOS','#ffffff');const point=doc.add({type:'point',p:{x:10,y:20},elev:7,layer:'PUNTOS',data:{nombre:'Estación',fecha:'2026-11-18'}});doc.gis.schemas.PUNTOS=[{name:'nombre',type:'texto'},{name:'fecha',type:'fecha'}];doc.commit();
+const initial=doc.model.length,out=await runVectorJob(app,{operation:'buffer',layerA:'PUNTOS',distance:10,segments:96,outputLayer:'INFLUENCIA'});
+assert(out.ids.length===1,'Worker crea resultado');near(regionArea(doc.get(out.ids[0])),Math.PI*100,.3);assert(doc.gis.schemas.INFLUENCIA.find(f=>f.name==='fecha').type==='fecha','Conservar tipos de atributos');assert(doc.get(point.id).elev===7,'Origen intacto');
+doc.undo();assert(doc.model.length===initial&&!doc.layers.some(l=>l.name==='INFLUENCIA'),'Deshacer resultado y capa en un paso');doc.redo();assert(!!doc.get(out.ids[0]),'Rehacer resultado');
+const query=await runVectorJob(app,{operation:'consulta',layerA:'PUNTOS',layerB:'INFLUENCIA',predicate:'dentro',conditions:[{field:'nombre',op:'=',value:'Estación'}]});assert(query.ids.includes(point.id)&&app.sel.has(point.id),'Consulta sincroniza selección');
+const joined=await runVectorJob(app,{operation:'enlace',layerA:'PUNTOS',layerB:'INFLUENCIA',predicate:'dentro',outputLayer:'ENLACE'});assert(doc.get(joined.ids[0]).elev===7,'Unión espacial conserva Z y geometría CAD original');
+// Cambiar unidades: 10 mm, con factor .001, debe producir radio .01 m si se pide .01 m.
+doc.geo=null;doc.settings.unitsPerInch=25.4;const mm=await runVectorJob(app,{operation:'buffer',idsA:[point.id],distance:.01,segments:96,outputLayer:'MILIMETROS'});near(regionArea(doc.get(mm.ids[0])),Math.PI*100,.3);doc.geo=validateGeo({crs:'EPSG:3857'});
+// Cancelar cuando el worker ya está enviando avance, sin ninguna modificación del modelo ni historial.
+doc.begin();doc.addLayer('LOTE','#fff');for(let i=0;i<200;i++)doc.add({type:'point',p:{x:i*30,y:100},layer:'LOTE',data:{n:i}});doc.commit();const before=doc.state(),undo=doc.undoS.length,controller=new AbortController();let aborted=false;
+try{await runVectorJob(app,{operation:'buffer',layerA:'LOTE',distance:5,segments:96,outputLayer:'CANCELADO',signal:controller.signal,onProgress:p=>{if(p>.15&&p<.85)controller.abort();}});}catch(e){aborted=e.name==='AbortError';}
+assert(aborted&&doc.state()===before&&doc.undoS.length===undo&&!document.querySelector('.geo-progress'),'Cancelación atómica y limpieza');
+let stale=false,edited=false;try{await runVectorJob(app,{operation:'buffer',layerA:'LOTE',distance:5,segments:24,outputLayer:'OBSOLETO',onProgress:p=>{if(p>.15&&!edited){edited=true;doc.begin();doc.modify(point.id,e=>{e.data.nombre='Editado durante cálculo';});doc.commit();}}});}catch(e){stale=e.message.includes('cambió');}
+assert(stale&&!doc.layers.some(l=>l.name==='OBSOLETO')&&doc.get(point.id).data.nombre==='Editado durante cálculo','Rechazar resultados obsoletos y conservar edición ajena');
+// Latitud/longitud: radio métrico con escala de longitud dependiente de latitud.
+doc.reset();doc.geo=validateGeo({crs:'EPSG:4326'});doc.begin();const geographic=doc.add({type:'point',p:{x:10,y:60},layer:'0',data:{nombre:'Geográfica'}});doc.commit();
+const geo=await runVectorJob(app,{operation:'buffer',idsA:[geographic.id],distance:100,segments:48,outputLayer:'LOCAL'}),ring=doc.get(geo.ids[0]).loops[0].pts,dx=Math.max(...ring.map(p=>p.x))-Math.min(...ring.map(p=>p.x)),dy=Math.max(...ring.map(p=>p.y))-Math.min(...ring.map(p=>p.y));near(dx/dy,2,.02);
+// MDT importado: se genera un GeoTIFF numérico derivado en otra capa.
+doc.reset();doc.geo=validateGeo({crs:'EPSG:32721'});const bytes=await(await fetch('./tools/fixtures/v15/mdt-float.tif')).arrayBuffer(),mdt=await importFiles(app,[new File([bytes],'terreno.tif')],{layer:'MDT'});
+const terrain=await runTerrainJob(app,{id:mdt[0],mode:'pendiente',outputLayer:'PENDIENTE'}),image=doc.get(terrain.ids[0]),r=await readGeoTIFF(Uint8Array.from(atob(image.gisRaster.original),c=>c.charCodeAt(0)));
+near(r.data[28],Math.atan(Math.hypot(.025,.2))*180/Math.PI,1e-4);assert(image.gisRaster.analysis.mode==='pendiente'&&image.data.origen_mdt===mdt[0],'Metadatos del análisis');doc.undo();assert(!doc.get(terrain.ids[0])&&!!doc.get(mdt[0]),'Deshacer terreno no modifica MDT original');
+doc.begin();doc.modify(mdt[0],e=>{e.p.x+=100;});doc.commit();let misplaced=false;try{await runTerrainJob(app,{id:mdt[0],mode:'pendiente',outputLayer:'MALUBICADO'});}catch(e){misplaced=e.message.includes('movido');}assert(misplaced&&!doc.layers.some(l=>l.name==='MALUBICADO'),'Rechazar MDT desgeorreferenciado');
+return{ok:true,checks};

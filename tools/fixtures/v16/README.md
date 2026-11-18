@@ -1,0 +1,1 @@
+Referencias independientes calculadas con Shapely/GEOS. Incluyen polígonos cóncavos, huecos, geometría de centímetros en coordenadas de millones, superposiciones y áreas de influencia positivas/negativas. Los buffers usan 24 segmentos por cuadrante. Las pruebas no requieren Shapely ni Python.

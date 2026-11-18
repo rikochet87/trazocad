@@ -168,8 +168,8 @@ function mergeLoop(lp, tol) {
 
 const bboxOfLoops = loops => loops.flatMap(l => l.pts).reduce((r, p) => ({ x1: Math.min(r.x1, p.x), y1: Math.min(r.y1, p.y), x2: Math.max(r.x2, p.x), y2: Math.max(r.y2, p.y) }), { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity });
 // op: 'union' | 'subtract' (A − B) | 'intersect'. A y B: listas de contornos orientados. Devuelve los contornos del resultado
-export function booleanLoops(A, B, op) {
-  const bb = bboxOfLoops([...A, ...B]), size = Math.max(bb.x2 - bb.x1, bb.y2 - bb.y1) || 1, tol = size * 1e-9;
+export function booleanLoops(A, B, op, options = {}) {
+  const bb = bboxOfLoops([...A, ...B]), size = Math.max(bb.x2 - bb.x1, bb.y2 - bb.y1) || 1, tol = options.tolerance ?? size * 1e-9;
   const [pa, pb] = splitAll(piecesOf(A), piecesOf(B), tol * 10);
   const inA = insideOf(A.map(l => polyOf(l))), inB = insideOf(B.map(l => polyOf(l)));
   const keep = [];

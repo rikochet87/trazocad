@@ -1,3 +1,4 @@
+import { registerGeoprocess } from './geocommands.js';
 import { registerGIS } from './giscommands.js';
 import { CATALOG, resolveCRS } from './projections.js';
 import { validateGeo, toGeographic, formatGeographic } from './geographic.js';
@@ -3795,3 +3796,5 @@ def('GEOPOSITION', ['GPS', 'POSICIONGPS'], 'Muestra la posición GPS, precisión
 }, { noTx: true, group: 'Geografía' });
 
 registerGIS(def);
+
+registerGeoprocess(def);

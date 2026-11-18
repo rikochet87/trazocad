@@ -651,6 +651,7 @@ class App {
   pickSuggestion(d) { this.input.value = ''; this.sugList = []; this.ui.showSuggest([]); this.run(d.name); }
 
   escape() {
+    if (this.processingCancel) { this.processingCancel(); return; }
     if (this.scriptDepth) this.scriptStop = true; // Esc interrumpe el guion en curso
     this.ui.hideMenu();
     this.sugList = []; this.ui.showSuggest([]);
@@ -991,7 +992,7 @@ class App {
   }
 
   // ---------- Motor de comandos ----------
-  cancelCurrent() { this.cancelFlag = true; if (this.req) this.req.reject(CANCEL); }
+  cancelCurrent() { this.processingCancel?.(); this.cancelFlag = true; if (this.req) this.req.reject(CANCEL); }
 
   async run(name, arg) {
     const d = typeof name === 'string' ? findCmd(name) : name;
